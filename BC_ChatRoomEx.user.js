@@ -17,7 +17,7 @@
 	console.log("[ChatRoomEx] Start Load");
     const script = document.createElement("script");
     const timestamp = new Date().getTime(); // 创建当前时间的时间戳
-    script.src = `https://gitgud.io/XinLian132243/bcmod/-/raw/master/Source/BC_ChatRoomExSource.user.js?timestamp=${timestamp}`;
+    script.src = `https://xinlian132243.github.io/BCMod/Source/BC_ChatRoomExSource.user.js?timestamp=${timestamp}`;
     document.head.appendChild(script);
 
 })();
