@@ -6,7 +6,7 @@
 // @author       XinLian
 // @include      /^https:\/\/(www\.)?bondageprojects\.elementfx\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
 // @include      /^https:\/\/(www\.)?bondage-europe\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
-// @connect      gitgud.io
+// @connect      github.com
 // @grant        GM_xmlhttpRequest
 // @license      MIT
 // @run-at       document-end
