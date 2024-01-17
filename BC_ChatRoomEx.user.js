@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC 聊天室扩展
 // @namespace    https://www.bondageprojects.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  聊天室扩展
 // @author       XinLian
 // @include      /^https:\/\/(www\.)?bondageprojects\.elementfx\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
