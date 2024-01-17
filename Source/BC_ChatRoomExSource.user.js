@@ -31,7 +31,6 @@
     // =======================================================================================
 
     mod.hookFunction("ChatRoomMessageDisplay", 4, (args, next) => { 
-        console.log(args);
         var data = args[0];
         var msg = args[1];
         var SenderCharacter = args[2];
