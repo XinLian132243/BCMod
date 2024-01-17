@@ -41,6 +41,7 @@
      });
 
     w.WaitSpeakQueue = [];
+    w.EnableSpeek = false;
 
 
     function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
@@ -81,15 +82,26 @@
 
         var senderName  = GetPlayerName(SenderCharacter);
         var text = msg;
+        var senderText = "";
         if(data.Type == "Chat")
         {
-            text = senderName + "说：" + msg;
+            senderText = senderName + "说：";
         }
 
         if(data.Type == "Whisper")
         {
-            text = senderName + "悄悄说：" + msg;
+            senderText = senderName + "悄悄说：";
         }
+
+        // 消息和动作只处理跟自己有关的，也就是包含自己名字的
+        if(data.Type == "Activity" || data.Type == "Action")
+        {
+           if(!msg.includes(GetPlayerName(Player)))
+           {
+                return;
+           }
+        }
+
 
         if(data.Type == "LocalMessage")
         {
@@ -99,13 +111,15 @@
                 var beep = /好友私聊来自 (.+)\(\d+\); 以及以下信息:(.+)/.exec(msg);
                 if (beep?.length > 0 )
                 {          
-                    text = beep[1] + "私聊说：" + beep[2];
+                    senderText = beep[1] + "私聊说：" ;
+                    text = beep[2];
                 }
     
                 beep = /好友私聊来自 (.+)\(\d+\) 位于房间 \"(.+)\"; 以及以下信息:(.+)/.exec(msg);
                 if (beep?.length > 0 )
                 {          
-                    text = beep[1] + "在房间" + beep[2] + "私聊说：" + beep[3];
+                    senderText = beep[1] + "在房间" + beep[2] + "私聊说：";
+                    text = beep[3];
                 }
             }
             else
@@ -115,14 +129,23 @@
            
         }
         
+        // 如果跟自己没有关系的消息，最多二十个字
+        if(!text.includes(GetPlayerName(Player)))
+        {
+            text = TruncateAndAppend(text, 20);
+        }
 
-        w.WaitSpeakQueue.push(text);
+        w.WaitSpeakQueue.push(senderText + text);
 
         TrySpeakNextText();
      }
 
      // 说话函数
      function Speak(str){
+
+        str = ReplaceCharacters(str);
+
+
         let utterThis = new window.SpeechSynthesisUtterance();
         utterThis.text= str; 
         utterThis.pitch = 2;
@@ -148,16 +171,140 @@
     }      
       
 
-    function GetPlayerName(player)
-    {
-        return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
-    }
-
     // 耳机的描述中带有朗读二字
     function IsEnableSpeak()
     {
-        return InventoryGet(Player,"ItemEars")?.Craft?.Description.includes("朗读");
+        if(CurrentScreen != 'ChatRoom')
+        {
+            return false;
+        }
+
+        return w.EnableSpeek;
     }
-	console.log("[ChatRoomEx] Load Success");
+
+
+
+    // 绘制房间按钮
+    mod.hookFunction(
+        "ChatRoomMenuDraw",
+        0,
+        (args, next) => {
+            next(args);
+            if(w.EnableSpeek)
+            {               
+                // 绘制开
+                DrawButton(965, 960, 40, 40, "🎧", "#FFFFFF");
+            }
+            else
+            {                
+                // 绘制关
+                DrawButton(965, 960, 40, 40, "🎧", "#777777");
+            }
+        }
+    );
+
+    // 点击房间内按钮
+    mod.hookFunction(
+        "ChatRoomClick",
+        0,
+        (args, next) => {
+            if (MouseIn(965, 960, 40, 40)) {
+                
+                if(w.EnableSpeek)
+                {
+                    w.EnableSpeek = false;
+                    // 同时停止正在的播放
+                    w.WaitSpeakQueue = [];
+                    w.speechSynthesis.cancel();
+                }
+                else
+                {
+                    w.EnableSpeek = true;
+                    Speak("开启播报");
+                }
+
+                return;
+            }            
+            next(args);
+        }
+    );
+
+
+    // 过滤无法朗读的字符，TODO暂时无法识别末尾个字符
+    function ReplaceCharacters(inputString) {
+        // 定义替换映射
+        var replaceMap = {
+        '𝓪': 'a', '𝓫': 'b', '𝓬': 'c', '𝓭': 'd', '𝓮': 'e',
+        '𝓯': 'f', '𝓰': 'g', '𝓱': 'h', '𝓲': 'i', '𝓳': 'j',
+        '𝓴': 'k', '𝓵': 'l', '𝓶': 'm', '𝓷': 'n', '𝓸': 'o',
+        '𝓹': 'p', '𝓺': 'q', '𝓻': 'r', '𝓼': 's', '𝓽': 't',
+        '𝓾': 'u', '𝓿': 'v', '𝔀': 'w', '𝔁': 'x', '𝔂': 'y',
+        '𝔃': 'z'
+        };
+    
+        // 逐个遍历replaceMap并替换原始字符串
+        Object.keys(replaceMap).forEach(function (key) {
+        inputString = inputString.replace(new RegExp(key, 'g'), replaceMap[key]);
+        });
+    
+        return inputString;
+    }
+
+      // 截断太长的消息
+      function TruncateAndAppend(originalString, maxLength) {
+        // 定义正则表达式，匹配中英文字符和数字
+        var alphanumeric = /[a-zA-Z0-9\u4e00-\u9fa5]/;
+
+        // 初始化计数器和截断位置
+        var count = 0;
+        var truncateIndex = 0;
+
+        // 遍历字符串，找到截断位置
+        for (var i = 0; i < originalString.length; i++) {
+          var char = originalString[i];
+          if (char.match(alphanumeric)) {
+            count++;
+          }
+
+            if (count <= maxLength) {
+                truncateIndex = i;
+            }
+
+        }
+
+        truncateIndex += 1;
+        if(truncateIndex == count)
+        {
+            return originalString;
+        }
+
+
+        // 截断字符串
+        var truncatedString = originalString.slice(0, truncateIndex);
+
+        // 计算被截断的字符数
+        var truncatedChars = originalString.length - truncateIndex;
+
+        if(truncatedChars == 0)
+        {
+            return originalString;
+        }
+
+        // 补充字符串
+        var appendString = ', 等' + truncatedChars + '字';
+
+        // 返回结果字符串
+        return truncatedString + appendString;
+   }
+
+
+
+    function GetPlayerName(player)
+    {
+
+        return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
+    }
+
+    console.log("[ChatRoomEx] Load Success");
 })();
 
