@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BC 聊天室扩展
 // @namespace    https://www.bondageprojects.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  聊天室扩展
 // @author       XinLian
 // @include      /^https:\/\/(www\.)?bondageprojects\.elementfx\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
@@ -17,7 +17,7 @@
 
     const MOD_NAME = "聊天室扩展";
     const MOD_FULL_NAME = "聊天室扩展";
-    const MOD_VERSION = "0.1.0";
+    const MOD_VERSION = "0.1.1";
 
 
     const mod = bcModSdk.registerMod({
@@ -80,6 +80,24 @@
 
         }
 
+        
+        // 消息和动作只处理跟自己有关的
+        // 不包含自己名字的，跳过
+        if(data.Type == "Action")
+        {
+           if(!msg.includes(GetPlayerName(Player)))
+           {
+                return;
+           }
+        }
+        // 目标对象不是自己的，跳过
+        if(data.Type == "Activity" 
+        && metadata?.TargetMemberNumber != Player.MemberNumber)
+        {
+            return;
+        }
+
+
         var senderName  = GetPlayerName(SenderCharacter);
         var text = msg;
         var senderText = "";
@@ -93,16 +111,7 @@
             senderText = senderName + "悄悄说：";
         }
 
-        // 消息和动作只处理跟自己有关的，也就是包含自己名字的
-        if(data.Type == "Activity" || data.Type == "Action")
-        {
-           if(!msg.includes(GetPlayerName(Player)))
-           {
-                return;
-           }
-        }
-
-
+       
         if(data.Type == "LocalMessage")
         {
             // 本地消息处理Beep
@@ -130,7 +139,9 @@
         }
         
         // 如果跟自己没有关系的消息，最多二十个字
-        if(!text.includes(GetPlayerName(Player)))
+        if(data.Type != "Activity"
+         && data.Type != "Action"
+         && !text.includes(GetPlayerName(Player)))
         {
             text = TruncateAndAppend(text, 20);
         }
