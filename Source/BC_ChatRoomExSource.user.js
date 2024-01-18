@@ -160,7 +160,7 @@
         utterThis.text= str; 
         utterThis.pitch = 2;
         utterThis.rate = 1; 
-        utterThis.volume = 50; 
+        utterThis.volume = 0.5; 
         utterThis.lang = 'zh-CN'; 
         utterThis.onend = function () {
             TrySpeakNextText();
