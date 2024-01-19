@@ -31,6 +31,7 @@
     // =======================================================================================
 
     mod.hookFunction("ChatRoomMessageDisplay", 4, (args, next) => { 
+        console.log(args);
         var data = args[0];
         var msg = args[1];
         var SenderCharacter = args[2];
@@ -40,7 +41,7 @@
      });
 
     w.WaitSpeakQueue = [];
-    w.EnableSpeek = false;
+    w.EnableSpeak = false;
 
 
     function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
@@ -82,19 +83,22 @@
         
         // 消息和动作只处理跟自己有关的
         // 不包含自己名字的，跳过
-        if(data.Type == "Action")
+        if(Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe)
         {
-           if(!msg.includes(GetPlayerName(Player)))
-           {
+            if(data.Type == "Action")
+            {
+               if(!msg.includes(GetPlayerName(Player)))
+               {
+                    return;
+               }
+            }
+            // 目标对象不是自己的，跳过
+            if(data.Type == "Activity" 
+            && metadata?.TargetMemberNumber != Player.MemberNumber)
+            {
                 return;
-           }
-        }
-        // 目标对象不是自己的，跳过
-        if(data.Type == "Activity" 
-        && metadata?.TargetMemberNumber != Player.MemberNumber)
-        {
-            return;
-        }
+            }
+        }      
 
 
         var senderName  = GetPlayerName(SenderCharacter);
@@ -137,12 +141,15 @@
            
         }
         
-        // 如果跟自己没有关系的消息，最多二十个字
-        if(data.Type != "Activity"
-         && data.Type != "Action"
-         && !text.includes(GetPlayerName(Player)))
+        // 如果是聊天信息，最多二十个字
+        if(Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat)
         {
-            text = TruncateAndAppend(text, 20);
+            if(data.Type != "Activity"
+            && data.Type != "Action"
+            && !text.includes(GetPlayerName(Player)))
+            {
+                text = TruncateAndAppend(text, 20);
+            }
         }
 
         w.WaitSpeakQueue.push(senderText + text);
@@ -159,8 +166,8 @@
         let utterThis = new window.SpeechSynthesisUtterance();
         utterThis.text= str; 
         utterThis.pitch = 2;
-        utterThis.rate = 1; 
-        utterThis.volume = 0.5; 
+        utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
+        utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
         utterThis.lang = 'zh-CN'; 
         utterThis.onend = function () {
             TrySpeakNextText();
@@ -174,6 +181,7 @@
         {
             return;
         }
+
         if (w.WaitSpeakQueue.length > 0 && !window.speechSynthesis.speaking) {
           var nextText = w.WaitSpeakQueue.shift();
           Speak(nextText);
@@ -189,7 +197,7 @@
             return false;
         }
 
-        return w.EnableSpeek;
+        return w.EnableSpeak;
     }
 
 
@@ -200,15 +208,15 @@
         0,
         (args, next) => {
             next(args);
-            if(w.EnableSpeek)
+            if(w.EnableSpeak)
             {               
                 // 绘制开
-                DrawButton(965, 960, 40, 40, "🎧", "#FFFFFF");
+                DrawButton(965, 865, 40, 40, "🎧", "#FFFFFF");
             }
             else
             {                
                 // 绘制关
-                DrawButton(965, 960, 40, 40, "🎧", "#777777");
+                DrawButton(965, 865, 40, 40, "🎧", "#777777");
             }
         }
     );
@@ -218,18 +226,19 @@
         "ChatRoomClick",
         0,
         (args, next) => {
-            if (MouseIn(965, 960, 40, 40)) {
+            if (MouseIn(965, 865, 40, 40)) {
                 
-                if(w.EnableSpeek)
+                if(w.EnableSpeak)
                 {
-                    w.EnableSpeek = false;
+                    w.EnableSpeak = false;
                     // 同时停止正在的播放
                     w.WaitSpeakQueue = [];
                     w.speechSynthesis.cancel();
                 }
                 else
                 {
-                    w.EnableSpeek = true;
+                    w.EnableSpeak = true;                            
+                    CheckOnlineCRESetting();
                     Speak("开启播报");
                 }
 
@@ -238,6 +247,122 @@
             next(args);
         }
     );
+
+    
+    mod.hookFunction("PreferenceRun", 50, (args, next) => {
+        next(args);
+        if (PreferenceSubscreen === "") {
+            DrawButton(920, 50, 400, 90, "        房间朗读设置", "White", "Icons/Audio.png");
+        }
+        if (PreferenceSubscreen === "ChatRoomExSetting") {
+
+            MainCanvas.textAlign = "left";
+            DrawText("- 房间朗读设置 -", 500, 125, "Black", "Gray");
+            DrawText("朗读音量", 800, 225, "Black", "Gray");
+            MainCanvas.textAlign = "center";
+            DrawBackNextButton(500, 193, 250, 64, Math.round(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume * 100) + "%", "White", "",
+                () => "-",
+                () => "+");
+            MainCanvas.textAlign = "left";
+            DrawText("朗读语速", 800, 310, "Black", "Gray");
+            MainCanvas.textAlign = "center";
+            DrawBackNextButton(500, 272, 250, 64, Math.round(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed * 100) + "%", "White", "",
+                () => "-",
+                () => "+");
+            
+            DrawButton(200, 225, 200, 64, "🎧 试听", "#FFFFFF");
+
+            MainCanvas.textAlign = "left";
+
+            DrawCheckbox(500, 352, 64, 64, "仅播放与自己有关的互动和消息", Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe);
+            DrawCheckbox(500, 432, 64, 64, "过长对话省略", Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat);
+            //DrawCheckbox(500, 512, 64, 64, TextGet("AudioPlayItemPlayerOnly"), Player.AudioSettings.PlayItemPlayerOnly);
+            //DrawCheckbox(500, 592, 64, 64, TextGet("AudioNotifications"), Player.AudioSettings.Notifications);
+            
+
+
+            DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
+        }
+    });
+
+
+    mod.hookFunction("PreferenceClick", 10, (args, next) => {
+        next(args);
+        // 初始按钮
+        if (MouseIn(920, 50, 400, 90) && PreferenceSubscreen === "") {
+            PreferenceSubscreen = "ChatRoomExSetting";
+            CheckOnlineCRESetting();
+        }
+
+        if(PreferenceSubscreen == "ChatRoomExSetting")
+        {
+            // 窗口退出
+            if (MouseIn(1815, 75, 90, 90)) 
+            {            
+                //保存设置
+                ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+                PreferenceSubscreenAudioExit();
+            }
+
+
+            // 音量
+            if (MouseIn(500, 193, 250, 64)) {
+                if (MouseX <= 625) 
+                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume  = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume - 0.1, 0.1);
+                else 
+                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume  = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume + 0.1, 1);
+            }
+
+            // 语速
+            if (MouseIn(500, 272, 250, 64)) {
+                if (MouseX <= 625) 
+                    Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed  = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed - 0.1, 0.1);
+                else 
+                    Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed  = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed + 0.1, 2);
+            }
+            // 试听按钮
+            if (MouseIn(200, 225, 200, 64)) {
+                w.speechSynthesis.cancel();
+                let utterThis = new window.SpeechSynthesisUtterance();
+                utterThis.text= "星涟说：这是一段试听，喵";
+                utterThis.pitch = 2;
+                utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
+                utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
+                utterThis.lang = 'zh-CN';
+
+                window.speechSynthesis.speak(utterThis);
+            }
+
+            
+            // Individual audio check-boxes
+            if (MouseXIn(500, 64)) {
+                if (MouseYIn(352, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe = !Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe;
+                if (MouseYIn(432, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat = !Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat;
+                //if (MouseYIn(512, 64)) Player.AudioSettings.PlayItemPlayerOnly = !Player.AudioSettings.PlayItemPlayerOnly;
+                //if (MouseYIn(592, 64)) Player.AudioSettings.Notifications = !Player.AudioSettings.Notifications;
+            }
+        }        
+
+    });
+
+
+    function CheckOnlineCRESetting()
+    {
+        if(Player.OnlineSettings.CRE?.SpeakSetting == null)
+        {
+            Player.OnlineSettings.CRE = Player.OnlineSettings.CRE || {};
+
+            Player.OnlineSettings.CRE.SpeakSetting = {
+                SpeakVolume:1.0,
+                SpeakSpeed:1.0,
+                SpeakMsgOnlyAboutMe : true,
+                SpeedLimitLengthChat : true,
+            };
+            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+        }        
+    }
+
+
 
 
     // 过滤无法朗读的字符，TODO暂时无法识别末尾个字符
@@ -309,11 +434,14 @@
 
 
 
+
     function GetPlayerName(player)
     {
 
         return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
     }
+
+
 
     console.log("[ChatRoomEx] Load Success");
 })();
