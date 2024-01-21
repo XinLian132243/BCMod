@@ -227,7 +227,7 @@
             TrySpeakNextText();
           });
           audio.playbackRate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
-          audio.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
+          audio.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume * 0.2;
           // 播放音频
           audio.play();
     }
