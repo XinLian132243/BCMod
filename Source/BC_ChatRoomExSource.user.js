@@ -164,7 +164,7 @@
             && isCharacterSpeak)
         {
             w.VocalIndex ++;
-            PrepareVocals(text, SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting.Vocals, w.VocalIndex);
+            PrepareVocals(text, SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting.Vocals, w.VocalIndex, SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting.Prompt);
 
             w.WaitSpeakQueue.push({
                 VocalIndex : w.VocalIndex,
@@ -464,6 +464,7 @@
             Player.OnlineSharedSettings.CRE.SpeakSetting = {
                 Vocals:"",
                 SpeakSpeed:1.0,
+                Prompt:"",
                 EnableVocal : false,
             };
             ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings });
@@ -539,7 +540,7 @@
    }
 
 
-   function PrepareVocals(text, char, index)
+   function PrepareVocals(text, char, index, prompt)
    {
         var url = atob("aHR0cHM6Ly92Mi5nZW5zaGludm9pY2UudG9wLw==");
         fetch(url + 'run/predict', {
@@ -548,7 +549,7 @@
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                data: [text, char, 0.2, 0.6, 0.8, 1, 'ZH', null, '', 'Text prompt', '', 0.7],
+                data: [text, char, 0.2, 0.6, 0.8, 1, 'ZH', null, prompt, 'Text prompt', '', 0.7],
                 fn_index: 0,
             })
         }).then(response =>response.json()).then(data =>{
