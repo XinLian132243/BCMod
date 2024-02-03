@@ -39,7 +39,7 @@
 
             if(actName != "")
             {
-                if (actName.indexOf("Act_") == 0) { // 这个条件表示只有当消息中包含以 "Act_" 开头的自定义活动时,才会执行下面的操作
+                if (actName.indexOf("ActM_") == 0) { // 这个条件表示只有当消息中包含以 "ActM_" 开头的自定义活动时,才会执行下面的操作
                     // 拦截自定义活动的发送并执行自定义操作
                     let { metadata, substitutions } = ChatRoomMessageRunExtractors(data, Player)
                     let msg = ActivityDictionaryText(data.Content);
@@ -204,7 +204,7 @@
      */
     function CreateActivity(name, target, self, other, maxProgress, maxProgressSelf, prerequisite, activityExpression) {
         const activity = {
-            Name: `Act_${name}`,
+            Name: `ActM_${name}`,
             Target: [other!=null?target:""],
             TargetSelf: [self!=null?target:""],
             MaxProgress: maxProgress,
@@ -217,7 +217,7 @@
 
         const actName = activity.Name;
 
-        ActivityDictionary.push([`ActivityAct_${name}`, `${name}`]);
+        ActivityDictionary.push([`ActivityActM_${name}`, `${name}`]);
         if (other != null) {
             ActivityDictionary.push([`Label-ChatOther-${target}-${actName}`, `${name}`]);
             ActivityDictionary.push([`ChatOther-${target}-${actName}`,other]);
