@@ -188,6 +188,31 @@
             Name:"鱼尾揉乳房", Group:"ItemBreast",
             Self:"SourceCharacter用鱼尾揉了揉PronounPossessive自己的乳房.", Other:"SourceCharacter用鱼尾揉了揉TargetCharacter的乳房.",
             Prerequisite: ["HasMermaidTail"],
+        }, 
+        {
+            Name:"鱼尾扇风", Group:"ItemMouth",
+            Self:"SourceCharacter用鱼尾给自己扇了扇风.", Other:"SourceCharacter用鱼尾给TargetCharacter的脸扇了扇风.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾戳乳头", Group:"ItemNipples",
+            Self:"SourceCharacter用鱼尾戳了戳自己的乳头.", Other:"SourceCharacter用鱼尾戳了戳TargetCharacter的乳头.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾碰手", Group:"ItemHands",
+            Other:"SourceCharacter将鱼尾踝搭在了TargetCharacter的手心上.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"舔牵绳手", Group:"ItemHands",
+            Other:"SourceCharacter舔了舔TargetCharacter握着牵绳的手.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾抚弄大腿", Group:"ItemLegs",
+            Other:"SourceCharacter用鱼尾抚弄TargetCharacter的大腿.",
+            Prerequisite: ["HasMermaidTail"],
         },
     ];
 
@@ -231,7 +256,7 @@
     mod.hookFunction("LoginResponse", 10, (args, next) => {
 
         next(args);
-        
+
         if(w.LoginSuccess == false)
         {
             for (const item of activityAdd) {
