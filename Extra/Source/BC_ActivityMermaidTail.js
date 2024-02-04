@@ -227,14 +227,19 @@
             ActivityDictionary.push([`ChatSelf-${target}-${actName}`, self]);
         }
     }
-
+    w.LoginSuccess = false;
     mod.hookFunction("LoginResponse", 10, (args, next) => {
 
-        next(args)
-
-        for (const item of activityAdd) {
-            CreateActivity(item.Name, item.Group, item.Self, item.Other, 50, 50, item.Prerequisite, []);           
+        next(args);
+        
+        if(w.LoginSuccess == false)
+        {
+            for (const item of activityAdd) {
+                CreateActivity(item.Name, item.Group, item.Self, item.Other, 50, 50, item.Prerequisite, []);           
+            }
+            w.LoginSuccess = true;
         }
+        
     })
 
     //============================================================
