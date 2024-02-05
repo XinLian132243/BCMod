@@ -214,6 +214,16 @@
             Other:"SourceCharacter用鱼尾抚弄TargetCharacter的大腿.",
             Prerequisite: ["HasMermaidTail"],
         },
+        {
+            Name:"鱼尾缠绕", Group:"ItemArms",
+            Other:"SourceCharacter的鱼尾紧紧地缠绕TargetCharacter的手臂.",
+            Prerequisite: ["HasMermaidTail","NoBind","NoUseMermaidTailBinded"],
+        },
+        {
+            Name:"鱼尾松开", Group:"ItemArms",
+            Other:"SourceCharacter的鱼尾松开TargetCharacter的手臂.",
+            Prerequisite: ["HasMermaidTail","MermaidTailBinded"],
+        },
     ];
 
 
@@ -267,14 +277,119 @@
         
     })
 
+
+
     //============================================================
     const CustomPrerequisiteFuncs = new Map(Object.entries({
         "HasMermaidTail": (acting, acted, group) => !!InventoryIsItemInList(acting, "ItemLegs", "MermaidTail"), // 鱼尾
         "IsKneeling": (acting, acted, group) => acted.IsKneeling(), // 跪姿
-        
+        "MermaidTailBinded": (acting, acted, group) => InventoryGet(acted, group.Name)?.Craft?.Name?.includes("鱼尾") 
+            && InventoryGet(acted,group.Name)?.Craft?.MemberNumber == Player.MemberNumber, // 是自己制作的鱼尾
+        "NoBind": (acting, acted, group) => InventoryGet(acted, group.Name) == null, // 没有道具槽位
+
+        "NoUseMermaidTailBinded": (acting, acted, group) => {
+            for(var i = 0; i < ChatRoomCharacter.length ; i ++)
+            {
+                var c = ChatRoomCharacter[i];
+                if(InventoryGet(c, group.Name)?.Craft?.Name?.includes("鱼尾") 
+                && InventoryGet(c, group.Name)?.Craft?.MemberNumber == Player.MemberNumber) // 是自己制作的鱼尾)
+                {
+                    return false;
+                }
+            }            
+            return true;
+        }, // 没有在其他地方使用
     }));
 
 
+    mod.hookFunction("ChatRoomMessage", 0, (args, next) => {
+        const data = args[0];
+      
+        // 处理鱼尾
+        processActivity(data, "ItemArms", "ActM_鱼尾缠绕", "SmoothLeatherArmbinder1",
+        {
+            "TypeRecord": {
+                "b": 1,
+                "s": 0
+            },
+            "Difficulty": 100,
+            "Block": [
+                "ItemHands"
+            ],
+            "Effect": [
+                "Block",
+                "BlockWardrobe"
+            ],
+        },
+        {
+            "Item": "SmoothLeatherArmbinder1",
+            "Property": "Secure",
+            "Name": "缠绕的鱼尾",
+            "Description": "紧紧缠绕的鱼尾，怎样挣扎都无法逃脱",
+            "Color": "#323232,#565656,#323232,#252525,#252525",
+            "TypeRecord": {
+                "b": 1,
+                "s": 0
+            },
+            "MemberNumber": Player.MemberNumber,
+            "MemberName": GetPlayerName(Player),
+        }
+        
+        
+        );
+        processActivity(data, "ItemArms", "ActM_鱼尾松开", null);
+  
+        next(args);
+    });
+
+
+    function processActivity(data, groupName, activity, assetName, property, craft) {
+        if (data.Sender === Player.MemberNumber && (data.Content.includes(`Self-${groupName}-${activity}`) || data.Content.includes(`Other-${groupName}-${activity}`))) {
+
+            const targetCharacter = data.Dictionary.find(entry => entry.TargetCharacter !== undefined)?.TargetCharacter;
+            const playerIndex = ChatRoomCharacter.findIndex(player => player.MemberNumber === targetCharacter);
+            if (playerIndex !== -1) {
+                const targetMember = ChatRoomCharacter[playerIndex];
+
+                // 检测对方有没有道具
+                if (assetName != null && InventoryGet(targetMember, groupName) == null) {
+                    // 应用
+                    WearItem(targetMember,groupName, assetName, property, craft);
+                    ChatRoomCharacterUpdate(targetMember);
+                }else if(assetName == null && InventoryGet(targetMember,groupName)?.Craft?.MemberNumber == Player.MemberNumber)
+                {
+                    InventoryRemove(targetMember,groupName);
+                    ChatRoomCharacterUpdate(targetMember);
+                }
+            }
+        }
+    }
+
+    function WearItem(target, groupName, itemName, property, craft)
+    {
+        var item = InventoryGet(target, groupName);
+      
+        if (item != null)
+        {
+            InventoryRemove(target, groupName);
+        }
+
+        InventoryWear(target, itemName, groupName);
+        InventoryGet(target, groupName).Difficulty = 100;
+        if(property != null)
+        {            
+            if(property.LockedBy != null && property.LockMemberNumber == null)
+            {
+                property.LockMemberNumber = target.MemberNumber;
+            }
+            InventoryGet(target, groupName).Property = property;
+        }
+        if(craft != null)
+        {   
+            InventoryGet(target, groupName).Craft = craft;
+        }
+        
+    }
 
     mod.hookFunction("ActivityCheckPrerequisite", 500, (args, next) => {
         var prereqName = args[0];
@@ -302,6 +417,12 @@
     {
         return InventoryGet(Player,"ItemLegs")?.Asset?.Name == 'MermaidTail';
     }
+
+    function GetPlayerName(player)
+    {
+        return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
+    }
+
 
     console.log("[BC_ActivityMermaidTai] Load Success");
 })();
