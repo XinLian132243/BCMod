@@ -224,6 +224,26 @@
             Other:"SourceCharacter的鱼尾松开TargetCharacter的手臂.",
             Prerequisite: ["HasMermaidTail","MermaidTailBinded"],
         },
+        {
+            Name:"叼牵绳", Group:"ItemMouth",
+            Self:"SourceCharacter叼起自己的牵绳.", Other:"SourceCharacter叼起牵绳向TargetCharacter的手边晃了晃.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"哈气", Group:"ItemNipples",
+            Other:"SourceCharacter在TargetCharacter的耳边轻轻哈气.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾挠肋", Group:"ItemTorso",
+            Other:"SourceCharacter用鱼尾挠了挠TargetCharacter的肋部.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"尾鳍骚挠鼻子", Group:"ItemNose",
+            Other:"SourceCharacter用鱼尾鳍轻轻骚挠TargetCharacter的鼻尖.",
+            Prerequisite: ["HasMermaidTail"],
+        }
     ];
 
 
