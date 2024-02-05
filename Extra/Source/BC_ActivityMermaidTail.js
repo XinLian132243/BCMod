@@ -207,7 +207,7 @@
         {
             Name:"舔牵绳手", Group:"ItemHands",
             Other:"SourceCharacter舔了舔TargetCharacter握着牵绳的手.",
-            Prerequisite: ["HasMermaidTail"],
+            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints","LeashedByTarget"],
         },
         {
             Name:"鱼尾抚弄大腿", Group:"ItemLegs",
@@ -216,13 +216,53 @@
         },
         {
             Name:"鱼尾缠绕", Group:"ItemArms",
-            Other:"SourceCharacter的鱼尾紧紧地缠绕TargetCharacter的手臂.",
+            Other:"SourceCharacter的鱼尾紧紧地缠绕住TargetCharacter的手臂.",
             Prerequisite: ["HasMermaidTail","NoBind","NoUseMermaidTailBinded"],
         },
         {
-            Name:"鱼尾松开", Group:"ItemArms",
+            Name:"鱼尾松绑", Group:"ItemArms",
             Other:"SourceCharacter的鱼尾松开TargetCharacter的手臂.",
             Prerequisite: ["HasMermaidTail","MermaidTailBinded"],
+        },
+        {
+            Name:"叼牵绳", Group:"ItemMouth",
+            Self:"SourceCharacter叼起自己的牵绳.", Other:"SourceCharacter叼起牵绳向TargetCharacter的手边晃了晃.",
+            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints"],
+        },
+        {
+            Name:"耳朵哈气", Group:"ItemEars",
+            Other:"SourceCharacter在TargetCharacter的耳边轻轻哈气.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"乳头哈气", Group:"ItemNipples",
+            Other:"SourceCharacter在TargetCharacter的乳头轻轻哈气.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾挠肋", Group:"ItemTorso",
+            Other:"SourceCharacter用鱼尾挠了挠TargetCharacter的肋部.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"尾鳍骚挠鼻子", Group:"ItemNose",
+            Other:"SourceCharacter用鱼尾鳍轻轻骚挠TargetCharacter的鼻尖.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"挣脱牵绳", Group:"ItemHands",
+            Other:"SourceCharacter奋力将牵绳从TargetCharacter手中挣脱.",
+            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints","LeashedByTarget"],
+        },
+        {
+            Name:"鱼尾抓手", Group:"ItemHands",
+            Other:"SourceCharacter的鱼尾绕上了TargetCharacter的手.",
+            Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"鱼尾松手", Group:"ItemHands",
+            Other:"SourceCharacter的鱼尾松开了TargetCharacter的手.",
+            Prerequisite: ["HasMermaidTail"],
         },
     ];
 
@@ -299,14 +339,31 @@
             }            
             return true;
         }, // 没有在其他地方使用
+
+        // 脖子上挂着牵绳
+        "LeashedByItemNeckRestraints": (acting, acted, group) => LeashedByItemNeckRestraints(acting),
+
+        // 正在被对方牵
+        "LeashedByTarget": (acting, acted, group) => LeashedByTarget(acted),
+        
+
     }));
 
 
     mod.hookFunction("ChatRoomMessage", 0, (args, next) => {
         const data = args[0];
-      
+        ProcessActivity(data);
+  
+        next(args);
+    });
+
+    function ProcessActivity(data)
+    {      
+        const targetCharacter = data?.Dictionary?.find(entry => entry.TargetCharacter !== undefined)?.TargetCharacter;
+        const target = ChatRoomCharacter?.find(player => player.MemberNumber === targetCharacter);
+
         // 处理鱼尾
-        processActivity(data, "ItemArms", "ActM_鱼尾缠绕", "SmoothLeatherArmbinder1",
+        ProcessItemActivity(data, "ItemArms", "ActM_鱼尾缠绕", "SmoothLeatherArmbinder1",
         {
             "TypeRecord": {
                 "b": 1,
@@ -337,13 +394,71 @@
         
         
         );
-        processActivity(data, "ItemArms", "ActM_鱼尾松开", null);
-  
-        next(args);
-    });
+        ProcessItemActivity(data, "ItemArms", "ActM_鱼尾松绑", null);
+        if (target != null) 
+        {
 
+            // 处理挣脱动作
+            if(data.Content.includes("挣脱牵绳"))
+            {
+                ChatRoomDoStopHoldLeash(target);                
+            }
 
-    function processActivity(data, groupName, activity, assetName, property, craft) {
+            // 处理牵手
+            if(data.Content.includes("鱼尾抓手"))
+            {
+                ServerSend("ChatRoomChat",{
+                    "Sender": Player.MemberNumber,
+                    "Content": "ChatOther-ItemArms-Grope",
+                    "Type": "Activity",
+                    "Dictionary": [
+                        {
+                            "SourceCharacter": Player.MemberNumber
+                        },
+                        {
+                            "TargetCharacter": target.MemberNumber
+                        },
+                        {
+                            "Tag": "FocusAssetGroup",
+                            "FocusGroupName": "ItemArms"
+                        },
+                        {
+                            "ActivityName": "Grope"
+                        }
+                    ]
+                } );             
+            }
+
+            // 处理松手
+            if(data.Content.includes("鱼尾松手"))
+            {
+                ServerSend("ChatRoomChat",{
+                    "Sender": Player.MemberNumber,
+                    "Content": "ChatOther-ItemArms-LSCG_Release",
+                    "Type": "Activity",
+                    "Dictionary": [
+                        {
+                            "SourceCharacter": Player.MemberNumber
+                        },
+                        {
+                            "TargetCharacter": target.MemberNumber
+                        },
+                        {
+                            "Tag": "FocusAssetGroup",
+                            "FocusGroupName": "ItemArms"
+                        },
+                        {
+                            "ActivityName": "LSCG_Release"
+                        }
+                    ]
+                }
+                 );         
+            }
+
+        }
+    }
+
+    function ProcessItemActivity(data, groupName, activity, assetName, property, craft) {
         if (data.Sender === Player.MemberNumber && (data.Content.includes(`Self-${groupName}-${activity}`) || data.Content.includes(`Other-${groupName}-${activity}`))) {
 
             const targetCharacter = data.Dictionary.find(entry => entry.TargetCharacter !== undefined)?.TargetCharacter;
@@ -424,6 +539,27 @@
     }
 
 
+    // 脖子上有牵绳
+    function LeashedByItemNeckRestraints(C)
+    {
+        for (let A = 0; A < C.Appearance.length; A++)
+        if ((C.Appearance[A].Asset != null) && (C.Appearance[A].Asset.Group.Family == C.AssetFamily)) {
+            if (InventoryItemHasEffect(C.Appearance[A], "Leash", true)) {
+                if (C.Appearance[A].Asset.Group.Name == "ItemNeckRestraints")
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+
+    //被牵
+    function LeashedByTarget(C)
+    {       
+        return C.MemberNumber == ChatRoomLeashPlayer;
+    }
     console.log("[BC_ActivityMermaidTai] Load Success");
 })();
 
