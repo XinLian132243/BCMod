@@ -232,12 +232,12 @@
         {
             Name:"耳朵哈气", Group:"ItemEars",
             Other:"SourceCharacter在TargetCharacter的耳边轻轻哈气.",
-            Prerequisite: ["HasMermaidTail"],
+            Prerequisite: [],
         },
         {
             Name:"乳头哈气", Group:"ItemNipples",
             Other:"SourceCharacter在TargetCharacter的乳头轻轻哈气.",
-            Prerequisite: ["HasMermaidTail"],
+            Prerequisite: [],
         },
         {
             Name:"鱼尾挠肋", Group:"ItemTorso",
@@ -263,6 +263,11 @@
             Name:"鱼尾松手", Group:"ItemHands",
             Other:"SourceCharacter的鱼尾松开了TargetCharacter的手.",
             Prerequisite: ["HasMermaidTail"],
+        },
+        {
+            Name:"口塞亲吻嘴唇", Group:"ItemMouth",
+            Other:"SourceCharacter带着口塞亲吻TargetCharacter的嘴唇.",
+            Prerequisite: ['IsGagged'],
         },
     ];
 
@@ -395,9 +400,9 @@
         
         );
         ProcessItemActivity(data, "ItemArms", "ActM_鱼尾松绑", null);
-        if (target != null) 
+        // 发送者需要是自己
+        if (data.Sender === Player.MemberNumber && target != null) 
         {
-
             // 处理挣脱动作
             if(data.Content.includes("挣脱牵绳"))
             {
