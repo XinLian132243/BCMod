@@ -207,7 +207,7 @@
         {
             Name:"舔牵绳手", Group:"ItemHands",
             Other:"SourceCharacter舔了舔TargetCharacter握着牵绳的手.",
-            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints","LeashedByTarget"],
+            Prerequisite: ["HasMermaidTail","LeashedByTarget"],
         },
         {
             Name:"鱼尾抚弄大腿", Group:"ItemLegs",
@@ -227,7 +227,7 @@
         {
             Name:"叼牵绳", Group:"ItemMouth",
             Self:"SourceCharacter叼起自己的牵绳.", Other:"SourceCharacter叼起牵绳向TargetCharacter的手边晃了晃.",
-            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints"],
+            Prerequisite: ["HasMermaidTail"],
         },
         {
             Name:"耳朵哈气", Group:"ItemEars",
@@ -252,7 +252,7 @@
         {
             Name:"挣脱牵绳", Group:"ItemHands",
             Other:"SourceCharacter奋力将牵绳从TargetCharacter手中挣脱.",
-            Prerequisite: ["HasMermaidTail","LeashedByItemNeckRestraints","LeashedByTarget"],
+            Prerequisite: ["HasMermaidTail","LeashedByTarget"],
         },
         {
             Name:"鱼尾抓手", Group:"ItemHands",
@@ -326,7 +326,7 @@
 
     //============================================================
     const CustomPrerequisiteFuncs = new Map(Object.entries({
-        "HasMermaidTail": (acting, acted, group) => !!InventoryIsItemInList(acting, "ItemLegs", "MermaidTail"), // 鱼尾
+        "HasMermaidTail": (acting, acted, group) =>IsMermaidTail(), // 鱼尾
         "IsKneeling": (acting, acted, group) => acted.IsKneeling(), // 跪姿
         "MermaidTailBinded": (acting, acted, group) => InventoryGet(acted, group.Name)?.Craft?.Name?.includes("鱼尾") 
             && InventoryGet(acted,group.Name)?.Craft?.MemberNumber == Player.MemberNumber, // 是自己制作的鱼尾
@@ -535,7 +535,8 @@
     // 正在装备鱼尾
     function IsMermaidTail()
     {
-        return InventoryGet(Player,"ItemLegs")?.Asset?.Name == 'MermaidTail';
+        return InventoryGet(Player,"ItemLegs")?.Asset?.Name == 'MermaidTail'
+         || InventoryGet(Player,"SuitLower")?.Asset?.Name == '鱼鱼尾_Luzi';
     }
 
     function GetPlayerName(player)
