@@ -78,7 +78,63 @@
         }
     );
 
+    // 当在聊天界面按下键盘时，如果有悬浮窗则不自动跳到输入框
+    mod.hookFunction(
+        "ChatRoomKeyDown",
+        0,
+        (args, next) => {
+            if(HasFloatingInput())
+            {
+                return false;
+            }
+            next(args);
+        }
+    );
+
+
+     // 获取消息
+     mod.hookFunction(
+        "ChatRoomMessage",
+        0,
+        (args, next) => {
+            let data = args[0];
+            if (data !== undefined && data.Type === "Hide" && data.Content == "EEVideo" &&data.Dictionary !== undefined) {
+                HandleVideoMsg(data);
+            }
+            next(args);
+        }
+    );
     
+
+    function HandleVideoMsg(data)
+    {
+        data.Dictionary.forEach(D => {
+            switch (D.Type) {
+                case "SyncPlay":
+                    break;
+                case "SyncPlayList":
+                    break;
+                case "RequstSync":              
+                    break;
+            }
+        })
+        return;    
+    }
+
+    function SendMsgToAll(dic)
+    {
+
+        for(var i = 0 ; i <ChatRoomCharacter.length; i ++)
+        {
+            if(ChatRoomCharacter[i].MemberNumber != Player.MemberNumber)
+            {
+                ServerSend("ChatRoomChat", { Content: "test", Type: "EEVideo", Target: CurrentCharacter.MemberNumber, Dictionary:dic});
+            }
+        }        
+    }
+
+
+
     window.videoPlayer = {videoList: []};
     function createFloatingVideo() 
         {
@@ -141,7 +197,7 @@
             syncButton.style.top = '0';
             syncButton.style.padding = '5px 10px';
             syncButton.style.border = 'none';
-            syncButton.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            syncButton.style.backgroundColor = 'transparent';
             syncButton.style.color = 'white';
             syncButton.style.cursor = 'pointer';
             syncButton.style.fontWeight = 'bold';
@@ -194,6 +250,12 @@
             addButton.style.float = 'right';
             // 添加点击事件监听器
             addButton.addEventListener('click', function() {
+
+                if(HasFloatingInput())
+                {
+                    return;
+                }
+
                 FloatingVideoPathInput('', '', function(name, url) {
                     // 验证函数，可以根据需要自定义验证规则
                     return name.trim() !== '' && url.trim() !== '';
@@ -212,9 +274,17 @@
             inoutButton.textContent = '⏏️';
             inoutButton.style.float = 'right';
     
-            inoutButton.addEventListener('click', function() {          
+            inoutButton.addEventListener('click', function() {   
+                if(HasFloatingInput())
+                {
+                    return;
+                }
+       
                 FloatingVideoListInput(function(videoList) {
                     window.videoPlayer.videoList = videoList;
+                
+                    // 播放第一个视频
+                    playId(window.videoPlayer.videoList[0].id);
                     renderVideoList();
                 }, function() {
                     // 取消回调
@@ -308,12 +378,9 @@
                     }
                     var id = video.id;                                                                 
                     videoButton.addEventListener('click', function () {
-                        window.videoPlayer.Player.src = GetPlayItem(id)?.url;
-                        window.videoPlayer.playingId = id;
-                        window.videoPlayer.Player.play();                    
-                        renderVideoList();
+                        playId(id);
                     });
-    
+
                     // 创建删除按钮
                     const deleteButton = document.createElement('button');
                     deleteButton.textContent = '➖';
@@ -472,6 +539,7 @@
         function FloatingVideoPathInput(defaultName, defaulturl, isValid, confirmCallback, cancelCallback) {
             // 创建悬浮窗口容器
             const floatingInputContainer = document.createElement('div');
+            floatingInputContainer.id = "FloatingVideoPathInput";
             floatingInputContainer.style.position = 'fixed';
             floatingInputContainer.style.top = '50%';
             floatingInputContainer.style.left = '50%';
@@ -543,6 +611,8 @@
     
             // 创建悬浮窗口容器
             const floatingInputContainer = document.createElement('div');
+            floatingInputContainer.id = "FloatingVideoListInput";
+
             floatingInputContainer.style.position = 'fixed';
             floatingInputContainer.style.top = '50%';
             floatingInputContainer.style.left = '50%';
@@ -574,7 +644,7 @@
             confirmButton.textContent = '确定';
             confirmButton.style.marginRight = '10px';
             confirmButton.addEventListener('click', function() {
-                const lines = textArea.value.split('\n');
+                const lines = trim(textArea.value).split('\n');
                 if (lines.length % 2 === 0) { // 检查行数是否为偶数
                     const videoList = [];
                     for (let i = 0; i < lines.length; i += 2) {
@@ -606,7 +676,13 @@
             // 将容器添加到页面中
             document.body.appendChild(floatingInputContainer);
         }
-        
+      
+        function HasFloatingInput()
+        {
+            return document.getElementById("FloatingVideoPathInput") != null || document.getElementById("FloatingVideoListInput") != null;
+
+        }
+
         // 获取当前播放进度的接口
         function getCurrentTime() {
             return window.videoPlayer.Player.currentTime;
@@ -627,11 +703,19 @@
             window.videoPlayer.Player.currentTime = time;
         }
     
+        function setTitle(str)
+        {
+            //todo   
+        }
+
+
         function playId(id)
         {
-            window.videoPlayer.Player.src = GetPlayItem(id)?.url;
+            var item = GetPlayItem(id);
+            window.videoPlayer.Player.src = item?.url;
             window.videoPlayer.playingId = id;
-            window.videoPlayer.Player.play();                    
+            window.videoPlayer.Player.play();         
+            setTitle(item.name); 
             window.videoPlayer.RerenderVideoList();
         }
     
@@ -686,15 +770,24 @@
             return window.videoPlayer.videoList.find(item => item.id == id);
         }
     
+        function trim(string) {
+            if(string.trim) {
+                return string.trim();
+            }else {
+                let reg = /^\s+|\s+$/g;
+                return string.replace(reg,"");
+            }
+        }
     
-    
-                // 创建一个可播放的视频列表
-                window.videoPlayer.videoList = [
-                    // 添加其他视频对象...
-                ];
-                window.videoPlayer.playingId = 'x123';
-    
+        // 创建一个可播放的视频列表
+        window.videoPlayer.videoList = [
+         // 添加其他视频对象...
+        ];
 
+        window.videoPlayer.playingId = '123';
+    
+        window.videoPlayer.syncTime = new Date().getTime();
+        
     console.log("[BC_EnhancedEedia] Load Success");
 })();
 
