@@ -76,7 +76,7 @@
     );
 
     
-    fwindow.videoPlayer = {videoList: []};
+    window.videoPlayer = {videoList: []};
     function createFloatingVideo() 
         {
             // 创建悬浮视频播放窗口的元素
