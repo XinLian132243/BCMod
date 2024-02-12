@@ -17,7 +17,7 @@
 	console.log("[BC_EnhancedEedia] Start Load");
     const script = document.createElement("script");
     const timestamp = new Date().getTime(); // 创建当前时间的时间戳
-    script.src = `https://xinlian132243.github.io/BCMod/Source/BC_EnhancedEedia.user.js?timestamp=${timestamp}`;
+    script.src = `https://xinlian132243.github.io/BCMod/Source/BC_EnhancedEedia.js?timestamp=${timestamp}`;
     document.head.appendChild(script);
 
 })();
