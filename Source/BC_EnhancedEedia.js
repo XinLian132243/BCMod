@@ -61,7 +61,10 @@
                 if(w.EnableVideoPlayer)
                 {
                     w.EnableVideoPlayer = false;
-                    document.body.removeChild(w.FloatingVideo);
+                    if(window.videoPlayer.FloatingVideoDiv != null)
+                    {
+                        document.body.removeChild(window.videoPlayer.FloatingVideoDiv);
+                    }
                 }
                 else
                 {
@@ -406,7 +409,10 @@
             videoElement.setAttribute('autoplay', ''); // 自动播放
             videoElement.style.width = '100%'; // 设置视频宽度为100%，以适应父元素大小
             videoElement.style.height = '100%'; // 设置视频高度为100%，以适应父元素大小
-            
+
+            // 初始化静音
+            videoElement.muted = true;
+
             // 暂停和继续播放的回调
             videoElement.addEventListener('pause', function() {
                 console.log('Video paused');
