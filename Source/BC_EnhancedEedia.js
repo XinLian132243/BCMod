@@ -97,10 +97,14 @@
         "ChatRoomMessage",
         0,
         (args, next) => {
-            let data = args[0];
-            if (data !== undefined && data.Type === "Hide" && data.Content == "EEVideo" &&data.Dictionary !== undefined) {
-                HandleVideoMsg(data);
+            if(window.EnableVideoPlayer)
+            {
+                let data = args[0];
+                if (data !== undefined && data.Type === "Hidden" && data.Content == "EEVideo" &&data.Dictionary !== undefined) {
+                    HandleVideoMsg(data);
+                }
             }
+           
             next(args);
         }
     );
@@ -111,15 +115,115 @@
         data.Dictionary.forEach(D => {
             switch (D.Type) {
                 case "SyncPlay":
+                    OnSyncPlay(D);
                     break;
-                case "SyncPlayList":
+                case "SyncList":
+                    OnSyncList(D);
                     break;
-                case "RequstSync":              
+                case "RequstSync":  
+                    OnRequstSync(data.Sender);
                     break;
             }
         })
         return;    
     }
+    function SendSyncPlay(target = null)
+    {
+        var dic = [
+            {
+                Type: "SyncPlay",
+                Paused:  getCurrentPaused(),
+                PlayTime: getCurrentTime(),
+                PlayingId: window.videoPlayer.playingId,
+                SyncTime : window.videoPlayer.syncTime,
+            }     
+        ]
+
+        if(target == null)
+        {
+            SendMsgToAll(dic);
+        }else{
+            SendMsgTo(target,dic);
+        }
+    }
+     
+    function OnSyncPlay(msg)
+    {
+        if(msg.SyncTime > window.videoPlayer.syncTime)
+        {
+            window.videoPlayer.syncTime = msg.SyncTime;
+        }else{
+            return;
+        }
+
+        if(window.videoPlayer.playingId != msg.PlayingId)
+        {
+            playId(msg.PlayingId);
+        }
+
+        var targetTime = (new Date().getTime() - msg.SyncTime)/1000.0 + msg.PlayTime;
+        // 播放误差误差大于五秒重新同步
+        if(Math.abs(getCurrentTime() - targetTime) > 5.0)
+        {
+            setCurrentTime(targetTime);
+        }
+
+        if(getCurrentPaused() && !msg.Paused)
+        {
+            playVideo();
+        }else if(!getCurrentPaused() && msg.Paused)
+        {
+            pauseVideo();
+        }        
+    }
+
+
+    function SendSyncList(target = null)
+    {
+        var dic = [
+            {
+                Type: "SyncList",                
+                List : window.videoPlayer.videoList,
+                SyncTime : window.videoPlayer.syncTime,
+            }     
+        ]
+
+        if(target == null)
+        {
+            SendMsgToAll(dic);
+        }else{
+            SendMsgTo(target,dic);
+        }
+    }
+    function OnSyncList(msg)
+    {
+        if(msg.SyncTime > window.videoPlayer.syncTime)
+        {
+            window.videoPlayer.syncTime = msg.SyncTime;
+        }else{
+            return;
+        }
+
+        window.videoPlayer.videoList = msg.List;
+        window.videoPlayer.RerenderVideoList();
+    }
+
+    function SendRequstSync()
+    {
+        var dic = [
+            {
+                Type: "RequstSync",                
+            }     
+        ]
+        SendMsgToAll(dic);
+    }
+
+    function OnRequstSync(sender)
+    {
+        SendSyncList(sender);
+        SendSyncPlay(sender);
+    }
+
 
     function SendMsgToAll(dic)
     {
@@ -128,12 +232,18 @@
         {
             if(ChatRoomCharacter[i].MemberNumber != Player.MemberNumber)
             {
-                ServerSend("ChatRoomChat", { Content: "test", Type: "EEVideo", Target: CurrentCharacter.MemberNumber, Dictionary:dic});
+                ServerSend("ChatRoomChat", { Content: "EEVideo", Type: "Hidden", Target: ChatRoomCharacter[i].MemberNumber, Dictionary:dic});
             }
         }        
     }
 
-
+    function SendMsgTo(target,dic)
+    {
+        if(target != Player.MemberNumber)
+        {
+            ServerSend("ChatRoomChat", { Content: "EEVideo", Type: "Hidden", Target:target, Dictionary:dic});
+        }   
+    }
 
     window.videoPlayer = {videoList: []};
     function createFloatingVideo() 
@@ -203,9 +313,9 @@
             syncButton.style.fontWeight = 'bold';
             syncButton.style.fontSize = '16px';
           
-            // 为关闭按钮添加点击事件
+            // 为同步按钮添加点击事件
             syncButton.addEventListener('click', () => {
-              
+                SendRequstSync();
             });
           
             // 将同步按钮添加到标题栏中
@@ -263,6 +373,8 @@
                     // 确定回调
                     const id = generateGUID(); // 生成 GUID
                     window.videoPlayer.videoList.push({ id: id, name: name, url: url });
+                    UpdateSyncTime();
+                    SendSyncList();
                     renderVideoList();
                 }, function() {
                     // 取消回调
@@ -285,6 +397,10 @@
                 
                     // 播放第一个视频
                     playId(window.videoPlayer.videoList[0].id);
+
+                    UpdateSyncTime();
+                    SendSyncList();
+                    SendSyncPlay();
                     renderVideoList();
                 }, function() {
                     // 取消回调
@@ -379,6 +495,8 @@
                     var id = video.id;                                                                 
                     videoButton.addEventListener('click', function () {
                         playId(id);
+                        UpdateSyncTime();
+                        SendSyncPlay();
                     });
 
                     // 创建删除按钮
@@ -388,7 +506,8 @@
                     deleteButton.addEventListener('click', function() {
                         // 删除对应的 window.videoPlayer.videoList 元素
                         window.videoPlayer.videoList.splice(index, 1);
-    
+                        UpdateSyncTime();
+                        SendSyncList();
                         // 重新渲染列表
                         renderVideoList();
                     });                           
@@ -419,7 +538,8 @@
                         // 使用数组的 splice 方法来移动元素位置
                         const movedItem = window.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
                         window.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
-    
+                        UpdateSyncTime();
+                        SendSyncList();
                         // 重新渲染列表
                         renderVideoList();
                     }
@@ -459,6 +579,8 @@
             document.addEventListener('mouseup', () => {
               isDragging = false;
             });      
+
+            SendRequstSync();
         }
     
         function createVideoElement(videoContainer) {
@@ -483,18 +605,27 @@
             // 暂停和继续播放的回调
             videoElement.addEventListener('pause', function() {
                 console.log('Video paused');
-                window.videoPlayer.callbacks.OnPause();
+                if(!window.videoPlayer.DontCallback)
+                {
+                    window.videoPlayer.callbacks.OnPause();
+                }
             });
     
             videoElement.addEventListener('play', function() {
                 console.log('Video playing');
-                window.videoPlayer.callbacks.OnPlay();
+                if(!window.videoPlayer.DontCallback)
+                {
+                    window.videoPlayer.callbacks.OnPlay();
+                }
             });
     
             // 调整播放进度的回调
             videoElement.addEventListener('seeked', function() {
                 console.log('Video seeked to', videoElement.currentTime);
-                window.videoPlayer.callbacks.OnSeeked();
+                if(!window.videoPlayer.DontCallback)
+                {
+                    window.videoPlayer.callbacks.OnSeeked();
+                }
             });
             // 视频播放结束的回调
             videoElement.addEventListener('ended', function() {
@@ -532,7 +663,6 @@
             videoElement.appendChild(pElement);
             videoContainer.appendChild(scriptElement);
             window.videoPlayer.Player = videoElement;
-            console.log(videoElement);
         }
         
     
@@ -683,24 +813,44 @@
 
         }
 
+        function UpdateSyncTime()
+        {
+            window.videoPlayer.syncTime = new Date().getTime();
+        }
+
         // 获取当前播放进度的接口
         function getCurrentTime() {
             return window.videoPlayer.Player.currentTime;
         }
     
+
+        
+        // 获取当前播放进度的接口
+        function getCurrentPaused() {
+            return window.videoPlayer.Player.paused;
+        }
+
+
         // 播放视频的接口
         function playVideo() {
+            window.videoPlayer.DontCallback = true;
             window.videoPlayer.Player.play();
+            window.videoPlayer.DontCallback = false;
         }
     
         // 暂停视频的接口
         function pauseVideo() {
+            window.videoPlayer.DontCallback = true;
             window.videoPlayer.Player.pause();
+            window.videoPlayer.DontCallback = false;
+            
         }
     
         // 调整播放时间的接口（单位：秒）
         function setCurrentTime(time) {
+            window.videoPlayer.DontCallback = true;
             window.videoPlayer.Player.currentTime = time;
+            window.videoPlayer.DontCallback = false;
         }
     
         function setTitle(str)
@@ -711,6 +861,10 @@
 
         function playId(id)
         {
+            if(window.videoPlayer.playingId == id)
+            {
+                return;
+            }
             var item = GetPlayItem(id);
             window.videoPlayer.Player.src = item?.url;
             window.videoPlayer.playingId = id;
@@ -722,21 +876,23 @@
     
         window.videoPlayer.callbacks = {};
         window.videoPlayer.callbacks.OnPlay =
-        function(){
-    
-    
+        function(){   
+            UpdateSyncTime();
+            SendSyncPlay();
         };
     
         window.videoPlayer.callbacks.OnPause =
         function(){
-    
+            UpdateSyncTime();
+            SendSyncPlay();    
             
         };
     
         window.videoPlayer.callbacks.OnSeeked =
         function(){
     
-            
+            UpdateSyncTime();
+            SendSyncPlay();            
         };
     
         window.videoPlayer.callbacks.OnEnded =
