@@ -257,10 +257,10 @@
             window.videoPlayer.FloatingVideoDiv.style.resize = 'both';
             window.videoPlayer.FloatingVideoDiv.style.padding = '0';
             window.videoPlayer.FloatingVideoDiv.style.zIndex = '1000';
-            window.videoPlayer.FloatingVideoDiv.style.width = '640px';
-            window.videoPlayer.FloatingVideoDiv.style.height = '360px';
+            window.videoPlayer.FloatingVideoDiv.style.width = '50%';
+            window.videoPlayer.FloatingVideoDiv.style.height = '50%';
             window.videoPlayer.FloatingVideoDiv.style.left = '50%';
-            window.videoPlayer.FloatingVideoDiv.style.top = '50%';
+            window.videoPlayer.FloatingVideoDiv.style.top = '10%';
           
             // 创建标题栏元素
             const titleBar = document.createElement('div');
