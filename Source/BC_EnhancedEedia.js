@@ -32,6 +32,13 @@
     
     w.EnableVideoPlayer = false;
 
+    
+    window.videoPlayer = {videoList: [], EnableBullet : true};    
+    window.videoPlayer.playingId = '';    
+    window.videoPlayer.syncListTime = 0;
+    window.videoPlayer.syncPlayTime = 0;
+
+
     // 绘制房间按钮
     mod.hookFunction(
         "ChatRoomMenuDraw",
@@ -108,7 +115,33 @@
             next(args);
         }
     );
+
+      // 获取显示在屏幕的消息
+      mod.hookFunction(
+        "ChatRoomMessageDisplay",
+        3,
+        (args, next) => {
+           
+            var data = args[0];
+            var msg = args[1];
+            var SenderCharacter = args[2];
+            var metadata = args[3];
+            ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata);
+            next(args);
+        }
+    );
     
+    function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
+    {
+        // 弹幕功能开启的话
+        if(window.videoPlayer.EnableBullet === true)
+        {
+            if(data.Type == "Chat")
+            {
+                SendBullet(`${GetPlayerName(SenderCharacter)} : ${data.Content}`);
+            }
+        }      
+    }
 
     function HandleVideoMsg(data)
     {
@@ -260,7 +293,7 @@
         }   
     }
 
-    window.videoPlayer = {videoList: []};
+
     function createFloatingVideo() 
         {
             // 创建悬浮视频播放窗口的元素
@@ -295,7 +328,124 @@
 
             // 添加到标题栏中
             titleBar.appendChild(titleText);
+                          
+             // 创建手动同步按钮
+             const syncButton = document.createElement('button');
+             syncButton.innerHTML = '🔄';
+             syncButton.style.position = 'absolute';
+             syncButton.style.left = '0';
+             syncButton.style.top = '0';
+             syncButton.style.bottom = '0';
+             syncButton.style.padding = '5px 10px';
+             syncButton.style.border = 'none';
+             syncButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
+             syncButton.style.color = 'white';
+             syncButton.style.cursor = 'pointer';
+             syncButton.style.fontWeight = 'bold';
+             syncButton.style.fontSize = '24px';
+           
+             // 为同步按钮添加点击事件
+             syncButton.addEventListener('click', () => {
+                 SendRequstSync();
+                 setTitle("手动同步中……");
+             });
+           
+             // 将同步按钮添加到标题栏中
+             titleBar.appendChild(syncButton);
+
+            // 创建弹幕开关按钮
+            const bulletButton = document.createElement('button');
+            bulletButton.innerHTML = '弹';
+            bulletButton.style.position = 'absolute';
+            bulletButton.style.right = '320px'; // 调整位置
+            bulletButton.style.top = '0';
+            bulletButton.style.padding = '5px 10px';
+            bulletButton.style.border = 'none';
+            bulletButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
+            bulletButton.style.color = window.videoPlayer.EnableBullet ? 'white' : 'gray'; // 根据状态设置颜色
+            bulletButton.style.cursor = 'pointer';
+            bulletButton.style.fontWeight = 'bold';
+            bulletButton.style.fontSize = '24px';
+
+            // 添加点击事件处理程序
+            bulletButton.addEventListener('click', function () {
+                // 切换状态
+                window.videoPlayer.EnableBullet = !window.videoPlayer.EnableBullet;
+                // 根据状态设置颜色
+                bulletButton.style.color = window.videoPlayer.EnableBullet ? 'white' : 'gray';
+            });
+
+            // 将"弹"字按钮添加到标题栏中
+            titleBar.appendChild(bulletButton);
           
+            
+            // 创建对齐,会直接对齐到下面的输入框
+            const alignButton = document.createElement('button');
+            alignButton.innerHTML = '⬜';
+            alignButton.style.position = 'absolute';
+            alignButton.style.right = '60px';
+            alignButton.style.top = '0';
+            alignButton.style.bottom = '0';
+            alignButton.style.padding = '5px 10px';
+            alignButton.style.border = 'none';
+            alignButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
+            alignButton.style.color = 'white';
+            alignButton.style.cursor = 'pointer';
+            alignButton.style.fontWeight = 'bold';
+            alignButton.style.fontSize = '24px';
+          
+            let isAligned = false;
+            let previousPosition = null;
+
+            // 为对齐按钮添加点击事件
+            alignButton.addEventListener('click', () => {
+
+                const floatingVideoDiv = window.videoPlayer.FloatingVideoDiv;
+                const inputChatElement = document.getElementById('InputChat');
+            
+                if (!isAligned) {
+                    // 获取页面宽度和高度
+                    const pageWidth = window.innerWidth;
+                    const pageHeight = window.innerHeight;
+            
+                   // 获取 InputChat 元素相对于视口的位置
+                    const inputChatRect = inputChatElement.getBoundingClientRect();
+                    const inputChatTopRelativeToViewport = inputChatRect.top;
+
+                    // 存储当前位置
+                    previousPosition = {
+                        left: floatingVideoDiv.style.left,
+                        top: floatingVideoDiv.style.top,
+                        width: floatingVideoDiv.style.width,
+                        height: floatingVideoDiv.style.height
+                    };
+
+                    // 设置 FloatingVideoDiv 的位置和大小
+                    floatingVideoDiv.style.position = 'absolute';
+                    floatingVideoDiv.style.left = '0';
+                    floatingVideoDiv.style.top = '0';
+                    floatingVideoDiv.style.width = pageWidth + 'px';
+                    floatingVideoDiv.style.height = inputChatTopRelativeToViewport + 'px';
+            
+                    alignButton.innerHTML = '◻️';
+                } else {
+                    // 恢复到之前的位置
+                    if (previousPosition) {
+                        floatingVideoDiv.style.left = previousPosition.left;
+                        floatingVideoDiv.style.top = previousPosition.top;
+                        floatingVideoDiv.style.width = previousPosition.width;
+                        floatingVideoDiv.style.height = previousPosition.height;
+                    }
+            
+                    alignButton.innerHTML = '⬜';
+                }
+            
+                isAligned = !isAligned;
+            });        
+
+            // 将关闭按钮添加到标题栏中
+            titleBar.appendChild(alignButton);
+
             // 创建关闭按钮
             const closeButton = document.createElement('button');
             closeButton.innerHTML = '❌';
@@ -316,35 +466,11 @@
               document.body.removeChild(window.videoPlayer.FloatingVideoDiv);
               window.EnableVideoPlayer = false;
               window.videoPlayer.FloatingVideoDiv = null;
-            });
-          
+            });        
+
             // 将关闭按钮添加到标题栏中
             titleBar.appendChild(closeButton);
-    
-             // 创建手动同步按钮
-            const syncButton = document.createElement('button');
-            syncButton.innerHTML = '🔄';
-            syncButton.style.position = 'absolute';
-            syncButton.style.left = '0';
-            syncButton.style.top = '0';
-            syncButton.style.bottom = '0';
-            syncButton.style.padding = '5px 10px';
-            syncButton.style.border = 'none';
-            syncButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
-            syncButton.style.color = 'white';
-            syncButton.style.cursor = 'pointer';
-            syncButton.style.fontWeight = 'bold';
-            syncButton.style.fontSize = '24px';
-          
-            // 为同步按钮添加点击事件
-            syncButton.addEventListener('click', () => {
-                SendRequstSync();
-                setTitle("手动同步中……");
-            });
-          
-            // 将同步按钮添加到标题栏中
-            titleBar.appendChild(syncButton);
-          
+
             // 创建左侧视频区域元素
             const leftVideoArea = document.createElement('div');
             leftVideoArea.style.position = 'absolute';
@@ -354,6 +480,7 @@
     
             // 创建视频容器元素
             const videoContainer = document.createElement('div');
+            videoContainer.id = "VideoContainer";
             videoContainer.style.position = 'absolute';
             videoContainer.style.width = '100%';
             videoContainer.style.height = '100%';
@@ -585,20 +712,20 @@
                     });
                 }
             };
-          
-    
+             
     
     
             // 将标题栏、左侧视频区域和右侧菜单列表添加到悬浮视频播放窗口中
             window.videoPlayer.FloatingVideoDiv.appendChild(titleBar);
             window.videoPlayer.FloatingVideoDiv.appendChild(leftVideoArea);
             window.videoPlayer.FloatingVideoDiv.appendChild(rightMenu);
-    
-    
-          
+
             // 将悬浮视频播放窗口添加到页面中
             document.body.appendChild(window.videoPlayer.FloatingVideoDiv);
-          
+                 
+            // 创建弹幕池功能
+            CreateBulletScreen();
+
             // 实现拖动功能
             let isDragging = false;
             let offsetX = window.innerWidth / 2 - window.videoPlayer.FloatingVideoDiv.offsetWidth / 2;
@@ -851,7 +978,60 @@
             // 将容器添加到页面中
             document.body.appendChild(floatingInputContainer);
         }
-      
+           
+        function CreateBulletScreen()
+        {             
+            const scriptElement = document.createElement('script');
+    
+            // 设置 script 元素的 src 属性为 BulletJs.js 的 CDN 地址
+            scriptElement.src = 'https://unpkg.com/js-bullets@latest/dist/BulletJs.min.js';
+            // 添加 script 元素到文档头部
+            document.head.appendChild(scriptElement);
+            // 当 script 元素加载完成后，创建弹幕屏幕
+            scriptElement.onload = function() {    
+                // VideoContainer 的 div 必须要有明确的宽高
+                window.videoPlayer.BulletScreen = new BulletJs('#VideoContainer', {
+                    trackHeight: 35, // 每条轨道高度
+                    speed: null, // 速度 100px/s 根据实际情况去配置
+                    pauseOnClick: false, // 点击暂停
+                    pauseOnHover: true, // hover 暂停
+                    duration: "10s",
+                });
+            }  
+            
+            const targetElement = document.querySelector('#VideoContainer');
+
+            // 创建 ResizeObserver 实例让每次大小发生变化时重新创建弹幕池
+            if (targetElement?.resizeObserver  === undefined)
+            {
+                targetElement.resizeObserver = new ResizeObserver(entries => {
+                    for (let entry of entries) {
+                        // 获取目标元素的新尺寸
+                        const { width, height } = entry.contentRect;
+        
+                        // 重新创建弹幕池以适配
+                        CreateBulletScreen();
+                    }
+                    });
+        
+                    // 监听目标元素的大小变化
+                    targetElement.resizeObserver.observe(targetElement);
+            }
+        }
+
+        function SendBullet(str)
+        {
+            str = str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\"/g, '&quot;')
+            .replace(/\'/g, '&#39;')
+            .replace(/\//g, '&#x2F;');
+
+            window.videoPlayer.BulletScreen.push(`<span style="color: rgba(255, 255, 255, 0.5); text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-size: 30px;">${str}</span>`)
+        }
+
         function HasFloatingInput()
         {
             return document.getElementById("FloatingVideoPathInput") != null || document.getElementById("FloatingVideoListInput") != null;
@@ -995,6 +1175,13 @@
             return window.videoPlayer.videoList.find(item => item.id == id);
         }
     
+
+        function GetPlayerName(player)
+        {
+            return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
+        }
+    
+    
         function trim(string) {
             if(string.trim) {
                 return string.trim();
@@ -1003,16 +1190,7 @@
                 return string.replace(reg,"");
             }
         }
-    
-        // 创建一个可播放的视频列表
-        window.videoPlayer.videoList = [
-         // 添加其他视频对象...
-        ];
 
-        window.videoPlayer.playingId = '123';
-    
-        window.videoPlayer.syncListTime = 0;
-        window.videoPlayer.syncPlayTime = 0;
         
     console.log("[BC_EnhancedEedia] Load Success");
 })();
