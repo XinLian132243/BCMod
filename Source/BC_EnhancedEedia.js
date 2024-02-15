@@ -764,7 +764,7 @@
             videoElement.setAttribute('preload', 'auto');
             videoElement.setAttribute('autoplay', ''); // 自动播放
             // 设置背景
-            videoElement.setAttribute('poster', "https://i.imgur.com/yqVHDx5.jpeg");
+            videoElement.setAttribute('poster', "https://xinlian132243.github.io/BCMod/Assets/VideoPlayerBG.jpg");
             videoElement.style.width = '100%'; // 设置视频宽度为100%，以适应父元素大小
             videoElement.style.height = '100%'; // 设置视频高度为100%，以适应父元素大小
 
