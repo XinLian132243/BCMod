@@ -133,9 +133,9 @@
             {
                 Type: "SyncPlay",
                 Paused:  getCurrentPaused(),
-                PlayTime: getCurrentTime(),
+                PlayTime: window.videoPlayer.playTimeBySync,
                 PlayingId: window.videoPlayer.playingId,
-                SyncTime : window.videoPlayer.syncTime,
+                syncPlayTime : window.videoPlayer.syncPlayTime,
             }     
         ]
 
@@ -148,20 +148,28 @@
     }
      
     function OnSyncPlay(msg)
-    {
-        if(msg.SyncTime > window.videoPlayer.syncTime)
+    {        
+        if(msg.syncPlayTime > window.videoPlayer.syncPlayTime)
         {
-            window.videoPlayer.syncTime = msg.SyncTime;
+            window.videoPlayer.syncPlayTime = msg.syncPlayTime;
         }else{
             return;
         }
+
+        // 修正标题，因为可能显示在同步
+        var item = GetPlayItem(msg.PlayingId);
+        setTitle(item?.name); 
 
         if(window.videoPlayer.playingId != msg.PlayingId)
         {
             playId(msg.PlayingId);
         }
-
-        var targetTime = (new Date().getTime() - msg.SyncTime)/1000.0 + msg.PlayTime;
+        var targetTime = msg.PlayTime;
+        // 如果不是暂停状态，则需要计算网络延迟
+        if(!msg.Paused)
+        {
+            targetTime = (new Date().getTime() - msg.syncPlayTime)/1000.0 + msg.PlayTime;
+        }
         // 播放误差误差大于五秒重新同步
         if(Math.abs(getCurrentTime() - targetTime) > 5.0)
         {
@@ -184,7 +192,7 @@
             {
                 Type: "SyncList",                
                 List : window.videoPlayer.videoList,
-                SyncTime : window.videoPlayer.syncTime,
+                syncListTime : window.videoPlayer.syncListTime,
             }     
         ]
 
@@ -197,9 +205,9 @@
     }
     function OnSyncList(msg)
     {
-        if(msg.SyncTime > window.videoPlayer.syncTime)
+        if(msg.syncListTime > window.videoPlayer.syncListTime)
         {
-            window.videoPlayer.syncTime = msg.SyncTime;
+            window.videoPlayer.syncListTime = msg.syncListTime;
         }else{
             return;
         }
@@ -208,8 +216,15 @@
         window.videoPlayer.RerenderVideoList();
     }
 
-    function SendRequstSync()
+    function SendRequstSync(force = true)
     {
+        // 强制同步会把当前时间往前推一下，这样即使同步过来相同时间戳也会直接覆盖
+        if(force)
+        {
+            window.videoPlayer.syncListTime -= 1;
+            window.videoPlayer.syncPlayTime -= 1;
+        }
+
         var dic = [
             {
                 Type: "RequstSync",                
@@ -265,29 +280,36 @@
             // 创建标题栏元素
             const titleBar = document.createElement('div');
             titleBar.style.position = 'relative';
-            titleBar.style.backgroundColor = '#a1a1a1';
+            titleBar.style.backgroundColor = '#172633';
             titleBar.style.padding = '10px';
             titleBar.style.cursor = 'move';
-            titleBar.style.fontSize = '16px';
-            titleBar.style.fontWeight = 'bold';
             titleBar.style.color = '#333';
-            titleBar.textContent = '视频放映中';
-    
-            window.videoPlayer.TitleBar = titleBar;
-    
+            
+            // 创建标题文本元素
+            const titleText = document.createElement('span');
+            titleText.textContent = '暂无放映中';
+            titleText.style.marginLeft = '50px'; // 设置标题文本与按钮之间的间距
+            titleText.style.color = 'white';
+
+            window.videoPlayer.TitleText = titleText;
+
+            // 添加到标题栏中
+            titleBar.appendChild(titleText);
+          
             // 创建关闭按钮
             const closeButton = document.createElement('button');
             closeButton.innerHTML = '❌';
             closeButton.style.position = 'absolute';
             closeButton.style.right = '0';
             closeButton.style.top = '0';
+            closeButton.style.bottom = '0';
             closeButton.style.padding = '5px 10px';
             closeButton.style.border = 'none';
-            closeButton.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            closeButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
             closeButton.style.color = 'white';
             closeButton.style.cursor = 'pointer';
             closeButton.style.fontWeight = 'bold';
-            closeButton.style.fontSize = '16px';
+            closeButton.style.fontSize = '24px';
           
             // 为关闭按钮添加点击事件
             closeButton.addEventListener('click', () => {
@@ -305,17 +327,19 @@
             syncButton.style.position = 'absolute';
             syncButton.style.left = '0';
             syncButton.style.top = '0';
+            syncButton.style.bottom = '0';
             syncButton.style.padding = '5px 10px';
             syncButton.style.border = 'none';
-            syncButton.style.backgroundColor = 'transparent';
+            syncButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
             syncButton.style.color = 'white';
             syncButton.style.cursor = 'pointer';
             syncButton.style.fontWeight = 'bold';
-            syncButton.style.fontSize = '16px';
+            syncButton.style.fontSize = '24px';
           
             // 为同步按钮添加点击事件
             syncButton.addEventListener('click', () => {
                 SendRequstSync();
+                setTitle("手动同步中……");
             });
           
             // 将同步按钮添加到标题栏中
@@ -345,7 +369,7 @@
             rightMenu.style.width = '300px';
             rightMenu.style.height = 'calc(100% - 40px)';
             rightMenu.style.bottom = '0';
-            rightMenu.style.backgroundColor = '#f1f1f1';
+            rightMenu.style.backgroundColor = '#0b131a';
     
     
             // 创建顶部栏容器
@@ -353,11 +377,14 @@
             topBar.style.display = 'flex';
             topBar.style.justifyContent = 'space-between';
             topBar.style.height = '30px';
-    
+            topBar.style.backgroundColor = '#0b131a';
+            // 用来提示不可修改
+            topBar.style.color = '#2e2e2e';
             // 加入
             const addButton = document.createElement('button');
             addButton.textContent = '➕';
             addButton.style.float = 'right';
+            addButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
             // 添加点击事件监听器
             addButton.addEventListener('click', function() {
 
@@ -385,6 +412,7 @@
             const inoutButton = document.createElement('button');
             inoutButton.textContent = '⏏️';
             inoutButton.style.float = 'right';
+            inoutButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
     
             inoutButton.addEventListener('click', function() {   
                 if(HasFloatingInput())
@@ -409,9 +437,13 @@
     
     
             // 添加按钮到顶部栏容器中
-            topBar.appendChild(addButton);
-            topBar.appendChild(inoutButton);
-    
+            if(HavePermissionToModify())
+            {
+                topBar.appendChild(addButton);
+                topBar.appendChild(inoutButton);
+            }else{
+                topBar.textContent = '仅房管可控制';
+            }
             // 将顶部栏容器添加到右侧菜单中
             rightMenu.appendChild(topBar);
     
@@ -422,7 +454,7 @@
             rightMenuList.style.width = '300px';
             rightMenuList.style.height = 'calc(100% - 30px)';
             rightMenuList.style.bottom = '0';
-            rightMenuList.style.backgroundColor = '#f1f1f1';
+            rightMenuList.style.backgroundColor = '#0b131a';
             rightMenuList.style.overflowY = 'auto';
             
             // 将原来的右侧菜单列表添加到右侧菜单中
@@ -435,13 +467,14 @@
             toggleButton.style.position = 'absolute';
             toggleButton.style.right = '270px';
             toggleButton.style.top = '0';
+            toggleButton.style.bottom = '0';
             toggleButton.style.padding = '5px 10px';
             toggleButton.style.border = 'none';
-            toggleButton.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            toggleButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
             toggleButton.style.color = 'white';
             toggleButton.style.cursor = 'pointer';
             toggleButton.style.fontWeight = 'bold';
-            toggleButton.style.fontSize = '16px';
+            toggleButton.style.fontSize = '24px';
     
             // 添加按钮点击事件处理程序
             toggleButton.addEventListener('click', function () {
@@ -488,6 +521,7 @@
                     videoButton.style.backgroundColor = 'transparent';
                     videoButton.style.textAlign = 'left';
                     videoButton.style.cursor = 'pointer';
+                    videoButton.style.color = 'white';
                     if(window.videoPlayer?.playingId == video.id)
                     {
                         videoButton.style.fontWeight = 'bold';
@@ -503,6 +537,7 @@
                     const deleteButton = document.createElement('button');
                     deleteButton.textContent = '➖';
                     deleteButton.style.float = 'right';
+                    deleteButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
                     deleteButton.addEventListener('click', function() {
                         // 删除对应的 window.videoPlayer.videoList 元素
                         window.videoPlayer.videoList.splice(index, 1);
@@ -513,9 +548,12 @@
                     });                           
                 
     
-                    // 将按钮添加到视频项容器中
+                    // 将按钮添加到视频项容器中                    
                     videoItem.appendChild(videoButton);
-                    videoItem.appendChild(deleteButton);
+                    if(HavePermissionToModify())
+                    {
+                        videoItem.appendChild(deleteButton);
+                    }
     
                     // 将视频项容器添加到右侧菜单列表中
                     rightMenuList.appendChild(videoItem);
@@ -527,23 +565,25 @@
             scriptElement.onload = function() {          
     
                 renderVideoList();
-    
-                // 使用Sortable.js来使按钮列表可拖动调整顺序
-                const sortable = new Sortable(rightMenuList, {
-                    animation: 150,
-                    draggable: '.video-item',
-                    onUpdate: function(evt) {
-                        // 拖动完成后的操作，你可以在这里更新视频列表的顺序等
-                        console.log('拖动完成:', evt.newIndex);
-                        // 使用数组的 splice 方法来移动元素位置
-                        const movedItem = window.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
-                        window.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
-                        UpdateSyncTime();
-                        SendSyncList();
-                        // 重新渲染列表
-                        renderVideoList();
-                    }
-                });
+                if(HavePermissionToModify())
+                {
+                    // 使用Sortable.js来使按钮列表可拖动调整顺序
+                    const sortable = new Sortable(rightMenuList, {
+                        animation: 150,
+                        draggable: '.video-item',
+                        onUpdate: function(evt) {
+                            // 拖动完成后的操作，你可以在这里更新视频列表的顺序等
+                            console.log('拖动完成:', evt.newIndex);
+                            // 使用数组的 splice 方法来移动元素位置
+                            const movedItem = window.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
+                            window.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
+                            UpdateSyncTime();
+                            SendSyncList();
+                            // 重新渲染列表
+                            renderVideoList();
+                        }
+                    });
+                }
             };
           
     
@@ -596,6 +636,8 @@
             videoElement.setAttribute('controls', '');
             videoElement.setAttribute('preload', 'auto');
             videoElement.setAttribute('autoplay', ''); // 自动播放
+            // 设置背景
+            videoElement.setAttribute('poster', "https://i.imgur.com/yqVHDx5.jpeg");
             videoElement.style.width = '100%'; // 设置视频宽度为100%，以适应父元素大小
             videoElement.style.height = '100%'; // 设置视频高度为100%，以适应父元素大小
 
@@ -637,8 +679,11 @@
             // 创建 source 元素
             const sourceElementMp4 = document.createElement('source');
             sourceElementMp4.setAttribute('src', GetPlayingItem()?.url);
+            
+
             sourceElementMp4.setAttribute('type', 'video/mp4');
-        
+
+
             // 创建 p 元素
             const pElement = document.createElement('p');
             pElement.setAttribute('class', 'vjs-no-js');
@@ -815,7 +860,12 @@
 
         function UpdateSyncTime()
         {
-            window.videoPlayer.syncTime = new Date().getTime();
+            if(HavePermissionToModify())
+            {
+                window.videoPlayer.syncListTime = new Date().getTime();
+                window.videoPlayer.syncPlayTime = new Date().getTime();
+                window.videoPlayer.playTimeBySync = getCurrentTime();
+            }
         }
 
         // 获取当前播放进度的接口
@@ -855,21 +905,24 @@
     
         function setTitle(str)
         {
-            //todo   
+            window.videoPlayer.TitleText.textContent = str;
         }
 
 
         function playId(id)
         {
+            var item = GetPlayItem(id);
+            setTitle(item?.name); 
+
             if(window.videoPlayer.playingId == id)
             {
                 return;
             }
-            var item = GetPlayItem(id);
+
             window.videoPlayer.Player.src = item?.url;
             window.videoPlayer.playingId = id;
             window.videoPlayer.Player.play();         
-            setTitle(item.name); 
+
             window.videoPlayer.RerenderVideoList();
         }
     
@@ -879,20 +932,31 @@
         function(){   
             UpdateSyncTime();
             SendSyncPlay();
+            if(!HavePermissionToModify())
+            {
+                SendRequstSync();
+            }
         };
     
         window.videoPlayer.callbacks.OnPause =
         function(){
             UpdateSyncTime();
-            SendSyncPlay();    
-            
+            SendSyncPlay(); 
+            if(!HavePermissionToModify())
+            {
+                SendRequstSync();
+            }
         };
     
         window.videoPlayer.callbacks.OnSeeked =
         function(){
     
             UpdateSyncTime();
-            SendSyncPlay();            
+            SendSyncPlay();     
+            if(!HavePermissionToModify())
+            {
+                SendRequstSync();
+            }       
         };
     
         window.videoPlayer.callbacks.OnEnded =
@@ -906,7 +970,12 @@
             }        
         };
     
-    
+        // 有修改权限
+        function HavePermissionToModify()
+        {
+            // 是房管
+            return ChatRoomPlayerIsAdmin();
+        }
     
         // 创建 GUID 生成函数
         function generateGUID() {
@@ -942,7 +1011,8 @@
 
         window.videoPlayer.playingId = '123';
     
-        window.videoPlayer.syncTime = new Date().getTime();
+        window.videoPlayer.syncListTime = 0;
+        window.videoPlayer.syncPlayTime = 0;
         
     console.log("[BC_EnhancedEedia] Load Success");
 })();
