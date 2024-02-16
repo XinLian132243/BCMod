@@ -134,7 +134,8 @@
     function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
     {
         // 弹幕功能开启的话
-        if(window.videoPlayer.EnableBullet === true)
+        if(window.EnableVideoPlayer === true
+            && window.videoPlayer.EnableBullet === true)
         {
             if(data.Type == "Chat")
             {
