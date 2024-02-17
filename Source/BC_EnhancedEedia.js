@@ -33,10 +33,14 @@
     w.EnableVideoPlayer = false;
 
     
-    window.videoPlayer = {videoList: [], EnableBullet : true};    
-    window.videoPlayer.playingId = '';    
-    window.videoPlayer.syncListTime = 0;
-    window.videoPlayer.syncPlayTime = 0;
+    w.videoPlayer = {videoList: [], EnableBullet : true, Watchers :[]};    
+    w.videoPlayer.playingId = '';    
+    w.videoPlayer.syncListTime = 0;
+    w.videoPlayer.syncPlayTime = 0;
+    if(w.UpdateCheckerTimer == null)
+    {
+        w.UpdateCheckerTimer = setInterval(UpdateCheck, 1000);
+    }
 
 
     // 绘制房间按钮
@@ -67,16 +71,17 @@
                 
                 if(w.EnableVideoPlayer)
                 {
-                    w.EnableVideoPlayer = false;
-                    if(window.videoPlayer.FloatingVideoDiv != null)
-                    {
-                        document.body.removeChild(window.videoPlayer.FloatingVideoDiv);
-                    }
+                    ExitVideoPlayer();
                 }
                 else
                 {
+                    
+                    w.videoPlayer.syncListTime = 0;
+                    w.videoPlayer.syncPlayTime = 0;
+                    w.videoPlayer.playingId = ''; 
                     createFloatingVideo();
                     w.EnableVideoPlayer = true;
+                    SendState(true);
                 }
 
                 return;
@@ -104,11 +109,23 @@
         "ChatRoomMessage",
         0,
         (args, next) => {
-            if(window.EnableVideoPlayer)
+
+            let data = args[0];
+            if (data !== undefined 
+                && data.Sender != Player.MemberNumber
+                && data.Type === "Hidden"
+                 && data.Content == "EEVideo" 
+                 && data.Dictionary !== undefined) {
+                HandleVideoMsg(data);
+            }
+
+            if(w.EnableVideoPlayer)
             {
-                let data = args[0];
-                if (data !== undefined && data.Type === "Hidden" && data.Content == "EEVideo" &&data.Dictionary !== undefined) {
-                    HandleVideoMsg(data);
+                if (data.Type === "Action" 
+                && data.Content === "ServerEnter"
+                && data.Sender != Player.MemberNumber)
+                {
+                    SendState(true);
                 }
             }
            
@@ -130,12 +147,43 @@
             next(args);
         }
     );
+
+
+    mod.hookFunction(
+        "ChatRoomDrawCharacterOverlay",
+   3,
+   (args, next) => {
+
+    let C = args[0];
+    let CharX = args[1];
+    let CharY = args[2];
+    let Zoom = args[3];
+
+       ChatRoomDrawCharacterOverlayEx(C, CharX, CharY, Zoom);
+
+       next(args);
+   }
+   );
+
+    // 绘制正在观看的标志
+    function ChatRoomDrawCharacterOverlayEx(C, CharX, CharY, Zoom) {
+
+        if (ChatRoomHideIconState == 0) {
+             // 当存在
+            let selfWaching = w.EnableVideoPlayer &&  C.MemberNumber == Player.MemberNumber;
+            let inWatchers = w.videoPlayer.Watchers.findIndex(w=>w.MemberNumber == C.MemberNumber) >= 0;
+            if (selfWaching || inWatchers) {
+                DrawImageResize("Icons/MovieStudio.png", CharX + 70 * Zoom, CharY + 40, 40 * Zoom, 40 * Zoom);
+            }        
+        }
+    }
+    
     
     function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
     {
         // 弹幕功能开启的话
-        if(window.EnableVideoPlayer === true
-            && window.videoPlayer.EnableBullet === true)
+        if(w.EnableVideoPlayer === true
+            && w.videoPlayer.EnableBullet === true)
         {
             if(data.Type == "Chat")
             {
@@ -157,22 +205,45 @@
                 case "RequstSync":  
                     OnRequstSync(data.Sender);
                     break;
+                case "State":  
+                    OnRevState(data.Sender, D);
+                    break;
             }
         })
         return;    
     }
+
+    function UpdateCheck()
+    {
+        if(CurrentScreen == "ChatRoom")
+        {
+            // 仅仅保留在房间内的玩家
+            w.videoPlayer.Watchers = w.videoPlayer.Watchers.filter(
+                watcher => ChatRoomCharacter.findIndex(c => c.MemberNumber === watcher.MemberNumber) >=0
+                );
+        }
+        else
+        {
+            // 不在房间则退出
+            if(w.EnableVideoPlayer)
+            {
+                 ExitVideoPlayer();
+            }
+        }
+    }
+
     function SendSyncPlay(target = null)
     {
         var dic = [
             {
                 Type: "SyncPlay",
                 Paused:  getCurrentPaused(),
-                PlayTime: window.videoPlayer.playTimeBySync,
-                PlayingId: window.videoPlayer.playingId,
-                syncPlayTime : window.videoPlayer.syncPlayTime,
+                PlayTime: w.videoPlayer.playTimeBySync,
+                PlayingId: w.videoPlayer.playingId,
+                syncPlayTime : w.videoPlayer.syncPlayTime,
             }     
         ]
-
+        
         if(target == null)
         {
             SendMsgToAll(dic);
@@ -183,9 +254,14 @@
      
     function OnSyncPlay(msg)
     {        
-        if(msg.syncPlayTime > window.videoPlayer.syncPlayTime)
+        if(!w.EnableVideoPlayer)
         {
-            window.videoPlayer.syncPlayTime = msg.syncPlayTime;
+            return;
+        }
+
+        if(msg.syncPlayTime > w.videoPlayer.syncPlayTime)
+        {
+            w.videoPlayer.syncPlayTime = msg.syncPlayTime;
         }else{
             return;
         }
@@ -194,7 +270,7 @@
         var item = GetPlayItem(msg.PlayingId);
         setTitle(item?.name); 
 
-        if(window.videoPlayer.playingId != msg.PlayingId)
+        if(w.videoPlayer.playingId != msg.PlayingId)
         {
             playId(msg.PlayingId);
         }
@@ -205,7 +281,7 @@
             targetTime = (new Date().getTime() - msg.syncPlayTime)/1000.0 + msg.PlayTime;
         }
         // 播放误差误差大于五秒重新同步
-        if(Math.abs(getCurrentTime() - targetTime) > 5.0)
+        if(Math.abs(getCurrentTime() - targetTime) > 5.0 && targetTime< w.videoPlayer.Player.duration)
         {
             setCurrentTime(targetTime);
         }
@@ -225,8 +301,8 @@
         var dic = [
             {
                 Type: "SyncList",                
-                List : window.videoPlayer.videoList,
-                syncListTime : window.videoPlayer.syncListTime,
+                List : w.videoPlayer.videoList,
+                syncListTime : w.videoPlayer.syncListTime,
             }     
         ]
 
@@ -239,15 +315,20 @@
     }
     function OnSyncList(msg)
     {
-        if(msg.syncListTime > window.videoPlayer.syncListTime)
+        if(!w.EnableVideoPlayer)
         {
-            window.videoPlayer.syncListTime = msg.syncListTime;
+            return;
+        }
+
+        if(msg.syncListTime > w.videoPlayer.syncListTime)
+        {
+            w.videoPlayer.syncListTime = msg.syncListTime;
         }else{
             return;
         }
 
-        window.videoPlayer.videoList = msg.List;
-        window.videoPlayer.RerenderVideoList();
+        w.videoPlayer.videoList = msg.List;
+        w.videoPlayer.RerenderVideoList();
     }
 
     function SendRequstSync(force = true)
@@ -255,8 +336,8 @@
         // 强制同步会把当前时间往前推一下，这样即使同步过来相同时间戳也会直接覆盖
         if(force)
         {
-            window.videoPlayer.syncListTime -= 1;
-            window.videoPlayer.syncPlayTime -= 1;
+            w.videoPlayer.syncListTime = 0;
+            w.videoPlayer.syncPlayTime = 0;
         }
 
         var dic = [
@@ -269,21 +350,51 @@
 
     function OnRequstSync(sender)
     {
+        if(!w.EnableVideoPlayer)
+        {
+            return;
+        }
+
         SendSyncList(sender);
         SendSyncPlay(sender);
     }
 
+    
+    function SendState(active)
+    {
+        var dic = [
+            {
+                Type: "State",
+                StateTime:  new Date().getTime(),
+                Active : active
+            }     
+        ]
+       
+        SendMsgToAll(dic);
+    }
+
+    function OnRevState(sender, msg)
+    {
+        var cur = w.videoPlayer.Watchers.find(w=>w.MemberNumber == sender);
+        if(cur === undefined && msg.Active === true)
+        {
+            w.videoPlayer.Watchers.push({
+                MemberNumber : sender,
+                StateTime : msg.StateTime,
+            });
+        }  
+        // 删除不激活的
+        if(cur !== undefined && msg.Active === false)
+        {
+            w.videoPlayer.Watchers = w.videoPlayer.Watchers.filter(watcher => watcher.MemberNumber !== sender);
+        }      
+
+    }
+
 
     function SendMsgToAll(dic)
-    {
-
-        for(var i = 0 ; i <ChatRoomCharacter.length; i ++)
-        {
-            if(ChatRoomCharacter[i].MemberNumber != Player.MemberNumber)
-            {
-                ServerSend("ChatRoomChat", { Content: "EEVideo", Type: "Hidden", Target: ChatRoomCharacter[i].MemberNumber, Dictionary:dic});
-            }
-        }        
+    { 
+        ServerSend("ChatRoomChat", { Content: "EEVideo", Type: "Hidden", Dictionary:dic}); 
     }
 
     function SendMsgTo(target,dic)
@@ -298,18 +409,18 @@
     function createFloatingVideo() 
         {
             // 创建悬浮视频播放窗口的元素
-            window.videoPlayer.FloatingVideoDiv = document.createElement('div');
-            window.videoPlayer.FloatingVideoDiv.style.position = 'fixed';
-            window.videoPlayer.FloatingVideoDiv.style.border = '1px solid #ccc';
-            window.videoPlayer.FloatingVideoDiv.style.overflow = 'hidden';
-            window.videoPlayer.FloatingVideoDiv.style.backgroundColor = '#fff';
-            window.videoPlayer.FloatingVideoDiv.style.resize = 'both';
-            window.videoPlayer.FloatingVideoDiv.style.padding = '0';
-            window.videoPlayer.FloatingVideoDiv.style.zIndex = '1000';
-            window.videoPlayer.FloatingVideoDiv.style.width = '50%';
-            window.videoPlayer.FloatingVideoDiv.style.height = '50%';
-            window.videoPlayer.FloatingVideoDiv.style.left = '50%';
-            window.videoPlayer.FloatingVideoDiv.style.top = '10%';
+            w.videoPlayer.FloatingVideoDiv = document.createElement('div');
+            w.videoPlayer.FloatingVideoDiv.style.position = 'fixed';
+            w.videoPlayer.FloatingVideoDiv.style.border = '1px solid #ccc';
+            w.videoPlayer.FloatingVideoDiv.style.overflow = 'hidden';
+            w.videoPlayer.FloatingVideoDiv.style.backgroundColor = '#fff';
+            w.videoPlayer.FloatingVideoDiv.style.resize = 'both';
+            w.videoPlayer.FloatingVideoDiv.style.padding = '0';
+            w.videoPlayer.FloatingVideoDiv.style.zIndex = '1000';
+            w.videoPlayer.FloatingVideoDiv.style.width = '50%';
+            w.videoPlayer.FloatingVideoDiv.style.height = '50%';
+            w.videoPlayer.FloatingVideoDiv.style.left = '50%';
+            w.videoPlayer.FloatingVideoDiv.style.top = '10%';
           
             // 创建标题栏元素
             const titleBar = document.createElement('div');
@@ -325,7 +436,7 @@
             titleText.style.marginLeft = '50px'; // 设置标题文本与按钮之间的间距
             titleText.style.color = 'white';
 
-            window.videoPlayer.TitleText = titleText;
+            w.videoPlayer.TitleText = titleText;
 
             // 添加到标题栏中
             titleBar.appendChild(titleText);
@@ -363,7 +474,7 @@
             bulletButton.style.padding = '5px 10px';
             bulletButton.style.border = 'none';
             bulletButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
-            bulletButton.style.color = window.videoPlayer.EnableBullet ? 'white' : 'gray'; // 根据状态设置颜色
+            bulletButton.style.color = w.videoPlayer.EnableBullet ? 'white' : 'gray'; // 根据状态设置颜色
             bulletButton.style.cursor = 'pointer';
             bulletButton.style.fontWeight = 'bold';
             bulletButton.style.fontSize = '24px';
@@ -371,9 +482,9 @@
             // 添加点击事件处理程序
             bulletButton.addEventListener('click', function () {
                 // 切换状态
-                window.videoPlayer.EnableBullet = !window.videoPlayer.EnableBullet;
+                w.videoPlayer.EnableBullet = !w.videoPlayer.EnableBullet;
                 // 根据状态设置颜色
-                bulletButton.style.color = window.videoPlayer.EnableBullet ? 'white' : 'gray';
+                bulletButton.style.color = w.videoPlayer.EnableBullet ? 'white' : 'gray';
             });
 
             // 将"弹"字按钮添加到标题栏中
@@ -401,13 +512,13 @@
             // 为对齐按钮添加点击事件
             alignButton.addEventListener('click', () => {
 
-                const floatingVideoDiv = window.videoPlayer.FloatingVideoDiv;
+                const floatingVideoDiv = w.videoPlayer.FloatingVideoDiv;
                 const inputChatElement = document.getElementById('InputChat');
             
                 if (!isAligned) {
                     // 获取页面宽度和高度
-                    const pageWidth = window.innerWidth;
-                    const pageHeight = window.innerHeight;
+                    const pageWidth = w.innerWidth;
+                    const pageHeight = w.innerHeight;
             
                    // 获取 InputChat 元素相对于视口的位置
                     const inputChatRect = inputChatElement.getBoundingClientRect();
@@ -464,9 +575,7 @@
           
             // 为关闭按钮添加点击事件
             closeButton.addEventListener('click', () => {
-              document.body.removeChild(window.videoPlayer.FloatingVideoDiv);
-              window.EnableVideoPlayer = false;
-              window.videoPlayer.FloatingVideoDiv = null;
+              ExitVideoPlayer();
             });        
 
             // 将关闭按钮添加到标题栏中
@@ -527,7 +636,7 @@
                 }, function(name, url) {
                     // 确定回调
                     const id = generateGUID(); // 生成 GUID
-                    window.videoPlayer.videoList.push({ id: id, name: name, url: url });
+                    w.videoPlayer.videoList.push({ id: id, name: name, url: url });
                     UpdateSyncTime();
                     SendSyncList();
                     renderVideoList();
@@ -549,10 +658,10 @@
                 }
        
                 FloatingVideoListInput(function(videoList) {
-                    window.videoPlayer.videoList = videoList;
+                    w.videoPlayer.videoList = videoList;
                 
                     // 播放第一个视频
-                    playId(window.videoPlayer.videoList[0].id);
+                    playId(w.videoPlayer.videoList[0].id);
 
                     UpdateSyncTime();
                     SendSyncList();
@@ -633,7 +742,7 @@
                 // 清空右侧菜单列表的内容
                 rightMenuList.innerHTML = '';
     
-                window.videoPlayer.videoList.forEach((video, index) => {
+                w.videoPlayer.videoList.forEach((video, index) => {
                     // 创建视频项容器
                     const videoItem = document.createElement('div');
                     videoItem.classList.add('video-item');
@@ -650,7 +759,7 @@
                     videoButton.style.textAlign = 'left';
                     videoButton.style.cursor = 'pointer';
                     videoButton.style.color = 'white';
-                    if(window.videoPlayer?.playingId == video.id)
+                    if(w.videoPlayer?.playingId == video.id)
                     {
                         videoButton.style.fontWeight = 'bold';
                     }
@@ -667,8 +776,8 @@
                     deleteButton.style.float = 'right';
                     deleteButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
                     deleteButton.addEventListener('click', function() {
-                        // 删除对应的 window.videoPlayer.videoList 元素
-                        window.videoPlayer.videoList.splice(index, 1);
+                        // 删除对应的 w.videoPlayer.videoList 元素
+                        w.videoPlayer.videoList.splice(index, 1);
                         UpdateSyncTime();
                         SendSyncList();
                         // 重新渲染列表
@@ -687,7 +796,7 @@
                     rightMenuList.appendChild(videoItem);
                 });
             }
-            window.videoPlayer.RerenderVideoList = renderVideoList;
+            w.videoPlayer.RerenderVideoList = renderVideoList;
     
             // 当 script 元素加载完成后，创建视频列表和可拖动功能
             scriptElement.onload = function() {          
@@ -703,8 +812,8 @@
                             // 拖动完成后的操作，你可以在这里更新视频列表的顺序等
                             console.log('拖动完成:', evt.newIndex);
                             // 使用数组的 splice 方法来移动元素位置
-                            const movedItem = window.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
-                            window.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
+                            const movedItem = w.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
+                            w.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
                             UpdateSyncTime();
                             SendSyncList();
                             // 重新渲染列表
@@ -717,31 +826,31 @@
     
     
             // 将标题栏、左侧视频区域和右侧菜单列表添加到悬浮视频播放窗口中
-            window.videoPlayer.FloatingVideoDiv.appendChild(titleBar);
-            window.videoPlayer.FloatingVideoDiv.appendChild(leftVideoArea);
-            window.videoPlayer.FloatingVideoDiv.appendChild(rightMenu);
+            w.videoPlayer.FloatingVideoDiv.appendChild(titleBar);
+            w.videoPlayer.FloatingVideoDiv.appendChild(leftVideoArea);
+            w.videoPlayer.FloatingVideoDiv.appendChild(rightMenu);
 
             // 将悬浮视频播放窗口添加到页面中
-            document.body.appendChild(window.videoPlayer.FloatingVideoDiv);
+            document.body.appendChild(w.videoPlayer.FloatingVideoDiv);
                  
             // 创建弹幕池功能
             CreateBulletScreen();
 
             // 实现拖动功能
             let isDragging = false;
-            let offsetX = window.innerWidth / 2 - window.videoPlayer.FloatingVideoDiv.offsetWidth / 2;
-            let offsetY = window.innerHeight / 2 - window.videoPlayer.FloatingVideoDiv.offsetHeight / 2;
+            let offsetX = w.innerWidth / 2 - w.videoPlayer.FloatingVideoDiv.offsetWidth / 2;
+            let offsetY = w.innerHeight / 2 - w.videoPlayer.FloatingVideoDiv.offsetHeight / 2;
           
             titleBar.addEventListener('mousedown', (e) => {
               isDragging = true;
-              offsetX = e.clientX - window.videoPlayer.FloatingVideoDiv.offsetLeft;
-              offsetY = e.clientY - window.videoPlayer.FloatingVideoDiv.offsetTop;
+              offsetX = e.clientX - w.videoPlayer.FloatingVideoDiv.offsetLeft;
+              offsetY = e.clientY - w.videoPlayer.FloatingVideoDiv.offsetTop;
             });
           
             document.addEventListener('mousemove', (e) => {
               if (!isDragging) return;
-              window.videoPlayer.FloatingVideoDiv.style.left = e.clientX - offsetX + 'px';
-              window.videoPlayer.FloatingVideoDiv.style.top = e.clientY - offsetY + 'px';
+              w.videoPlayer.FloatingVideoDiv.style.left = e.clientX - offsetX + 'px';
+              w.videoPlayer.FloatingVideoDiv.style.top = e.clientY - offsetY + 'px';
             });
           
             document.addEventListener('mouseup', () => {
@@ -775,32 +884,32 @@
             // 暂停和继续播放的回调
             videoElement.addEventListener('pause', function() {
                 console.log('Video paused');
-                if(!window.videoPlayer.DontCallback)
+                if(!w.videoPlayer.DontCallback)
                 {
-                    window.videoPlayer.callbacks.OnPause();
+                    w.videoPlayer.callbacks.OnPause();
                 }
             });
     
             videoElement.addEventListener('play', function() {
                 console.log('Video playing');
-                if(!window.videoPlayer.DontCallback)
+                if(!w.videoPlayer.DontCallback)
                 {
-                    window.videoPlayer.callbacks.OnPlay();
+                    w.videoPlayer.callbacks.OnPlay();
                 }
             });
     
             // 调整播放进度的回调
             videoElement.addEventListener('seeked', function() {
                 console.log('Video seeked to', videoElement.currentTime);
-                if(!window.videoPlayer.DontCallback)
+                if(!w.videoPlayer.DontCallback)
                 {
-                    window.videoPlayer.callbacks.OnSeeked();
+                    w.videoPlayer.callbacks.OnSeeked();
                 }
             });
             // 视频播放结束的回调
             videoElement.addEventListener('ended', function() {
                 console.log('Video ended');
-                window.videoPlayer.callbacks.OnEnded();
+                w.videoPlayer.callbacks.OnEnded();
             });
     
     
@@ -835,7 +944,7 @@
             videoElement.appendChild(sourceElementMp4);
             videoElement.appendChild(pElement);
             videoContainer.appendChild(scriptElement);
-            window.videoPlayer.Player = videoElement;
+            w.videoPlayer.Player = videoElement;
         }
         
     
@@ -909,8 +1018,8 @@
      
         function FloatingVideoListInput(confirmCallback, cancelCallback) {
     
-            // 从 window.videoPlayer.videoList 生成文本
-            const text = window.videoPlayer?.videoList.map(video => `${video.name}\n${video.url}`).join('\n');
+            // 从 w.videoPlayer.videoList 生成文本
+            const text = w.videoPlayer?.videoList.map(video => `${video.name}\n${video.url}`).join('\n');
     
             // 创建悬浮窗口容器
             const floatingInputContainer = document.createElement('div');
@@ -982,42 +1091,48 @@
            
         function CreateBulletScreen()
         {             
-            const scriptElement = document.createElement('script');
-    
-            // 设置 script 元素的 src 属性为 BulletJs.js 的 CDN 地址
-            scriptElement.src = 'https://unpkg.com/js-bullets@latest/dist/BulletJs.min.js';
-            // 添加 script 元素到文档头部
-            document.head.appendChild(scriptElement);
-            // 当 script 元素加载完成后，创建弹幕屏幕
-            scriptElement.onload = function() {    
-                // VideoContainer 的 div 必须要有明确的宽高
-                window.videoPlayer.BulletScreen = new BulletJs('#VideoContainer', {
-                    trackHeight: 35, // 每条轨道高度
-                    speed: null, // 速度 100px/s 根据实际情况去配置
-                    pauseOnClick: false, // 点击暂停
-                    pauseOnHover: true, // hover 暂停
-                    duration: "10s",
-                });
-            }  
-            
             const targetElement = document.querySelector('#VideoContainer');
-
-            // 创建 ResizeObserver 实例让每次大小发生变化时重新创建弹幕池
-            if (targetElement?.resizeObserver  === undefined)
+            if (targetElement !== null && targetElement !== undefined)
             {
-                targetElement.resizeObserver = new ResizeObserver(entries => {
+                const scriptElement = document.createElement('script');
+    
+                // 设置 script 元素的 src 属性为 BulletJs.js 的 CDN 地址
+                scriptElement.src = 'https://unpkg.com/js-bullets@latest/dist/BulletJs.min.js';
+                // 添加 script 元素到文档头部
+                document.head.appendChild(scriptElement);
+                // 当 script 元素加载完成后，创建弹幕屏幕
+                scriptElement.onload = function() {    
+                    // VideoContainer 的 div 必须要有明确的宽高
+                    w.videoPlayer.BulletScreen = new BulletJs('#VideoContainer', {
+                        trackHeight: 35, // 每条轨道高度
+                        speed: null, // 速度 100px/s 根据实际情况去配置
+                        pauseOnClick: false, // 点击暂停
+                        pauseOnHover: true, // hover 暂停
+                        duration: "10s",
+                    });
+                }  
+                
+    
+    
+                // 创建 ResizeObserver 实例让每次大小发生变化时重新创建弹幕池
+                // 其中关闭也会触发
+                if (targetElement.resizeObserver  === undefined)
+                {
+                    targetElement.resizeObserver = new ResizeObserver(entries => {
                     for (let entry of entries) {
                         // 获取目标元素的新尺寸
                         const { width, height } = entry.contentRect;
-        
+            
                         // 重新创建弹幕池以适配
                         CreateBulletScreen();
                     }
                     });
-        
+            
                     // 监听目标元素的大小变化
                     targetElement.resizeObserver.observe(targetElement);
+                }
             }
+            
         }
 
         function SendBullet(str)
@@ -1030,8 +1145,21 @@
             .replace(/\'/g, '&#39;')
             .replace(/\//g, '&#x2F;');
 
-            window.videoPlayer.BulletScreen.push(`<span style="color: rgba(255, 255, 255, 0.5); text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-size: 30px;">${str}</span>`)
+            w.videoPlayer.BulletScreen.push(`<span style="color: rgba(255, 255, 255, 0.5); text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-size: 30px;">${str}</span>`)
         }
+
+        function ExitVideoPlayer()
+        {
+            w.EnableVideoPlayer = false;
+            SendState(false);
+            w.videoPlayer.DontCallback = true;
+            if(w.videoPlayer.FloatingVideoDiv != null)
+            {
+                document.body.removeChild(w.videoPlayer.FloatingVideoDiv);
+                w.videoPlayer.FloatingVideoDiv = null;
+            }
+        }
+
 
         function HasFloatingInput()
         {
@@ -1043,50 +1171,59 @@
         {
             if(HavePermissionToModify())
             {
-                window.videoPlayer.syncListTime = new Date().getTime();
-                window.videoPlayer.syncPlayTime = new Date().getTime();
-                window.videoPlayer.playTimeBySync = getCurrentTime();
+                w.videoPlayer.syncListTime = new Date().getTime();
+                w.videoPlayer.syncPlayTime = new Date().getTime();
+                w.videoPlayer.playTimeBySync = getCurrentTime();
             }
         }
 
         // 获取当前播放进度的接口
         function getCurrentTime() {
-            return window.videoPlayer.Player.currentTime;
+            return w.videoPlayer.Player.currentTime;
         }
     
 
         
         // 获取当前播放进度的接口
         function getCurrentPaused() {
-            return window.videoPlayer.Player.paused;
+            return w.videoPlayer.Player.paused;
         }
 
 
         // 播放视频的接口
         function playVideo() {
-            window.videoPlayer.DontCallback = true;
-            window.videoPlayer.Player.play();
-            window.videoPlayer.DontCallback = false;
+            w.videoPlayer.DontCallback = true;
+            const playPromise = w.videoPlayer.Player.play();
+            // 处理播放结果，主要是防止被回调
+            if (playPromise !== undefined) {
+                playPromise.then(_ => {
+                    // 播放成功
+                    w.videoPlayer.DontCallback = false;
+                }).catch(error => {
+                    // 播放失败
+                    console.error('视频播放失败:', error);
+                });
+                }
         }
     
         // 暂停视频的接口
         function pauseVideo() {
-            window.videoPlayer.DontCallback = true;
-            window.videoPlayer.Player.pause();
-            window.videoPlayer.DontCallback = false;
+            w.videoPlayer.DontCallback = true;
+            w.videoPlayer.Player.pause();
+            w.videoPlayer.DontCallback = false;
             
         }
     
         // 调整播放时间的接口（单位：秒）
         function setCurrentTime(time) {
-            window.videoPlayer.DontCallback = true;
-            window.videoPlayer.Player.currentTime = time;
-            window.videoPlayer.DontCallback = false;
+            w.videoPlayer.DontCallback = true;
+            w.videoPlayer.Player.currentTime = time;
+            w.videoPlayer.DontCallback = false;
         }
     
         function setTitle(str)
         {
-            window.videoPlayer.TitleText.textContent = str;
+            w.videoPlayer.TitleText.textContent = str;
         }
 
 
@@ -1095,21 +1232,21 @@
             var item = GetPlayItem(id);
             setTitle(item?.name); 
 
-            if(window.videoPlayer.playingId == id)
+            if(w.videoPlayer.playingId == id)
             {
                 return;
             }
 
-            window.videoPlayer.Player.src = item?.url;
-            window.videoPlayer.playingId = id;
-            window.videoPlayer.Player.play();         
+            w.videoPlayer.Player.src = item?.url;
+            w.videoPlayer.playingId = id;
+            playVideo();        
 
-            window.videoPlayer.RerenderVideoList();
+            w.videoPlayer.RerenderVideoList();
         }
     
     
-        window.videoPlayer.callbacks = {};
-        window.videoPlayer.callbacks.OnPlay =
+        w.videoPlayer.callbacks = {};
+        w.videoPlayer.callbacks.OnPlay =
         function(){   
             UpdateSyncTime();
             SendSyncPlay();
@@ -1119,7 +1256,7 @@
             }
         };
     
-        window.videoPlayer.callbacks.OnPause =
+        w.videoPlayer.callbacks.OnPause =
         function(){
             UpdateSyncTime();
             SendSyncPlay(); 
@@ -1129,7 +1266,7 @@
             }
         };
     
-        window.videoPlayer.callbacks.OnSeeked =
+        w.videoPlayer.callbacks.OnSeeked =
         function(){
     
             UpdateSyncTime();
@@ -1140,13 +1277,16 @@
             }       
         };
     
-        window.videoPlayer.callbacks.OnEnded =
+        w.videoPlayer.callbacks.OnEnded =
         function(){
-            var index= window.videoPlayer.videoList.findIndex(item => item.id == window.videoPlayer?.playingId);
+            var index= w.videoPlayer.videoList.findIndex(item => item.id == w.videoPlayer?.playingId);
             if(index >= 0)
             {
-                index = (index +1)% window.videoPlayer.videoList.length;
-                playId(window.videoPlayer.videoList[index].id);
+                index = (index +1)% w.videoPlayer.videoList.length;
+                playId(w.videoPlayer.videoList[index].id);
+                // 更新播放状态，但是不会发送同步，因为可能别人还没放完最后一点
+                UpdateSyncTime();
+                w.videoPlayer.playTimeBySync = 0;
                 console.log("playend try play next");
             }        
         };
@@ -1168,12 +1308,12 @@
         }
         function GetPlayingItem()
         {
-            return window.videoPlayer.videoList.find(item => item.id == window.videoPlayer?.playingId);
+            return w.videoPlayer.videoList.find(item => item.id == w.videoPlayer?.playingId);
         }
     
         function GetPlayItem(id)
         {
-            return window.videoPlayer.videoList.find(item => item.id == id);
+            return w.videoPlayer.videoList.find(item => item.id == id);
         }
     
 
