@@ -280,8 +280,10 @@
         {
             targetTime = (new Date().getTime() - msg.syncPlayTime)/1000.0 + msg.PlayTime;
         }
-        // 播放误差误差大于五秒重新同步
-        if(Math.abs(getCurrentTime() - targetTime) > 5.0 && targetTime< w.videoPlayer.Player.duration)
+        // 播放误差误差大于五秒重新同步，NaN是尚未加载的情况，也需要设置
+        if(isNaN(w.videoPlayer.Player.duration)
+        || (Math.abs(getCurrentTime() - targetTime) > 5.0 
+        && targetTime < w.videoPlayer.Player.duration ))
         {
             setCurrentTime(targetTime);
         }
@@ -860,10 +862,6 @@
             // 立即同步视频列表
             SendRequstSync();
 
-            // 初次会因为在加载视频，延迟再次同步进度
-            setTimeout(() => {
-                SendRequstSync();
-            }, 1000);
         }
     
         function createVideoElement(videoContainer) {
