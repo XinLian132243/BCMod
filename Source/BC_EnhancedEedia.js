@@ -857,7 +857,13 @@
               isDragging = false;
             });      
 
+            // 立即同步视频列表
             SendRequstSync();
+
+            // 初次会因为在加载视频，延迟再次同步进度
+            setTimeout(() => {
+                SendRequstSync();
+            }, 1000);
         }
     
         function createVideoElement(videoContainer) {
