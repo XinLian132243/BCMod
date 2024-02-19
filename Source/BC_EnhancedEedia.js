@@ -33,7 +33,7 @@
     w.EnableVideoPlayer = false;
 
     
-    w.videoPlayer = {videoList: [], EnableBullet : true, Watchers :[]};    
+    w.videoPlayer = {videoList: [], EnableDanmu : true, Watchers :[]};    
     w.videoPlayer.playingId = '';    
     w.videoPlayer.syncListTime = 0;
     w.videoPlayer.syncPlayTime = 0;
@@ -93,9 +93,12 @@
     // 当在聊天界面按下键盘时，如果有悬浮窗则不自动跳到输入框
     mod.hookFunction(
         "ChatRoomKeyDown",
-        0,
+        99,
         (args, next) => {
-            if(HasFloatingInput())
+            const focusOnInput = (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA');
+            const chatHasFocus = document.activeElement.id === "InputChat";
+
+            if(w.EnableVideoPlayer && focusOnInput && !chatHasFocus)
             {
                 return false;
             }
@@ -113,8 +116,7 @@
             let data = args[0];
             if (data !== undefined 
                 && data.Sender != Player.MemberNumber
-                && data.Type === "Hidden"
-                 && data.Content == "EEVideo" 
+                 && (data.Content == "EEVideo" || data.Content == "EE_PLAYER_CUSTOM_DIALOG")
                  && data.Dictionary !== undefined) {
                 HandleVideoMsg(data);
             }
@@ -182,12 +184,11 @@
     function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
     {
         // 弹幕功能开启的话
-        if(w.EnableVideoPlayer === true
-            && w.videoPlayer.EnableBullet === true)
+        if(w.EnableVideoPlayer === true)
         {
             if(data.Type == "Chat")
             {
-                SendBullet(`${GetPlayerName(SenderCharacter)} : ${data.Content}`);
+                SendDanmu(`${data.Content}`);
             }
         }      
     }
@@ -207,6 +208,9 @@
                     break;
                 case "State":  
                     OnRevState(data.Sender, D);
+                    break; 
+                case "Danmu":  
+                    OnRevDanmu(data.Sender, D);
                     break;
             }
         })
@@ -266,6 +270,10 @@
             return;
         }
 
+        w.videoPlayer.playTimeBySync = msg.PlayTime;
+        w.videoPlayer.pausedBySync = msg.Paused;
+        w.videoPlayer.needSetSync = true;
+
         // 修正标题，因为可能显示在同步
         var item = GetPlayItem(msg.PlayingId);
         setTitle(item?.name); 
@@ -274,27 +282,42 @@
         {
             playId(msg.PlayingId);
         }
-        var targetTime = msg.PlayTime;
-        // 如果不是暂停状态，则需要计算网络延迟
-        if(!msg.Paused)
+
+        TrySetPlay();
+      
+    }
+
+
+    // 设置播放状态，因为需要等待视频加载完成
+    function TrySetPlay()
+    {
+        if(!w.videoPlayer.needSetSync)
         {
-            targetTime = (new Date().getTime() - msg.syncPlayTime)/1000.0 + msg.PlayTime;
+            return;
+        }
+
+        var targetTime = w.videoPlayer.playTimeBySync;
+        // 如果不是暂停状态，则需要计算网络延迟
+        if(!w.videoPlayer.pausedBySync)
+        {
+            targetTime = (new Date().getTime() - w.videoPlayer.syncPlayTime)/1000.0 + w.videoPlayer.playTimeBySync;
         }
         // 播放误差误差大于五秒重新同步，NaN是尚未加载的情况，也需要设置
-        if(isNaN(w.videoPlayer.Player.duration)
-        || (Math.abs(getCurrentTime() - targetTime) > 5.0 
-        && targetTime < w.videoPlayer.Player.duration ))
+        if(Math.abs(getCurrentTime() - targetTime) > 5.0 
+        && targetTime < w.videoPlayer.Player.duration)
         {
             setCurrentTime(targetTime);
         }
 
-        if(getCurrentPaused() && !msg.Paused)
+        if(getCurrentPaused() && !w.videoPlayer.pausedBySync)
         {
             playVideo();
-        }else if(!getCurrentPaused() && msg.Paused)
+        }else if(!getCurrentPaused() && w.videoPlayer.pausedBySync)
         {
             pauseVideo();
-        }        
+        }      
+        
+        w.videoPlayer.needSetSync = true;
     }
 
 
@@ -393,6 +416,17 @@
 
     }
 
+    function OnRevDanmu(sender, msg)
+    {
+         var danmu = msg.Data;
+         // 把弹幕改成实时弹幕防止延迟太高了
+         danmu.time = getCurrentTime();
+         if(sender != Player.MemberNumber)
+         {
+            w.videoPlayer.Player.plugins.artplayerPluginDanmuku.emit(danmu);
+         }
+    }
+
 
     function SendMsgToAll(dic)
     { 
@@ -466,32 +500,7 @@
            
              // 将同步按钮添加到标题栏中
              titleBar.appendChild(syncButton);
-
-            // 创建弹幕开关按钮
-            const bulletButton = document.createElement('button');
-            bulletButton.innerHTML = '弹';
-            bulletButton.style.position = 'absolute';
-            bulletButton.style.right = '320px'; // 调整位置
-            bulletButton.style.top = '0';
-            bulletButton.style.padding = '5px 10px';
-            bulletButton.style.border = 'none';
-            bulletButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
-            bulletButton.style.color = w.videoPlayer.EnableBullet ? 'white' : 'gray'; // 根据状态设置颜色
-            bulletButton.style.cursor = 'pointer';
-            bulletButton.style.fontWeight = 'bold';
-            bulletButton.style.fontSize = '24px';
-
-            // 添加点击事件处理程序
-            bulletButton.addEventListener('click', function () {
-                // 切换状态
-                w.videoPlayer.EnableBullet = !w.videoPlayer.EnableBullet;
-                // 根据状态设置颜色
-                bulletButton.style.color = w.videoPlayer.EnableBullet ? 'white' : 'gray';
-            });
-
-            // 将"弹"字按钮添加到标题栏中
-            titleBar.appendChild(bulletButton);
-          
+         
             
             // 创建对齐,会直接对齐到下面的输入框
             const alignButton = document.createElement('button');
@@ -599,7 +608,8 @@
             videoContainer.style.bottom = '0';
           
             // 创建视频元素
-            createVideoElement(videoContainer);
+            createVideoElement(videoContainer.id);
+
             leftVideoArea.appendChild(videoContainer);
             
             const rightMenu = document.createElement('div');
@@ -739,6 +749,33 @@
             scriptElement.src = 'https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.14.0/Sortable.min.js';
             // 添加 script 元素到文档头部
             document.head.appendChild(scriptElement);
+
+            
+            // 当 script 元素加载完成后，创建视频列表和可拖动功能
+            scriptElement.onload = function() {          
+    
+                renderVideoList();
+                if(HavePermissionToModify())
+                {
+                    // 使用Sortable.js来使按钮列表可拖动调整顺序
+                    const sortable = new Sortable(rightMenuList, {
+                        animation: 150,
+                        draggable: '.video-item',
+                        onUpdate: function(evt) {
+                            // 拖动完成后的操作，你可以在这里更新视频列表的顺序等
+                            console.log('拖动完成:', evt.newIndex);
+                            // 使用数组的 splice 方法来移动元素位置
+                            const movedItem = w.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
+                            w.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
+                            UpdateSyncTime();
+                            SendSyncList();
+                            // 重新渲染列表
+                            renderVideoList();
+                        }
+                    });
+                }
+            };
+             
     
             function renderVideoList() {
                 // 清空右侧菜单列表的内容
@@ -799,33 +836,7 @@
                 });
             }
             w.videoPlayer.RerenderVideoList = renderVideoList;
-    
-            // 当 script 元素加载完成后，创建视频列表和可拖动功能
-            scriptElement.onload = function() {          
-    
-                renderVideoList();
-                if(HavePermissionToModify())
-                {
-                    // 使用Sortable.js来使按钮列表可拖动调整顺序
-                    const sortable = new Sortable(rightMenuList, {
-                        animation: 150,
-                        draggable: '.video-item',
-                        onUpdate: function(evt) {
-                            // 拖动完成后的操作，你可以在这里更新视频列表的顺序等
-                            console.log('拖动完成:', evt.newIndex);
-                            // 使用数组的 splice 方法来移动元素位置
-                            const movedItem = w.videoPlayer.videoList.splice(evt.oldIndex, 1)[0];
-                            w.videoPlayer.videoList.splice(evt.newIndex, 0, movedItem);
-                            UpdateSyncTime();
-                            SendSyncList();
-                            // 重新渲染列表
-                            renderVideoList();
-                        }
-                    });
-                }
-            };
-             
-    
+       
     
             // 将标题栏、左侧视频区域和右侧菜单列表添加到悬浮视频播放窗口中
             w.videoPlayer.FloatingVideoDiv.appendChild(titleBar);
@@ -834,9 +845,7 @@
 
             // 将悬浮视频播放窗口添加到页面中
             document.body.appendChild(w.videoPlayer.FloatingVideoDiv);
-                 
-            // 创建弹幕池功能
-            CreateBulletScreen();
+
 
             // 实现拖动功能
             let isDragging = false;
@@ -864,91 +873,108 @@
 
         }
     
-        function createVideoElement(videoContainer) {
-            // 创建 link 元素
-            const linkElement = document.createElement('link');
-            linkElement.setAttribute('rel', 'stylesheet');
-            linkElement.setAttribute('href', 'https://vjs.zencdn.net/8.10.0/video-js.css');
-        
-            // 创建 video 元素
-            const videoElement = document.createElement('video');
-            videoElement.setAttribute('id', 'my-video');
-            videoElement.setAttribute('class', 'video-js');
-            videoElement.setAttribute('controls', '');
-            videoElement.setAttribute('preload', 'auto');
-            videoElement.setAttribute('autoplay', ''); // 自动播放
-            // 设置背景
-            videoElement.setAttribute('poster', "https://xinlian132243.github.io/BCMod/Assets/VideoPlayerBG.jpg");
-            videoElement.style.width = '100%'; // 设置视频宽度为100%，以适应父元素大小
-            videoElement.style.height = '100%'; // 设置视频高度为100%，以适应父元素大小
+        function createVideoElement(videoContainerId) {
 
-            // 初始化静音
-            videoElement.muted = true;
-
-            // 暂停和继续播放的回调
-            videoElement.addEventListener('pause', function() {
-                console.log('Video paused');
-                if(!w.videoPlayer.DontCallback)
-                {
-                    w.videoPlayer.callbacks.OnPause();
-                }
-            });
-    
-            videoElement.addEventListener('play', function() {
-                console.log('Video playing');
-                if(!w.videoPlayer.DontCallback)
-                {
-                    w.videoPlayer.callbacks.OnPlay();
-                }
-            });
-    
-            // 调整播放进度的回调
-            videoElement.addEventListener('seeked', function() {
-                console.log('Video seeked to', videoElement.currentTime);
-                if(!w.videoPlayer.DontCallback)
-                {
-                    w.videoPlayer.callbacks.OnSeeked();
-                }
-            });
-            // 视频播放结束的回调
-            videoElement.addEventListener('ended', function() {
-                console.log('Video ended');
-                w.videoPlayer.callbacks.OnEnded();
-            });
-    
-    
-            // 创建 source 元素
-            const sourceElementMp4 = document.createElement('source');
-            sourceElementMp4.setAttribute('src', GetPlayingItem()?.url);
             
+            var scriptElement = document.createElement('script');    
+            scriptElement.src = 'https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js';
+            document.head.appendChild(scriptElement);
 
-            sourceElementMp4.setAttribute('type', 'video/mp4');
+            var scriptElement2 = document.createElement('script');
+            scriptElement2.src = "https://cdn.jsdelivr.net/npm/artplayer-plugin-danmuku/dist/artplayer-plugin-danmuku.js"
+            document.head.appendChild(scriptElement2);
 
+            // 要加载的脚本列表
+            const scriptUrls = [
+                'https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js',
+                'https://cdn.jsdelivr.net/npm/artplayer-plugin-danmuku/dist/artplayer-plugin-danmuku.js',
+            ];
 
-            // 创建 p 元素
-            const pElement = document.createElement('p');
-            pElement.setAttribute('class', 'vjs-no-js');
-            pElement.textContent =
-                "To view this video please enable JavaScript, and consider upgrading to a web browser that supports HTML5 video";
+            // 当 script 元素加载完成后，创建视频
+            var onloaded= function() {          
+    
+                const art = new Artplayer({
+                    container: "#" + videoContainerId,
+                    poster: 'https://xinlian132243.github.io/BCMod/Assets/VideoPlayerBG.jpg',
+                    autoplay: true,
+                    pip: true,
+                    muted: true,
+                    fullscreen: true,
+                    fullscreenWeb: true,
+                    playsInline: true,
+                    plugins: [
+                        artplayerPluginDanmuku({
+                            opacity: 0.6, // 弹幕透明度，范围在[0 ~ 1]
+                            speed: 10, // 弹幕持续时间，单位秒，范围在[1 ~ 10]
+                            minWidth: 0, // 输入框最小宽度，范围在[0 ~ 500]，填 0 则为无限制
+                            maxWidth: 600, // 输入框最大宽度，范围在[0 ~ Infinity]，填 0 则为 100% 宽度
+                            lockTime: 1, // 输入框锁定时间，单位秒，范围在[1 ~ 60],
+                            beforeEmit: (danmu) => !!danmu.text.trim() && art.playing, // 弹幕非空且正在播放中
+                        }),
+                    ],
+                    controls: [
+                        
+                    ],
+                   
+                });
+                w.videoPlayer.Player = art;
+
+                    // 暂停和继续播放的回调
+                art.on('video:pause', function() {
+                    console.log('Video paused');
+                    if(!w.videoPlayer.DontCallback)
+                    {
+                        w.videoPlayer.callbacks.OnPause();
+                    }
+                });
+
+                art.on('video:play', function() {
+                    console.log('Video playing');
+                    if(!w.videoPlayer.DontCallback)
+                    {
+                        w.videoPlayer.callbacks.OnPlay();
+                    }
+                });
         
-            const aElement = document.createElement('a');
-            aElement.setAttribute('href', 'https://videojs.com/html5-video-support/');
-            aElement.setAttribute('target', '_blank');
-            aElement.textContent = 'supports HTML5 video';
+                // 调整播放进度的回调
+                art.on('video:seeked', function() {
+                    console.log('Video seeked to', art.currentTime);
+                    if(!w.videoPlayer.DontCallback)
+                    {
+                        w.videoPlayer.callbacks.OnSeeked();
+                    }
+                });
+                // 视频播放结束的回调
+                art.on('video:ended', function() {
+                    console.log('Video ended');
+                    w.videoPlayer.callbacks.OnEnded();
+                });
+
+                // 视频加载完成回调
+                 art.on('ready', function() {
+                     console.log('Video ready');
+                     w.videoPlayer.callbacks.OnReady();
+                 });
+
+                 art.on('artplayerPluginDanmuku:emit', (danmu) => {
+                    console.info('send danmu', danmu);
+                    if(!w.videoPlayer.DontCallback)
+                    {
+                        w.videoPlayer.callbacks.OnEmit(danmu);
+                    }
+                });
+            };
+            
+            // 加载所有脚本
+            Promise.all(scriptUrls.map(url => loadScript(url)))
+                .then(function() {
+                    //console.log('所有脚本加载完成');
+                    onloaded();
+                })
+                .catch(function(error) {
+                    console.error('脚本加载失败:', error);
+                });
         
-            pElement.appendChild(aElement);
-        
-            // 创建 script 元素
-            const scriptElement = document.createElement('script');
-            scriptElement.setAttribute('src', 'https://vjs.zencdn.net/8.10.0/video.min.js');
-        
-            // 将创建的元素添加到 videoContainer
-            videoContainer.appendChild(linkElement);
-            videoContainer.appendChild(videoElement);
-            videoElement.appendChild(sourceElementMp4);
-            videoElement.appendChild(pElement);
-            videoContainer.appendChild(scriptElement);
-            w.videoPlayer.Player = videoElement;
         }
         
     
@@ -1093,63 +1119,20 @@
             document.body.appendChild(floatingInputContainer);
         }
            
-        function CreateBulletScreen()
-        {             
-            const targetElement = document.querySelector('#VideoContainer');
-            if (targetElement !== null && targetElement !== undefined)
-            {
-                const scriptElement = document.createElement('script');
-    
-                // 设置 script 元素的 src 属性为 BulletJs.js 的 CDN 地址
-                scriptElement.src = 'https://unpkg.com/js-bullets@latest/dist/BulletJs.min.js';
-                // 添加 script 元素到文档头部
-                document.head.appendChild(scriptElement);
-                // 当 script 元素加载完成后，创建弹幕屏幕
-                scriptElement.onload = function() {    
-                    // VideoContainer 的 div 必须要有明确的宽高
-                    w.videoPlayer.BulletScreen = new BulletJs('#VideoContainer', {
-                        trackHeight: 35, // 每条轨道高度
-                        speed: null, // 速度 100px/s 根据实际情况去配置
-                        pauseOnClick: false, // 点击暂停
-                        pauseOnHover: true, // hover 暂停
-                        duration: "10s",
-                    });
-                }  
-                
-    
-    
-                // 创建 ResizeObserver 实例让每次大小发生变化时重新创建弹幕池
-                // 其中关闭也会触发
-                if (targetElement.resizeObserver  === undefined)
-                {
-                    targetElement.resizeObserver = new ResizeObserver(entries => {
-                    for (let entry of entries) {
-                        // 获取目标元素的新尺寸
-                        const { width, height } = entry.contentRect;
-            
-                        // 重新创建弹幕池以适配
-                        CreateBulletScreen();
-                    }
-                    });
-            
-                    // 监听目标元素的大小变化
-                    targetElement.resizeObserver.observe(targetElement);
-                }
-            }
-            
-        }
-
-        function SendBullet(str)
+       
+        function SendDanmu(text, color = '0xffffff')
         {
-            str = str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\"/g, '&quot;')
-            .replace(/\'/g, '&#39;')
-            .replace(/\//g, '&#x2F;');
-
-            w.videoPlayer.BulletScreen.push(`<span style="color: rgba(255, 255, 255, 0.5); text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-size: 30px;">${str}</span>`)
+            if (!text || !text.trim()) return;
+            w.videoPlayer.Player.plugins.artplayerPluginDanmuku.emit({
+                text: text,
+                color: color,
+                border: true,
+            });            
+        }
+       
+        function ClearCacheDanmu()
+        {
+            w.videoPlayer.Player.plugins.artplayerPluginDanmuku.load();
         }
 
         function ExitVideoPlayer()
@@ -1190,7 +1173,7 @@
         
         // 获取当前播放进度的接口
         function getCurrentPaused() {
-            return w.videoPlayer.Player.paused;
+            return !w.videoPlayer.Player.playing;
         }
 
 
@@ -1240,10 +1223,9 @@
             {
                 return;
             }
-
-            w.videoPlayer.Player.src = item?.url;
+            ClearCacheDanmu();
+            w.videoPlayer.Player.url = item?.url;
             w.videoPlayer.playingId = id;
-            playVideo();        
 
             w.videoPlayer.RerenderVideoList();
         }
@@ -1280,7 +1262,13 @@
                 SendRequstSync();
             }       
         };
-    
+        
+        w.videoPlayer.callbacks.OnReady =
+        function(){
+           TrySetPlay();  
+        };
+        
+
         w.videoPlayer.callbacks.OnEnded =
         function(){
             var index= w.videoPlayer.videoList.findIndex(item => item.id == w.videoPlayer?.playingId);
@@ -1295,6 +1283,29 @@
             }        
         };
     
+        
+        w.videoPlayer.callbacks.OnEmit =
+        function(danmu){
+           danmu.border = false;
+           SendMsg("Danmu", `SourceCharacter发弹幕：${danmu.text}`,danmu);
+        };       
+        
+
+        function SendMsg(type, msg, data)
+        {
+            msg = msg.replace("SourceCharacter", GetPlayerName(Player));
+            ServerSend("ChatRoomChat", { Content: " EE_PLAYER_CUSTOM_DIALOG", Type: "Action", Sender: Player.MemberNumber,Dictionary: [
+                {
+                    "Tag": "MISSING PLAYER DIALOG: EE_PLAYER_CUSTOM_DIALOG",
+                    "Text": msg
+                } ,
+                {
+                    "Type" : type,
+                    "Data" : data, 
+                }
+            ]} );
+        }
+
         // 有修改权限
         function HavePermissionToModify()
         {
@@ -1336,6 +1347,15 @@
             }
         }
 
+        function loadScript(url) {
+            return new Promise(function(resolve, reject) {
+                const scriptElement = document.createElement('script');
+                scriptElement.src = url;
+                scriptElement.onload = resolve;
+                scriptElement.onerror = reject;
+                document.head.appendChild(scriptElement);
+            });
+        }
         
     console.log("[BC_EnhancedEedia] Load Success");
 })();
