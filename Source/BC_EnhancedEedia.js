@@ -419,11 +419,11 @@
 
     function OnRevDanmu(sender, msg)
     {
-        if(m.EnableVideoPlayer)
+        if(w.EnableVideoPlayer)
         {
             var danmu = msg.Data;
             // 播放状态下修改延迟
-            if(m.videoPlayer.Player.playing)
+            if(w.videoPlayer.Player.playing)
             {
                 // 把弹幕改成实时弹幕防止延迟太高了
                 danmu.time = getCurrentTime();
