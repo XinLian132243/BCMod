@@ -152,7 +152,7 @@
 
 
     mod.hookFunction(
-        "ChatRoomDrawCharacterOverlay",
+        "ChatRoomDrawCharacterStatusIcons",
    3,
    (args, next) => {
 
@@ -161,21 +161,22 @@
     let CharY = args[2];
     let Zoom = args[3];
 
-       ChatRoomDrawCharacterOverlayEx(C, CharX, CharY, Zoom);
+    ChatRoomDrawCharacterStatusIconsEx(C, CharX, CharY, Zoom);
 
        next(args);
    }
    );
 
     // 绘制正在观看的标志
-    function ChatRoomDrawCharacterOverlayEx(C, CharX, CharY, Zoom) {
+    function ChatRoomDrawCharacterStatusIconsEx(C, CharX, CharY, Zoom) {
 
         if (ChatRoomHideIconState == 0) {
              // 当存在
             let selfWaching = w.EnableVideoPlayer &&  C.MemberNumber == Player.MemberNumber;
             let inWatchers = w.videoPlayer.Watchers.findIndex(w=>w.MemberNumber == C.MemberNumber) >= 0;
             if (selfWaching || inWatchers) {
-                DrawImageResize("Icons/MovieStudio.png", CharX + 70 * Zoom, CharY + 40, 40 * Zoom, 40 * Zoom);
+                DrawImageResize("data:image/png;base64,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",
+                 CharX + 125 * Zoom, CharY + 100, 40 * Zoom, 40 * Zoom);
             }        
         }
     }
@@ -1064,7 +1065,9 @@
         function SendDanmu(text, color = '0xffffff', border)
         {
             if (!text || !text.trim()) return;
-            w.videoPlayer.Player.plugins.artplayerPluginDanmuku.emit({
+            if (w.videoPlayer?.Player?.plugins?.artplayerPluginDanmuku != null
+                && w.videoPlayer.Player.playing)
+                w.videoPlayer.Player.plugins.artplayerPluginDanmuku.emit({
                 text: text,
                 color: color,
                 border: border,
