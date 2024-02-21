@@ -481,9 +481,9 @@
             {
                 // 移动端
                 w.videoPlayer.FloatingVideoDiv.style.width = '80%';
-                w.videoPlayer.FloatingVideoDiv.style.height = '80%';
+                w.videoPlayer.FloatingVideoDiv.style.height = '50%';
                 w.videoPlayer.FloatingVideoDiv.style.left = '10%';
-                w.videoPlayer.FloatingVideoDiv.style.top = '10%';
+                w.videoPlayer.FloatingVideoDiv.style.top = '5%';
             }
           
             // 创建标题栏元素
