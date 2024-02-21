@@ -49,16 +49,24 @@
         0,
         (args, next) => {
             next(args);
-            if(w.EnableVideoPlayer)
-            {               
-                // 绘制开
-                DrawButton(965, 825, 40, 40, "🎦", "#FFFFFF");
-            }
-            else
-            {                
-                // 绘制关
-                DrawButton(965, 825, 40, 40, "🎦", "#777777");
-            }
+            if(NeedShowButton())
+            {
+                if(w.EnableVideoPlayer)
+                {               
+                    // 绘制开
+                    DrawButton(965, 825, 40, 40, "🎦", "#FFFFFF");
+                }
+                else if (IsChatRoomPlayingVideo())
+                {                
+                    // 绘制关
+                    DrawButton(965, 825, 40, 40, "🎦", "#44DD44");
+                } 
+                else
+                {                    
+                    // 绘制关
+                    DrawButton(965, 825, 40, 40, "🎦", "#444444");
+                }
+            }           
         }
     );
 
@@ -67,7 +75,7 @@
         "ChatRoomClick",
         0,
         (args, next) => {
-            if (MouseIn(965, 825, 40, 40)) {
+            if (NeedShowButton() && MouseIn(965, 825, 40, 40)) {
                 
                 if(w.EnableVideoPlayer)
                 {
@@ -81,7 +89,7 @@
                     w.videoPlayer.playingId = ''; 
                     createFloatingVideo();
                     w.EnableVideoPlayer = true;
-                    SendState(true);
+                    SendState();
                 }
 
                 return;
@@ -127,7 +135,7 @@
                 && data.Content === "ServerEnter"
                 && data.Sender != Player.MemberNumber)
                 {
-                    SendState(true);
+                    SendState();
                 }
             }
            
@@ -189,7 +197,7 @@
         {
             if(data.Type == "Chat")
             {
-                SendDanmu(`${GetPlayerName(SenderCharacter)} : ${data.Content}`, GetPlayerDefaultColor(SenderCharacter), SenderCharacter.MemberNumber === Player.MemberNumber);
+                SendDanmu(`${GetPlayerName(SenderCharacter)}:${data.Content}`, GetPlayerDefaultColor(SenderCharacter), SenderCharacter.MemberNumber === Player.MemberNumber);
             }
         }      
     }
@@ -255,6 +263,7 @@
         }else{
             SendMsgTo(target,dic);
         }
+        SendState();
     }
      
     function OnSyncPlay(msg)
@@ -386,13 +395,14 @@
     }
 
     
-    function SendState(active)
+    function SendState()
     {
         var dic = [
             {
                 Type: "State",
                 StateTime:  new Date().getTime(),
-                Active : active
+                Active:w.EnableVideoPlayer,
+                PlayingName:w.EnableVideoPlayer?GetPlayingItem()?.name:"",
             }     
         ]
        
@@ -401,20 +411,17 @@
 
     function OnRevState(sender, msg)
     {
-        var cur = w.videoPlayer.Watchers.find(w=>w.MemberNumber == sender);
-        if(cur === undefined && msg.Active === true)
+        // 先从列表删除
+        w.videoPlayer.Watchers = w.videoPlayer.Watchers.filter(watcher => watcher.MemberNumber !== sender)
+        // 是激活状态则更新
+        if(msg.Active === true)
         {
             w.videoPlayer.Watchers.push({
                 MemberNumber : sender,
                 StateTime : msg.StateTime,
+                PlayingName : msg.PlayingName,
             });
-        }  
-        // 删除不激活的
-        if(cur !== undefined && msg.Active === false)
-        {
-            w.videoPlayer.Watchers = w.videoPlayer.Watchers.filter(watcher => watcher.MemberNumber !== sender);
-        }      
-
+        }
     }
 
     function OnRevDanmu(sender, msg)
@@ -1082,7 +1089,8 @@
         function ExitVideoPlayer()
         {
             w.EnableVideoPlayer = false;
-            SendState(false);
+            w.videoPlayer.playId = "";
+            SendState();
             w.videoPlayer.DontCallback = true;
             if(w.videoPlayer.FloatingVideoDiv != null)
             {
@@ -1255,6 +1263,24 @@
         {
             // 是房管
             return ChatRoomPlayerIsAdmin();
+        }
+
+        function NeedShowButton()
+        {
+            // 有权限
+            return HavePermissionToModify() 
+            // 已经打开了
+            || w.EnableVideoPlayer 
+            // 有人正在看播放中的视频
+            ||  IsChatRoomPlayingVideo();
+        }
+
+        function IsChatRoomPlayingVideo()
+        {
+            var item = GetPlayingItem();
+            var selfPlaying = w.EnableVideoPlayer && item?.name!== undefined && item.name !== "";
+            var otherPlaying = w.videoPlayer.Watchers !== undefined && w.videoPlayer.Watchers.length > 0 && w.videoPlayer.Watchers.findIndex(w=>w.PlayingName !== undefined  && w.PlayingName !== "") >= 0;
+            return selfPlaying || otherPlaying;
         }
     
         // 创建 GUID 生成函数
