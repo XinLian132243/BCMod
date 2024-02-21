@@ -20,9 +20,9 @@
 https://zhouql.vip/bilibili/
 
 
-* 贝贝BiliBili - B站视频下载 ：
+* [贝贝BiliBili](https://xbeibeix.com/api/bilibili/) - B站视频下载  ：
 
- 需输入验证码，复制 **MP4地址** https://xbeibeix.com/api/bilibili/
+ 需输入验证码，复制 **MP4地址** 
 
 * 哔哩哔哩视频解析下载 除了可以下载B站视频，还支持微博、秒拍、YouTube、微视、全民K歌等多个视频平台 ：
 
