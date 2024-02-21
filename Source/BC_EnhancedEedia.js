@@ -960,7 +960,16 @@
             urlInput.style.marginBottom = '10px';
             urlInput.style.width = '400px'; 
             urlInput.value = defaulturl; // 设置地址输入框的默认值
-        
+
+            // 创建超链接元素
+            const guideLink = document.createElement('a');
+            guideLink.textContent = '获取指引';
+            guideLink.href = 'https://xinlian132243.github.io/BCMod/VideoPlayerUrlGuide.html';
+            guideLink.target = '_blank'; // 在新标签页打开链接
+
+            // 将超链接添加到 urlLabel 后面
+            urlLabel.insertAdjacentElement('afterend', guideLink);
+
             const confirmButton = document.createElement('button');
             confirmButton.textContent = '确定';
             confirmButton.style.marginRight = '10px';
@@ -987,6 +996,7 @@
             floatingInputContainer.appendChild(nameLabel);
             floatingInputContainer.appendChild(nameInput);
             floatingInputContainer.appendChild(urlLabel);
+            floatingInputContainer.appendChild(guideLink);
             floatingInputContainer.appendChild(urlInput);
             floatingInputContainer.appendChild(confirmButton);
             floatingInputContainer.appendChild(cancelButton);
