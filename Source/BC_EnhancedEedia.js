@@ -469,10 +469,22 @@
             w.videoPlayer.FloatingVideoDiv.style.resize = 'both';
             w.videoPlayer.FloatingVideoDiv.style.padding = '0';
             w.videoPlayer.FloatingVideoDiv.style.zIndex = '1000';
-            w.videoPlayer.FloatingVideoDiv.style.width = '50%';
-            w.videoPlayer.FloatingVideoDiv.style.height = '50%';
-            w.videoPlayer.FloatingVideoDiv.style.left = '50%';
-            w.videoPlayer.FloatingVideoDiv.style.top = '10%';
+            // 桌面
+            if(!CommonIsMobile)
+            {
+                w.videoPlayer.FloatingVideoDiv.style.width = '50%';
+                w.videoPlayer.FloatingVideoDiv.style.height = '50%';
+                w.videoPlayer.FloatingVideoDiv.style.left = '50%';
+                w.videoPlayer.FloatingVideoDiv.style.top = '10%';
+            }
+            else
+            {
+                // 移动端
+                w.videoPlayer.FloatingVideoDiv.style.width = '80%';
+                w.videoPlayer.FloatingVideoDiv.style.height = '80%';
+                w.videoPlayer.FloatingVideoDiv.style.left = '10%';
+                w.videoPlayer.FloatingVideoDiv.style.top = '10%';
+            }
           
             // 创建标题栏元素
             const titleBar = document.createElement('div');
@@ -912,6 +924,10 @@
                         w.videoPlayer.callbacks.OnEmit(danmu);
                     }
                 });
+
+                Artplayer.MOBILE_CLICK_PLAY = false;
+                Artplayer.MOBILE_DBCLICK_PLAY = false;
+                Artplayer.CONTROL_HIDE_TIME = 2000;
             };
             
             // 加载所有脚本
