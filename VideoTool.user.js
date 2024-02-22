@@ -61,6 +61,50 @@
      }, "");
 
  
+     id = GM_registerMenuCommand("复制所有分P视频名 + 外链", function() {
+        var url = window.location.href;
+    
+        RequstVideoAllCode(url, (res, names, codes) => {
+            if (res === true) {
+                // 存储所有视频链接的数组
+                const allLinks = [];
+                let processedCount = 0;
+    
+                // 成功回调函数
+                const handleSuccess = function(link, name, index) {
+                    // 将解析的视频链接添加到数组中
+                    allLinks[index] = {
+                        name: name,
+                        link: link
+                    };
+    
+                    // 检查是否所有视频都已处理
+                    processedCount++;
+                    if (processedCount === codes.length) {
+                        // 所有视频都已处理完毕，执行成功回调
+                        const formattedLinks = allLinks.map(entry => entry.name + '\n' + entry.link).join('\n');
+                        copyToClipboard(formattedLinks);
+                        alert("复制所有分P视频名 + 外链成功");
+                    }
+                };
+    
+                // 失败回调函数
+                const handleFail = function() {
+                    // 任何一个视频解析失败都视为整体失败
+                    OnFail();
+                };
+    
+                // 遍历视频代码列表，并解析每个视频的链接
+                codes.forEach((avci, index) => {
+                    RequestBilibiliVideoUrl(avci, link => {
+                        handleSuccess(link, names[index], index);
+                    }, handleFail);
+                });
+            } else {
+                OnFail();
+            }
+        });
+    }, "");
 
 
      function OnFail()
@@ -96,30 +140,28 @@
          }
      }
             
-     function HandleUrlFromVideoCode(code)
-     {
-         if(window.videoPlayer.urlCache[code] != null)
+
+     function RequstVideoAllCode(pageUrl, onRes)
+     {        
+         // 成功回调，同时传出得到的name 和 code
+         var onSuccess = function(name,code)
          {
-             return;
+             onRes(true,name, code);
+         }
+         var onFail = function()
+         {
+             onRes(false);
          }
 
-          // 成功回调，传出得到url
-          var onSuccess = function(url)
-          {
-              window.videoPlayer.urlCache[code] = url;
-          }
-          var onFail = function()
-          {
-              
-          }
-
-          //B站URL
-         var biliCmd = /avid=\d+&cid=\d+/.exec(code)
+         var biliCmd = /BV([a-zA-Z0-9]+)/.exec(pageUrl)
+         //B站地址
          if (biliCmd?.length > 0 )
          {          
-             RequestBilibiliVideoUrl(biliCmd[0], onSuccess, onFail);
+             RequestAllBilibiliVideoInfo(biliCmd[1], onSuccess, onFail);
+             return;
          }
      }
+            
 
 
      function RequestBilibiliVideoInfo(bvid, onSuccess, onFail, pindex = 0)
@@ -147,6 +189,38 @@
           });
      }
   
+     function RequestAllBilibiliVideoInfo(bvid, onSuccess, onFail) {
+        var url = `https://api.bilibili.com/x/web-interface/view?bvid=BV${bvid}`;
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.code === 0 && data.data !== undefined) {
+                    // 存储视频标题和视频代码的数组
+                    const titles = [];
+                    const codes = [];
+    
+                    // 遍历视频页面列表
+                    data.data.pages.forEach(page => {
+                        const title = data.data.title + " " + page.part;
+                        const code = `avid=${data.data.aid}&cid=${page.cid}`;
+                        titles.push(title);
+                        codes.push(code);
+                    });
+    
+                    // 调用成功回调函数，并传入两个数组
+                    onSuccess(titles, codes);
+                } else {
+                    console.error('请求返回错误:', data);
+                    onFail();
+                }
+            })
+            .catch(error => {
+                console.error('POST请求失败', error);
+                onFail();
+            });
+    }
+  
+
      function RequestBilibiliVideoUrl(avci, onSuccess, onFail)
      {
           var url = `https://api.bilibili.com/x/player/playurl?${avci}&qn=80&type=mp4&platform=html5&high_quality=1`;
