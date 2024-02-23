@@ -58,8 +58,8 @@
                 }
                 else if (IsChatRoomPlayingVideo())
                 {                
-                    // 绘制关
-                    DrawButton(965, 825, 40, 40, "🎦", "#44DD44");
+                    // 绘制正在热播
+                    DrawButton(965, 825, 40, 40, "🎦", "#44DD44", "", "正在放映："  + GetChatRoomPlayingName());
                 } 
                 else
                 {                    
@@ -94,6 +94,22 @@
 
                 return;
             }            
+            next(args);
+        }
+    );
+
+        // 绘制漂浮文字，因为放映按钮位置原因需要修改
+    mod.hookFunction(
+        "DrawButtonHover",
+        0,
+        (args, next) => {
+            var Left = args[0];
+            var Width = args[2];
+            var HoveringText = args[4];
+            if ((HoveringText != null) && (MouseX <= 1000) && (HoveringText.startsWith("正在放映"))) 
+            {
+                args[0] += Width + 25 - 605;
+            }        
             next(args);
         }
     );
@@ -1307,6 +1323,11 @@
             var selfPlaying = w.EnableVideoPlayer && item?.name!== undefined && item.name !== "";
             var otherPlaying = w.videoPlayer.Watchers !== undefined && w.videoPlayer.Watchers.length > 0 && w.videoPlayer.Watchers.findIndex(w=>w.PlayingName !== undefined  && w.PlayingName !== "") >= 0;
             return selfPlaying || otherPlaying;
+        }
+
+        function GetChatRoomPlayingName()
+        {
+            return w.videoPlayer?.Watchers?.find(w=>w.PlayingName !== undefined).PlayingName;
         }
     
         // 创建 GUID 生成函数
