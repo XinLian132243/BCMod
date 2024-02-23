@@ -545,6 +545,71 @@
              // 将同步按钮添加到标题栏中
              titleBar.appendChild(syncButton);
                     
+            // 创建临时缩小
+            const alignButton = document.createElement('button');
+            alignButton.innerHTML = '◻️';
+            alignButton.style.position = 'absolute';
+            alignButton.style.right = '60px';
+            alignButton.style.top = '0';
+            alignButton.style.bottom = '0';
+            alignButton.style.padding = '5px 10px';
+            alignButton.style.border = 'none';
+            alignButton.style.backgroundColor = 'rgba(1, 1, 1, 0.2)';
+            alignButton.style.color = 'white';
+            alignButton.style.cursor = 'pointer';
+            alignButton.style.fontWeight = 'bold';
+            alignButton.style.fontSize = '24px';
+
+            let isAligned = false;
+            let previousPosition = null;
+
+            // 为对齐按钮添加点击事件
+            alignButton.addEventListener('click', () => {
+
+                const floatingVideoDiv = w.videoPlayer.FloatingVideoDiv;
+                const inputChatElement = document.getElementById('InputChat');
+            
+                if (!isAligned) {
+                    // 获取页面宽度和高度
+                    const pageWidth = w.innerWidth;
+                    const pageHeight = w.innerHeight;
+            
+                    // 获取 InputChat 元素相对于视口的位置
+                    const inputChatRect = inputChatElement.getBoundingClientRect();
+                    const inputChatTopRelativeToViewport = inputChatRect.top;
+
+                    // 存储当前位置
+                    previousPosition = {
+                        left: floatingVideoDiv.style.left,
+                        top: floatingVideoDiv.style.top,
+                        width: floatingVideoDiv.style.width,
+                        height: floatingVideoDiv.style.height
+                    };
+
+                    // 设置 FloatingVideoDiv 的位置和大小
+                    floatingVideoDiv.style.position = 'absolute';
+
+                    floatingVideoDiv.style.width = '400px';
+                    floatingVideoDiv.style.height = '300px';
+            
+                    alignButton.innerHTML = '⬜';
+                } else {
+                    // 恢复到之前的位置
+                    if (previousPosition) {
+                        floatingVideoDiv.style.width = previousPosition.width;
+                        floatingVideoDiv.style.height = previousPosition.height;
+                    }
+            
+                    alignButton.innerHTML = '◻️';
+                }
+            
+                isAligned = !isAligned;
+            });        
+
+            // 将按钮添加到标题栏中
+            titleBar.appendChild(alignButton);
+
+
             // 创建关闭按钮
             const closeButton = document.createElement('button');
             closeButton.innerHTML = '❌';
