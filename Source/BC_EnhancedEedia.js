@@ -1167,7 +1167,7 @@
     
             const copyButton = document.createElement('button');
             copyButton.textContent = '复制';
-            copyButton.style.marginRight = '100px';
+            copyButton.style.marginRight = '10px';
             copyButton.addEventListener('click', function() {
                 
                 // 复制文本到剪贴板
@@ -1205,8 +1205,8 @@
         
             // 将元素添加到容器中
             floatingInputContainer.appendChild(explanation);
-            floatingInputContainer.appendChild(textArea);
             floatingInputContainer.appendChild(copyButton);
+            floatingInputContainer.appendChild(textArea);
             floatingInputContainer.appendChild(confirmButton);
             floatingInputContainer.appendChild(cancelButton);
         
