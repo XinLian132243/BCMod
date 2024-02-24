@@ -1466,8 +1466,9 @@
         {
             var div = document.createElement("div");
              div.setAttribute('style', 'background-color:' + ChatRoomGetTransparentColor("#0000FF") + ';');
+             div.setAttribute('class', 'ChatMessage ChatMessageAction');
              div.setAttribute('data-time', ChatRoomCurrentTime());
-             div.innerHTML = " (" + text + ")";
+             div.innerHTML = "(" + text + ")";
              ChatRoomAppendChat(div);
         }
     
