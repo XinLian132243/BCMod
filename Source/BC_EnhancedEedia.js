@@ -322,6 +322,15 @@
             return;
         }
 
+
+        if(getCurrentPaused() && !w.videoPlayer.pausedBySync)
+        {
+            playVideo();
+        }else if(!getCurrentPaused() && w.videoPlayer.pausedBySync)
+        {
+            pauseVideo();
+        }    
+
         var targetTime = w.videoPlayer.playTimeBySync;
         // 如果不是暂停状态，则需要计算网络延迟
         if(!w.videoPlayer.pausedBySync)
@@ -334,14 +343,7 @@
         {
             setCurrentTime(targetTime);
         }
-
-        if(getCurrentPaused() && !w.videoPlayer.pausedBySync)
-        {
-            playVideo();
-        }else if(!getCurrentPaused() && w.videoPlayer.pausedBySync)
-        {
-            pauseVideo();
-        }      
+  
         
         w.videoPlayer.needSetSync = true;
     }
@@ -981,10 +983,11 @@
                 // 调整播放进度的回调
                 art.on('video:seeked', function() {
                     console.log('Video seeked to', art.currentTime);
-                    if(!w.videoPlayer.DontCallback)
+                    if(!w.videoPlayer.DontSeekCallback)
                     {
                         w.videoPlayer.callbacks.OnSeeked();
                     }
+                    w.videoPlayer.DontSeekCallback = false;
                 });
                 // 视频播放结束的回调
                 art.on('video:ended', function() {
@@ -1137,6 +1140,16 @@
             textArea.style.whiteSpace = 'nowrap'; // 设置不换行
             textArea.style.overflow = 'auto'; // 设置滚动条
     
+            const copyButton = document.createElement('button');
+            copyButton.textContent = '复制';
+            copyButton.style.marginRight = '100px';
+            copyButton.addEventListener('click', function() {
+                
+                // 复制文本到剪贴板
+                navigator.clipboard.writeText(trim(textArea.value));
+              
+            });
+        
             
             const confirmButton = document.createElement('button');
             confirmButton.textContent = '确定';
@@ -1168,6 +1181,7 @@
             // 将元素添加到容器中
             floatingInputContainer.appendChild(explanation);
             floatingInputContainer.appendChild(textArea);
+            floatingInputContainer.appendChild(copyButton);
             floatingInputContainer.appendChild(confirmButton);
             floatingInputContainer.appendChild(cancelButton);
         
@@ -1262,9 +1276,8 @@
     
         // 调整播放时间的接口（单位：秒）
         function setCurrentTime(time) {
-            w.videoPlayer.DontCallback = true;
+            w.videoPlayer.DontSeekCallback = true;
             w.videoPlayer.Player.currentTime = time;
-            w.videoPlayer.DontCallback = false;
         }
     
         function setTitle(str)
