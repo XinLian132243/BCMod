@@ -244,7 +244,7 @@
             return;
         }
 
-        if (w.CurrentSpeakItem.Context.length > 0) {
+        if (w.CurrentSpeakItem.Context?.length > 0) {
           var nextText = w.CurrentSpeakItem.Context.shift();
           if(nextText.audio != -1 && nextText.audio in w.VocalAudio)
           {
