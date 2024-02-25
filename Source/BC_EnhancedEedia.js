@@ -87,6 +87,7 @@
                     w.videoPlayer.syncListTime = 0;
                     w.videoPlayer.syncPlayTime = 0;
                     w.videoPlayer.playingId = ''; 
+                    w.videoPlayer.DontCallback = false;
                     createFloatingVideo();
                     w.EnableVideoPlayer = true;
                     SendState();
