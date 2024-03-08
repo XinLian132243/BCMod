@@ -414,7 +414,7 @@
 
     function OnRequstSync(sender)
     {
-        if(!w.EnableVideoPlayer)
+        if(!w.EnableVideoPlayer || w.videoPlayer?.Player === undefined)
         {
             return;
         }
