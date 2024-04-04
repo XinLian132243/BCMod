@@ -1265,7 +1265,14 @@
 
         // 获取当前播放进度的接口
         function getCurrentTime() {
-            return w.videoPlayer.Player.currentTime;
+            if(w?.videoPlayer?.Player !== undefined)
+            {
+                return w.videoPlayer.Player.currentTime;
+            }
+            else
+            {
+                return 0;
+            }
         }
     
 
