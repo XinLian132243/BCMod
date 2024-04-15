@@ -24,7 +24,6 @@
             {
                 RequestBilibiliVideoUrl(code,(link)=>{
                     copyToClipboard(link);
-                    alert("复制外链成功");
                 } , OnFail);
             }
             else
@@ -47,7 +46,6 @@
             {
                 RequestBilibiliVideoUrl(code,(link)=>{
                     copyToClipboard(name + '\n' + link);
-                    alert("视频名 + 外链成功");
                 } , OnFail);
             }
             else
