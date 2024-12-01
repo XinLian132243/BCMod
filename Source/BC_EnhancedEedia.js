@@ -1470,10 +1470,18 @@
             return interpolateColor('#ffffff', c.LabelColor, 0.3);
         }
 
+        function GetTransparentColor(Color) {
+            if (!Color) return "rgba(128,128,128,0.1)";
+            const R = Color.substring(1, 3);
+            const G = Color.substring(3, 5);
+            const B = Color.substring(5, 7);
+            return "rgba(" + parseInt(R, 16) + "," + parseInt(G, 16) + "," + parseInt(B, 16) + ",0.1)";
+        }
+
         function ShowLocalChatMsg(text)
         {
             var div = document.createElement("div");
-             div.setAttribute('style', 'background-color:' + ChatRoomGetTransparentColor("#0000FF") + ';');
+             div.setAttribute('style', 'background-color:' + GetTransparentColor("#0000FF") + ';');
              div.setAttribute('class', 'ChatMessage ChatMessageAction');
              div.setAttribute('data-time', ChatRoomCurrentTime());
              div.innerHTML = "(" + text + ")";
