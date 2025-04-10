@@ -83,9 +83,6 @@
 
         }
 
-        // 如果是角色说话
-        var isCharacterSpeak =  IsCharacterSpeak(data);
-
         // 消息和动作只处理跟自己有关的
         // 不包含自己名字的，跳过
         if(Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe)
@@ -150,7 +147,7 @@
         // 如果是聊天信息，最多二十个字
         if(Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat)
         {
-            if(isCharacterSpeak && !text.includes(GetPlayerName(Player)))
+            if(IsCharacterSpeak(data) && !text.includes(GetPlayerName(Player)))
             {
                 const [t, e] = TruncateAndAppend(text, 20);
                 text = t;
@@ -159,36 +156,15 @@
         }
 
 
-        if(Player.OnlineSettings.CRE.SpeakSetting.TestVocals 
-            && SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting?.EnableVocal == true
-            && isCharacterSpeak)
-        {
-            w.VocalIndex ++;
-            PrepareVocals(text, SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting.Vocals, w.VocalIndex, SenderCharacter?.OnlineSharedSettings?.CRE?.SpeakSetting.Prompt);
-
-            w.WaitSpeakQueue.push({
-                VocalIndex : w.VocalIndex,
-                Context: 
-                [
+        w.WaitSpeakQueue.push({
+            VocalIndex : -1,
+            Context: 
+            [
                 {t:senderText, audio: -1},
-                {t:text, audio: w.VocalIndex},
+                {t:text, audio: -1},
                 {t:endText, audio: -1},
-                ]}
-                );
-        }
-        else
-        {
-            w.WaitSpeakQueue.push({
-                VocalIndex : -1,
-                Context: 
-                [
-                    {t:senderText, audio: -1},
-                    {t:text, audio: -1},
-                    {t:endText, audio: -1},
-                ]}
-                );
-        }
-
+            ]}
+        );
 
         TrySpeakNextItem();
      }
@@ -370,11 +346,7 @@
 
             DrawCheckbox(500, 352, 64, 64, "仅播放与自己有关的互动和消息", Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe);
             DrawCheckbox(500, 432, 64, 64, "过长对话省略", Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat);
-            DrawCheckbox(500, 512, 64, 64, "测试：声线", Player.OnlineSettings.CRE.SpeakSetting.TestVocals);
-            //DrawCheckbox(500, 592, 64, 64, TextGet("AudioNotifications"), Player.AudioSettings.Notifications);
             
-
-
             DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
         }
     });
@@ -397,7 +369,6 @@
                 ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
                 PreferenceSubscreenAudioExit();
             }
-
 
             // 音量
             if (MouseIn(500, 193, 250, 64)) {
@@ -432,8 +403,6 @@
             if (MouseXIn(500, 64)) {
                 if (MouseYIn(352, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe = !Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe;
                 if (MouseYIn(432, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat = !Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat;
-                if (MouseYIn(512, 64)) Player.OnlineSettings.CRE.SpeakSetting.TestVocals = !Player.OnlineSettings.CRE.SpeakSetting.TestVocals;
-                //if (MouseYIn(592, 64)) Player.AudioSettings.Notifications = !Player.AudioSettings.Notifications;
             }
         }        
 
@@ -442,7 +411,6 @@
 
     function CheckOnlineCRESetting()
     {
-
         if(Player.OnlineSettings.CRE?.SpeakSetting == null)
         {
             Player.OnlineSettings.CRE = Player.OnlineSettings.CRE || {};
@@ -451,24 +419,10 @@
                 SpeakVolume:1.0,
                 SpeakSpeed:1.0,
                 SpeakMsgOnlyAboutMe : true,
-                SpeedLimitLengthChat : true,                
-                TestVocals : true,
+                SpeedLimitLengthChat : true
             };
             ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
-        }        
-
-        if(Player.OnlineSharedSettings.CRE?.SpeakSetting == null)
-        {
-            Player.OnlineSharedSettings.CRE = Player.OnlineSharedSettings.CRE || {};
-
-            Player.OnlineSharedSettings.CRE.SpeakSetting = {
-                Vocals:"",
-                SpeakSpeed:1.0,
-                Prompt:"",
-                EnableVocal : false,
-            };
-            ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings });
-        }            
+        }
     }
 
 
