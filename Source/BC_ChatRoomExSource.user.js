@@ -9,6 +9,7 @@
 // @grant        none
 // @license      MIT
 // ==/UserScript==
+// ... existing code ...
 
 (function () {
     'use strict';
@@ -30,247 +31,378 @@
     const w = window;
     // =======================================================================================
 
+    // 语音播报模块
+    const SpeakModule = (function() {
+        // 私有变量
+        let waitSpeakQueue = [];
+        let vocalAudio = {};
+        let enableSpeak = false;
+        let vocalIndex = 0;
+        let currentSpeakItem = [];
+        let currentAudio = null;
+        let waitDownloadTimer = null;
+
+        // 私有方法
+        // 过滤无法朗读的字符
+        function replaceCharacters(inputString) {
+            // 定义替换映射
+            var replaceMap = {
+                '𝓪': 'a', '𝓫': 'b', '𝓬': 'c', '𝓭': 'd', '𝓮': 'e',
+                '𝓯': 'f', '𝓰': 'g', '𝓱': 'h', '𝓲': 'i', '𝓳': 'j',
+                '𝓴': 'k', '𝓵': 'l', '𝓶': 'm', '𝓷': 'n', '𝓸': 'o',
+                '𝓹': 'p', '𝓺': 'q', '𝓻': 'r', '𝓼': 's', '𝓽': 't',
+                '𝓾': 'u', '𝓿': 'v', '𝔀': 'w', '𝔁': 'x', '𝔂': 'y',
+                '𝔃': 'z'
+            };
+        
+            // 逐个遍历replaceMap并替换原始字符串
+            Object.keys(replaceMap).forEach(function (key) {
+                inputString = inputString.replace(new RegExp(key, 'g'), replaceMap[key]);
+            });
+        
+            return inputString;
+        }
+
+        // 截断太长的消息
+        function truncateAndAppend(originalString, maxLength) {
+            // 定义正则表达式，匹配中英文字符和数字
+            var alphanumeric = /[a-zA-Z0-9\u4e00-\u9fa5]/;
+
+            // 初始化计数器和截断位置
+            var count = 0;
+            var truncateIndex = 0;
+
+            // 遍历字符串，找到截断位置
+            for (var i = 0; i < originalString.length; i++) {
+                var char = originalString[i];
+                if (char.match(alphanumeric)) {
+                    count++;
+                }
+
+                if (count <= maxLength) {
+                    truncateIndex = i;
+                }
+            }
+
+            truncateIndex += 1;
+            if(truncateIndex == count) {
+                return [originalString,""];
+            }
+
+            // 截断字符串
+            var truncatedString = originalString.slice(0, truncateIndex);
+
+            // 计算被截断的字符数
+            var truncatedChars = originalString.length - truncateIndex;
+
+            if(truncatedChars == 0) {
+                return [originalString, ""];
+            }
+
+            // 补充字符串
+            var appendString = ', 等' + truncatedChars + '字';
+
+            // 返回结果字符串
+            return [truncatedString, appendString];
+        }
+
+        // 准备语音
+        function prepareVocals(text, char, index, prompt) {
+            var url = atob("aHR0cHM6Ly92Mi5nZW5zaGludm9pY2UudG9wLw==");
+            fetch(url + 'run/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    data: [text, char, 0.2, 0.6, 0.8, 1, 'ZH', null, prompt, 'Text prompt', '', 0.7],
+                    fn_index: 0,
+                })
+            }).then(response => response.json()).then(data => {
+                if (data && data.data && data.data[0] === 'Success') {
+                    var audioFileName = data.data[1].name;
+                    var audio = new Audio(url + 'file=' + audioFileName);
+                    // 存入缓存
+                    vocalAudio[index] = audio;
+                } else {
+                    console.error('请求返回错误:', data);
+                }
+            }).catch(error => {
+                console.error('POST请求失败', error);
+            });
+        }
+
+        // 等待音频加载
+        function waitForAudio(index, callBack) {
+            if(index in vocalAudio) {
+                callBack();
+            }
+            queryDictionary(index, vocalAudio, (res) => {callBack();});
+        }
+
+        // 查询字典
+        function queryDictionary(elementToFind, dictionary, callBack) {
+            var elapsedTime = 0;
+            var interval = 500; // 0.5秒
+            var duration = 5000; // 5秒
+            function check() {
+                elapsedTime += interval;
+                if (dictionary.hasOwnProperty(elementToFind)) {
+                    // 查询成功
+                    clearTimeout(waitDownloadTimer);
+                    waitDownloadTimer = null;
+                    callBack(true);
+                } else if (elapsedTime >= duration) {
+                    // 超过持续时间，查询失败
+                    waitDownloadTimer = null;
+                    callBack(false);
+                } else {
+                    // 继续定时查询
+                    waitDownloadTimer = setTimeout(check, interval);
+                }
+            }
+            waitDownloadTimer = setTimeout(check, interval);
+        }
+
+        // 获取玩家名称
+        function getPlayerName(player) {
+            return player?.Nickname != null && player?.Nickname != '' ? player?.Nickname : player?.Name;
+        }
+
+        // 是否是说话的聊天信息
+        function isCharacterSpeak(data) {
+            return data.Type == "Chat" //聊天
+                || data.Type == "Whisper" // 悄悄话
+                || data.Type == "LocalMessage"  // 检测Beep
+            ;
+        }
+
+        // 在聊天房间并且打开了开关
+        function isEnableSpeak() {
+            if(CurrentScreen != 'ChatRoom') {
+                return false;
+            }
+            return enableSpeak;
+        }
+
+        // 说话函数
+        function speakDefault(str) {
+            str = replaceCharacters(str);
+
+            let utterThis = new window.SpeechSynthesisUtterance();
+            utterThis.text = str; 
+            utterThis.pitch = 2;
+            utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
+            utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
+            utterThis.lang = 'zh-CN'; 
+            utterThis.onend = function () {
+                trySpeakNextText();
+            };
+            window.speechSynthesis.speak(utterThis);
+        }
+
+        // 播放语音
+        function speakVacal(index) {
+            var audio = vocalAudio[index];
+            audio.addEventListener('ended', function() {
+                trySpeakNextText();
+            });
+            audio.playbackRate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
+            audio.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume * 0.2;
+            // 播放音频
+            audio.play();
+        }
+
+        // 尝试播放下一段文本
+        function trySpeakNextText() {
+            if(!isEnableSpeak()) {
+                return;
+            }
+
+            if (currentSpeakItem.Context?.length > 0) {
+                var nextText = currentSpeakItem.Context.shift();
+                if(nextText.audio != -1 && nextText.audio in vocalAudio) {
+                    speakVacal(nextText.audio);
+                } else {
+                    speakDefault(nextText.t);
+                }
+            } else {
+                trySpeakNextItem();
+            }
+        }
+
+        // 尝试播放下一个项目
+        function trySpeakNextItem() {
+            if(!isEnableSpeak()) {
+                return;
+            }
+
+            if (waitSpeakQueue.length > 0 
+                && !window.speechSynthesis.speaking
+                && !(currentAudio != null && currentAudio.paused == false)
+                && waitDownloadTimer == null) {
+                var nextItem = waitSpeakQueue.shift();
+                currentSpeakItem = nextItem;    
+                if(nextItem.VocalIndex == -1) {
+                    trySpeakNextText();
+                } else {
+                    waitForAudio(nextItem.VocalIndex, trySpeakNextText);
+                }
+            }        
+        }
+
+        // 处理消息朗读
+        function handleSpeakMsg(data, msg, senderCharacter, metadata) {        
+            if(!isEnableSpeak()) {
+                return;
+            }
+
+            // 仅播放以下内容
+            if(!(data.Type == "Chat" //聊天
+                || data.Type == "Action"  // 消息
+                || data.Type == "Activity" // 互动
+                || data.Type == "Emote" // 动作
+                || data.Type == "Whisper" // 悄悄话
+                || data.Type == "LocalMessage"  // 检测Beep
+            )) {
+                // 此外消息不读
+                return;
+            } else {
+                // 除了Beep，自己发出的消息不会朗读
+                if(data.Type != "LocalMessage" && Player.MemberNumber == senderCharacter.MemberNumber) {
+                    return;
+                }
+            }
+
+            // 消息和动作只处理跟自己有关的
+            // 不包含自己名字的，跳过
+            if(Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe) {
+                if(data.Type == "Action") {
+                    if(!msg.includes(getPlayerName(Player))) {
+                        return;
+                    }
+                }
+                // 目标对象不是自己的，跳过
+                if(data.Type == "Activity" 
+                    && metadata?.TargetMemberNumber != Player.MemberNumber) {
+                    return;
+                }
+            }      
+
+            var senderName = getPlayerName(senderCharacter);
+            var text = msg;
+            var senderText = "";
+            var endText = "";
+            
+            if(data.Type == "Chat") {
+                senderText = senderName + "说：";
+            }
+
+            if(data.Type == "Whisper") {
+                senderText = senderName + "悄悄说：";
+            }
+
+            if(data.Type == "LocalMessage") {
+                // 本地消息处理Beep
+                if(msg.includes("bce-beep")) {
+                    var beep = /好友私聊来自 (.+)\(\d+\); 以及以下信息:(.+)/.exec(msg);
+                    if (beep?.length > 0) {          
+                        senderText = beep[1] + "私聊说：" ;
+                        text = beep[2];
+                    }
+        
+                    beep = /好友私聊来自 (.+)\(\d+\) 位于房间 \"(.+)\"; 以及以下信息:(.+)/.exec(msg);
+                    if (beep?.length > 0) {          
+                        senderText = beep[1] + "在房间" + beep[2] + "私聊说：";
+                        text = beep[3];
+                    }
+                } else {
+                    return;
+                }
+            }
+            
+            // 如果是聊天信息，最多二十个字
+            if(Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat) {
+                if(isCharacterSpeak(data) && !text.includes(getPlayerName(Player))) {
+                    const [t, e] = truncateAndAppend(text, 20);
+                    text = t;
+                    endText = e;
+                }
+            }
+
+            waitSpeakQueue.push({
+                VocalIndex: -1,
+                Context: [
+                    {t: senderText, audio: -1},
+                    {t: text, audio: -1},
+                    {t: endText, audio: -1},
+                ]
+            });
+
+            trySpeakNextItem();
+        }
+
+        // 公开接口
+        return {
+            init: function() {
+                // 初始化模块
+                enableSpeak = false;
+                waitSpeakQueue = [];
+                vocalAudio = {};
+                currentSpeakItem = [];
+                currentAudio = null;
+                waitDownloadTimer = null;
+            },
+            
+            handleMessage: function(data, msg, senderCharacter, metadata) {
+                handleSpeakMsg(data, msg, senderCharacter, metadata);
+            },
+            
+            toggleSpeak: function() {
+                if(enableSpeak) {
+                    enableSpeak = false;
+                    // 同时停止正在的播放
+                    waitSpeakQueue = [];
+                    window.speechSynthesis.cancel();
+                    return false;
+                } else {
+                    enableSpeak = true;
+                    speakDefault("开启播报");
+                    return true;
+                }
+            },
+            
+            isSpeakEnabled: function() {
+                return enableSpeak;
+            },
+            
+            testSpeak: function() {
+                window.speechSynthesis.cancel();
+                let utterThis = new window.SpeechSynthesisUtterance();
+                utterThis.text = "星涟说：这是一段试听，喵";
+                utterThis.pitch = 2;
+                utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
+                utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
+                utterThis.lang = 'zh-CN';
+                window.speechSynthesis.speak(utterThis);
+            }
+        };
+    })();
+
+    // 初始化语音模块
+    SpeakModule.init();
+
     mod.hookFunction("ChatRoomMessageDisplay", 4, (args, next) => { 
-        //console.log(args);
         var data = args[0];
         var msg = args[1];
         var SenderCharacter = args[2];
         var metadata = args[3];
-        ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata);
-         return next(args);
-     });
-
-    w.WaitSpeakQueue = [];
-    w.VocalAudio = {};
-    w.EnableSpeak = false;
-    w.VocalIndex = 0;
-
-
-
-    function ChatRoomMessageDisplayEx(data, msg, SenderCharacter, metadata)
-    {
-        // 朗读消息功能
-        HandleSpeakMsg(data, msg, SenderCharacter, metadata);
-    }
-
-     function HandleSpeakMsg(data, msg, SenderCharacter, metadata)
-     {        
-        if(!IsEnableSpeak())
-        {
-            return;
-        }
-
-        // 仅播放以下内容
-        if(!(data.Type == "Chat" //聊天
-        || data.Type == "Action"  // 消息
-        || data.Type == "Activity" // 互动
-        || data.Type == "Emote" // 动作
-        || data.Type == "Whisper" // 悄悄话
-        || data.Type == "LocalMessage"  // 检测Beep
-        )
-        )
-        {
-            // 此外消息不读
-            return;
-        }
-        else
-        {
-            // 除了Beep，自己发出的消息不会朗读
-            if(data.Type != "LocalMessage" && Player.MemberNumber == SenderCharacter.MemberNumber)
-            {
-                return;
-            }
-
-        }
-
-        // 消息和动作只处理跟自己有关的
-        // 不包含自己名字的，跳过
-        if(Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe)
-        {
-            if(data.Type == "Action")
-            {
-               if(!msg.includes(GetPlayerName(Player)))
-               {
-                    return;
-               }
-            }
-            // 目标对象不是自己的，跳过
-            if(data.Type == "Activity" 
-            && metadata?.TargetMemberNumber != Player.MemberNumber)
-            {
-                return;
-            }
-        }      
-
-
-        var senderName  = GetPlayerName(SenderCharacter);
-        var text = msg;
-        var senderText = "";
-        var endText = "";
-        if(data.Type == "Chat")
-        {
-            senderText = senderName + "说：";
-        }
-
-        if(data.Type == "Whisper")
-        {
-            senderText = senderName + "悄悄说：";
-        }
-
-       
-        if(data.Type == "LocalMessage")
-        {
-            // 本地消息处理Beep
-            if(msg.includes("bce-beep"))
-            {
-                var beep = /好友私聊来自 (.+)\(\d+\); 以及以下信息:(.+)/.exec(msg);
-                if (beep?.length > 0 )
-                {          
-                    senderText = beep[1] + "私聊说：" ;
-                    text = beep[2];
-                }
-    
-                beep = /好友私聊来自 (.+)\(\d+\) 位于房间 \"(.+)\"; 以及以下信息:(.+)/.exec(msg);
-                if (beep?.length > 0 )
-                {          
-                    senderText = beep[1] + "在房间" + beep[2] + "私聊说：";
-                    text = beep[3];
-                }
-            }
-            else
-            {
-                return;
-            }
-           
-        }
         
-        // 如果是聊天信息，最多二十个字
-        if(Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat)
-        {
-            if(IsCharacterSpeak(data) && !text.includes(GetPlayerName(Player)))
-            {
-                const [t, e] = TruncateAndAppend(text, 20);
-                text = t;
-                endText = e;
-            }
-        }
-
-
-        w.WaitSpeakQueue.push({
-            VocalIndex : -1,
-            Context: 
-            [
-                {t:senderText, audio: -1},
-                {t:text, audio: -1},
-                {t:endText, audio: -1},
-            ]}
-        );
-
-        TrySpeakNextItem();
-     }
-
-     // 如果是说话的聊天信息
-     function IsCharacterSpeak(data)
-     {
-        return data.Type == "Chat" //聊天
-        || data.Type == "Whisper" // 悄悄话
-        || data.Type == "LocalMessage"  // 检测Beep
-        ;
-     }
-
-     // 说话函数
-     function SpeakDefault(str){
-
-        str = ReplaceCharacters(str);
-
-
-        let utterThis = new window.SpeechSynthesisUtterance();
-        utterThis.text= str; 
-        utterThis.pitch = 2;
-        utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
-        utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
-        utterThis.lang = 'zh-CN'; 
-        utterThis.onend = function () {
-            TrySpeakNextText();
-          };
-        window.speechSynthesis.speak(utterThis);
-    }
-
-    function SpeakVacal(index){
-
-        var audio = w.VocalAudio[index];
-        audio.addEventListener('ended', function() {
-            TrySpeakNextText();
-          });
-          audio.playbackRate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
-          audio.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume * 0.2;
-          // 播放音频
-          audio.play();
-    }
-
-    w.CurrentSpeakItem = [];
-    w.CurrentAudio = null;
-
-
-
-    // 如果队列不为空，且当前没有文本正在朗读，则取出下一段文本并朗读
-    function TrySpeakNextText() {
-        if(!IsEnableSpeak())
-        {
-            return;
-        }
-
-        if (w.CurrentSpeakItem.Context?.length > 0) {
-          var nextText = w.CurrentSpeakItem.Context.shift();
-          if(nextText.audio != -1 && nextText.audio in w.VocalAudio)
-          {
-            SpeakVacal(nextText.audio);
-          }else{
-            SpeakDefault(nextText.t);
-          }
-        }
-        else
-        {
-            TrySpeakNextItem();
-        }
-    }   
-      
-
-    function TrySpeakNextItem() {
-        if(!IsEnableSpeak())
-        {
-            return;
-        }
-
-        if (w.WaitSpeakQueue.length > 0 
-            && !window.speechSynthesis.speaking
-            &&!(w.CurrentAudio != null && w.CurrentAudio.paused == false)
-            && w.WaitDownloadTimer == null) {
-          var nextItem = w.WaitSpeakQueue.shift();
-          w.CurrentSpeakItem = nextItem;    
-          if(nextItem.VocalIndex == -1)
-          {
-
-            TrySpeakNextText();
-          }   
-          else{
-            WaitForAudio(nextItem.VocalIndex, TrySpeakNextText)
-          }
-          
-        }        
-    }    
-
-    // 在聊天房间并且打开了开关
-    function IsEnableSpeak()
-    {
-        if(CurrentScreen != 'ChatRoom')
-        {
-            return false;
-        }
-
-        return w.EnableSpeak;
-    }
-
+        // 使用语音模块处理消息
+        SpeakModule.handleMessage(data, msg, SenderCharacter, metadata);
+        
+        return next(args);
+    });
 
     // 绘制房间按钮
     mod.hookFunction(
@@ -278,13 +410,10 @@
         0,
         (args, next) => {
             next(args);
-            if(w.EnableSpeak)
-            {               
+            if(SpeakModule.isSpeakEnabled()) {               
                 // 绘制开
                 DrawButton(965, 785, 40, 40, "🎧", "#FFFFFF");
-            }
-            else
-            {                
+            } else {                
                 // 绘制关
                 DrawButton(965, 785, 40, 40, "🎧", "#444444");
             }
@@ -297,35 +426,20 @@
         0,
         (args, next) => {
             if (MouseIn(965, 785, 40, 40)) {
-                
-                if(w.EnableSpeak)
-                {
-                    w.EnableSpeak = false;
-                    // 同时停止正在的播放
-                    w.WaitSpeakQueue = [];
-                    w.speechSynthesis.cancel();
-                }
-                else
-                {
-                    w.EnableSpeak = true;                            
-                    CheckOnlineCRESetting();
-                    SpeakDefault("开启播报");
-                }
-
+                SpeakModule.toggleSpeak();
+                CheckOnlineCRESetting();
                 return;
             }            
             next(args);
         }
     );
 
-    
     mod.hookFunction("PreferenceRun", 50, (args, next) => {
         next(args);
         if (PreferenceSubscreen === "") {
             DrawButton(920, 50, 400, 90, "        房间朗读设置", "White", "Icons/Audio.png");
         }
         if (PreferenceSubscreen === "ChatRoomExSetting") {
-
             MainCanvas.textAlign = "left";
             DrawText("- 房间朗读设置 -", 500, 125, "Black", "Gray");
             DrawText("朗读音量", 800, 225, "Black", "Gray");
@@ -351,7 +465,6 @@
         }
     });
 
-
     mod.hookFunction("PreferenceClick", 10, (args, next) => {
         next(args);
         // 初始按钮
@@ -360,11 +473,9 @@
             CheckOnlineCRESetting();
         }
 
-        if(PreferenceSubscreen == "ChatRoomExSetting")
-        {
+        if(PreferenceSubscreen == "ChatRoomExSetting") {
             // 窗口退出
-            if (MouseIn(1815, 75, 90, 90)) 
-            {            
+            if (MouseIn(1815, 75, 90, 90)) {            
                 //保存设置
                 ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
                 PreferenceSubscreenAudioExit();
@@ -373,200 +484,44 @@
             // 音量
             if (MouseIn(500, 193, 250, 64)) {
                 if (MouseX <= 625) 
-                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume  = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume - 0.1, 0.1);
+                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume - 0.1, 0.1);
                 else 
-                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume  = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume + 0.1, 1);
-            }
-
-            // 语速
-            if (MouseIn(500, 272, 250, 64)) {
-                if (MouseX <= 625) 
-                    Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed  = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed - 0.1, 0.1);
-                else 
-                    Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed  = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed + 0.1, 2);
-            }
-            // 试听按钮
-            if (MouseIn(200, 225, 200, 64)) {
-                w.speechSynthesis.cancel();
-                let utterThis = new window.SpeechSynthesisUtterance();
-                utterThis.text= "星涟说：这是一段试听，喵";
-                utterThis.pitch = 2;
-                utterThis.rate = Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed;
-                utterThis.volume = Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume;
-                utterThis.lang = 'zh-CN';
-
-                window.speechSynthesis.speak(utterThis);
-            }
-
-            
-            // Individual audio check-boxes
-            if (MouseXIn(500, 64)) {
-                if (MouseYIn(352, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe = !Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe;
-                if (MouseYIn(432, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat = !Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat;
-            }
-        }        
-
-    });
-
-
-    function CheckOnlineCRESetting()
-    {
-        if(Player.OnlineSettings.CRE?.SpeakSetting == null)
-        {
-            Player.OnlineSettings.CRE = Player.OnlineSettings.CRE || {};
-
-            Player.OnlineSettings.CRE.SpeakSetting = {
-                SpeakVolume:1.0,
-                SpeakSpeed:1.0,
-                SpeakMsgOnlyAboutMe : true,
-                SpeedLimitLengthChat : true
-            };
-            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+                Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume + 0.1, 1);
         }
-    }
 
+        // 语速
+        if (MouseIn(500, 272, 250, 64)) {
+            if (MouseX <= 625) 
+                Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed - 0.1, 0.1);
+            else 
+                Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed + 0.1, 2);
+        }
+        // 试听按钮
+        if (MouseIn(200, 225, 200, 64)) {
+            SpeakModule.testSpeak();
+        }
 
-    // 过滤无法朗读的字符，TODO暂时无法识别末尾个字符
-    function ReplaceCharacters(inputString) {
-        // 定义替换映射
-        var replaceMap = {
-        '𝓪': 'a', '𝓫': 'b', '𝓬': 'c', '𝓭': 'd', '𝓮': 'e',
-        '𝓯': 'f', '𝓰': 'g', '𝓱': 'h', '𝓲': 'i', '𝓳': 'j',
-        '𝓴': 'k', '𝓵': 'l', '𝓶': 'm', '𝓷': 'n', '𝓸': 'o',
-        '𝓹': 'p', '𝓺': 'q', '𝓻': 'r', '𝓼': 's', '𝓽': 't',
-        '𝓾': 'u', '𝓿': 'v', '𝔀': 'w', '𝔁': 'x', '𝔂': 'y',
-        '𝔃': 'z'
+        // Individual audio check-boxes
+        if (MouseXIn(500, 64)) {
+            if (MouseYIn(352, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe = !Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe;
+            if (MouseYIn(432, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat = !Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat;
+        }
+    }        
+});
+
+function CheckOnlineCRESetting() {
+    if(Player.OnlineSettings.CRE?.SpeakSetting == null) {
+        Player.OnlineSettings.CRE = Player.OnlineSettings.CRE || {};
+
+        Player.OnlineSettings.CRE.SpeakSetting = {
+            SpeakVolume: 1.0,
+            SpeakSpeed: 1.0,
+            SpeakMsgOnlyAboutMe: true,
+            SpeedLimitLengthChat: true
         };
-    
-        // 逐个遍历replaceMap并替换原始字符串
-        Object.keys(replaceMap).forEach(function (key) {
-        inputString = inputString.replace(new RegExp(key, 'g'), replaceMap[key]);
-        });
-    
-        return inputString;
+        ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
     }
+}
 
-      // 截断太长的消息
-      function TruncateAndAppend(originalString, maxLength) {
-        // 定义正则表达式，匹配中英文字符和数字
-        var alphanumeric = /[a-zA-Z0-9\u4e00-\u9fa5]/;
-
-        // 初始化计数器和截断位置
-        var count = 0;
-        var truncateIndex = 0;
-
-        // 遍历字符串，找到截断位置
-        for (var i = 0; i < originalString.length; i++) {
-          var char = originalString[i];
-          if (char.match(alphanumeric)) {
-            count++;
-          }
-
-            if (count <= maxLength) {
-                truncateIndex = i;
-            }
-
-        }
-
-        truncateIndex += 1;
-        if(truncateIndex == count)
-        {
-            return [originalString,""];
-        }
-
-
-        // 截断字符串
-        var truncatedString = originalString.slice(0, truncateIndex);
-
-        // 计算被截断的字符数
-        var truncatedChars = originalString.length - truncateIndex;
-
-        if(truncatedChars == 0)
-        {
-            return [originalString, ""];
-        }
-
-        // 补充字符串
-        var appendString = ', 等' + truncatedChars + '字';
-
-        // 返回结果字符串
-        return [truncatedString, appendString];
-   }
-
-
-   function PrepareVocals(text, char, index, prompt)
-   {
-        var url = atob("aHR0cHM6Ly92Mi5nZW5zaGludm9pY2UudG9wLw==");
-        fetch(url + 'run/predict', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                data: [text, char, 0.2, 0.6, 0.8, 1, 'ZH', null, prompt, 'Text prompt', '', 0.7],
-                fn_index: 0,
-            })
-        }).then(response =>response.json()).then(data =>{
-            //console.log('POST请求成功', data);
-            if (data && data.data && data.data[0] === 'Success') {
-                var audioFileName = data.data[1].name;
-                //console.log('音频文件名:', audioFileName);
-                var audio = new Audio(url + 'file=' + audioFileName);
-                // 存入缓存
-                w.VocalAudio[index] = audio;
-                //audio.play();
-            } else {
-                console.error('请求返回错误:', data);
-            }
-        }).
-        catch(error =>{
-            console.error('POST请求失败', error);
-        });
-   }
-
-   function WaitForAudio(index, callBack)
-   {
-        if(index in w.VocalAudio)
-        {
-            callback();
-        }
-
-        QueryDictionary(index, w.VocalAudio, (res)=>{callBack();});
-
-   }
-
-   function QueryDictionary(elementToFind, dictionary, callBack) {
-    var elapsedTime = 0;
-    var interval = 500; // 0.5秒
-    var duration = 5000; // 5秒
-    function check() {
-        elapsedTime += interval;
-        //console.log("查询中");
-        if (dictionary.hasOwnProperty(elementToFind)) {
-            // 查询成功
-            clearTimeout(w.WaitDownloadTimer);
-            w.WaitDownloadTimer = null;
-            callBack(true);
-          } else if (elapsedTime >= duration) {
-            // 超过持续时间，查询失败
-            w.WaitDownloadTimer = null;
-            callBack(false);
-          } else {
-            // 继续定时查询
-            w.WaitDownloadTimer = setTimeout(check, interval);
-          }
-      }
-    w.WaitDownloadTimer = setTimeout(check, interval);
-  }
-
-
-    function GetPlayerName(player)
-    {
-        return player?.Nickname!=null&&player?.Nickname!=''?player?.Nickname:player?.Name;
-    }
-
-
-
-    console.log("[ChatRoomEx] Load Success");
+console.log("[ChatRoomEx] Load Success");
 })();
-
