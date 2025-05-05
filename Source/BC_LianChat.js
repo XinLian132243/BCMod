@@ -1686,9 +1686,9 @@ class SenderItemPool {
                     return;
                 }
                 
-                const maxMessageCount = 50;
+                const maxMessageCount = 100;
 
-                // 添加提示信息（如果消息超过50条）
+                // 添加提示信息（如果消息超过100条）
                 if (chatHistory.messages.length > maxMessageCount) {
                     const tipElement = document.createElement('div');
                     tipElement.className = 'message-tip';
