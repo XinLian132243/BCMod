@@ -41,7 +41,7 @@
             'imgbb.com',
             'imgchest.com',
             'imgur.com',
-            'postimages.cc'
+            'postimg.cc'
         ]
     };
 
@@ -3520,6 +3520,11 @@ class SenderItemPool {
         // 添加检查URL是否有效的函数
         function isValidImageUrl(url) {
             if (!url) return false;
+            
+            // 检查文件扩展名是否为常见图片格式
+            const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+            const hasValidExtension = imageExtensions.some(ext => url.toLowerCase().endsWith(ext));
+            if (!hasValidExtension) return false;
             
             try {
                 // 解析URL
