@@ -154,22 +154,28 @@
         return next(args);
     });
 
-        // 当在聊天界面按下键盘时，如果有悬浮窗则不自动跳到输入框
-    mod.hookFunction(
+
+    // 需要处理键盘事件的函数列表
+    const keyDownFunctions = [
         "ChatRoomKeyDown",
-        99,
-        (args, next) => {
-            const focusOnInput = (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA');
-            const chatHasFocus = document.activeElement.id === "InputChat";
+        "ChatSearchKeyDown", 
+        "ChatRoomMapViewKeyDown"
+    ];
 
-            if(focusOnInput && !chatHasFocus)
-            {
-                return false;
+    // 为每个函数添加相同的处理逻辑
+    keyDownFunctions.forEach(funcName => {
+        mod.hookFunction(
+            funcName,
+            99,
+            (args, next) => {                
+                if(document.activeElement?.id?.startsWith("LC-Message")) {
+                    return false;
+                }
+                next(args);
             }
-            next(args);
-        }
-    );
-
+        );
+    });
+    
 
     /**
      * 处理Beep消息内容，移除特殊字符串和尾部换行符
@@ -843,7 +849,7 @@ class SenderItem {
             saveCurrentInputState();
             changeSelectedSender(this.memberNumber);
             
-            const inputField = document.getElementById('messageInputField');
+            const inputField = document.getElementById('LC-Message-InputField');
             if (inputField) {
                 inputField.focus();
             }
@@ -1254,7 +1260,7 @@ class SenderItemPool {
             
             // 创建搜索框
             const searchInput = document.createElement('input');
-            searchInput.id = 'SenderSearchInput'; // 添加唯一ID
+            searchInput.id = 'LC-Message-SenderSearchInput'; // 添加唯一ID
             searchInput.type = 'text';
             searchInput.placeholder = '搜索消息成员';
             searchInput.style.width = '100%';
@@ -1339,7 +1345,7 @@ class SenderItemPool {
             inputField.style.border = '1px solid #ddd';
             inputField.style.borderRadius = '4px';
             inputField.style.boxSizing = 'border-box'; // 确保padding不会增加总宽度
-            inputField.id = 'messageInputField'; // 添加ID以便在外部函数中引用
+            inputField.id = 'LC-Message-InputField'; // 添加ID以便在外部函数中引用
             
             // 添加焦点和输入事件处理
             const TYPING_DELAY = 5000; // 5秒延迟
@@ -1772,7 +1778,7 @@ class SenderItemPool {
                 addSenderSearchInput.style.border = '1px solid #ddd';
                 addSenderSearchInput.style.borderRadius = '4px';
                 addSenderSearchInput.style.boxSizing = 'border-box';
-                addSenderSearchInput.id = 'addSenderSearchInput';
+                addSenderSearchInput.id = 'LC-Message-AddSenderSearchInput';
                 
                 // 添加搜索事件监听
                 addSenderSearchInput.addEventListener('input', function() {
@@ -1795,7 +1801,7 @@ class SenderItemPool {
             // 刷新添加发送者界面的列表
             function refreshAddSenderLists(searchKeyword = '') {
                 // 获取搜索框容器，如果存在的话
-                const searchContainer = document.getElementById('addSenderSearchInput');
+                const searchContainer = document.getElementById('LC-Message-AddSenderSearchInput');
                 const searchValue = searchKeyword || (searchContainer ? searchContainer.value : '');
                 
                 // 查找并移除现有的内容容器（如果存在）
@@ -1887,7 +1893,7 @@ class SenderItemPool {
 
                 // 获取非在线好友Number列表
                 const offlineFriendNumbers = Player.FriendList
-                    .filter(memberNumber => isFriend(memberNumber) && !onlineFriendNumbers.includes(memberNumber))
+                    .filter(memberNumber => isFriend(memberNumber) && Player.FriendNames.get(memberNumber) && !onlineFriendNumbers.includes(memberNumber))
                     .filter(filterFriend);
 
                 // 合并在线和非在线好友列表
@@ -3261,7 +3267,7 @@ class SenderItemPool {
                 }
                 
                 // 获取输入框元素
-                const inputField = document.getElementById('messageInputField');
+                const inputField = document.getElementById('LC-Message-InputField');
                 // 获取消息类型选择
                 const messageType = document.querySelector('input[name="messageType"]:checked');
                 
@@ -3359,7 +3365,10 @@ class SenderItemPool {
             roomInfoSpan.style.color = '#888888';
             roomInfoSpan.style.fontSize = '0.85em';
             roomInfoSpan.style.fontStyle = 'italic';
-            roomInfoSpan.textContent = getCharacterRoomInfo(memberNumber);
+            
+            // 检查是否是好友，并显示房间
+            roomInfoSpan.textContent = isFriend(memberNumber) ? '🐾 ' + getCharacterRoomInfo(memberNumber) : getCharacterRoomInfo(memberNumber);
+            
             titleContainer.appendChild(roomInfoSpan);
             
             // 添加标题容器到header
@@ -3388,7 +3397,7 @@ class SenderItemPool {
             updateChatHeader(memberNumber);
             
             // 获取输入框元素                
-            const inputField = document.getElementById('messageInputField');
+            const inputField = document.getElementById('LC-Message-InputField');
             
             // 获取单选按钮元素
             const whisperRadio = document.querySelector('input[name="messageType"][value="Whisper"]');
