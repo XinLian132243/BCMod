@@ -226,7 +226,8 @@
          *      },
          *      isHidden?: boolean,
          *      unreadCount?: number,
-         *      pinnedTime?: number
+         *      pinnedTime?: number,
+         *      orderTimeStamp?: number
          * }>} */
         let messageHistory = {}; // 存储消息历史，按发送者MemberNumber分组
         let selectedSenderNum = 0; // 当前选中的发送者MemberNumber，0表示未选择
@@ -1245,10 +1246,23 @@ class SenderItemPool {
             senderList.style.minWidth = '220px'; // 添加最小宽度
             senderList.style.flexShrink = '0'; // 防止被挤压
             senderList.style.borderRight = '1px solid #ddd';
-            senderList.style.overflowY = 'auto';
             senderList.style.overflowX = 'hidden'; // 防止横向滚动
-            senderList.style.padding = '10px';
+            senderList.style.height = '100%';
+            senderList.style.display = 'flex'; // 添加flex布局
+            senderList.style.flexDirection = 'column'; // 设置垂直方向
+
+            // 创建固定区域容器(个人信息和搜索框)
+            const fixedContainer = document.createElement('div');
+            fixedContainer.style.flexShrink = '0'; // 防止压缩
+            fixedContainer.style.padding = '2px';
             
+            // 创建可滚动区域容器
+            const scrollableContainer = document.createElement('div');
+            scrollableContainer.style.flexGrow = '1';
+            scrollableContainer.style.overflowY = 'auto';
+            scrollableContainer.style.overflowX = 'hidden';
+            scrollableContainer.style.padding = '0 10px';
+
             // 添加搜索框容器
             const searchContainer = document.createElement('div');
             searchContainer.style.padding = '0 0 10px 0';
@@ -1297,10 +1311,13 @@ class SenderItemPool {
             searchContainer.appendChild(searchInput);
             searchContainer.appendChild(addButton);
 
-            senderList.appendChild(createCharacterSmallInfoPanel(Player.MemberNumber));
-            // 将搜索容器添加到发送者列表前面
-            senderList.appendChild(searchContainer);
+            fixedContainer.appendChild(createCharacterSmallInfoPanel(Player.MemberNumber));           
+            fixedContainer.appendChild(searchContainer);                        
+            // 将固定区域和可滚动区域添加到senderList
+            senderList.appendChild(fixedContainer);
+            senderList.appendChild(scrollableContainer);
             
+
             // 右侧消息内容和输入框容器
             const rightContainer = document.createElement('div');
             rightContainer.style.flexGrow = '1';
@@ -1550,10 +1567,8 @@ class SenderItemPool {
             
             // 更新发送者列表
             function updateSenderList() {
-                // 清除搜索框以外的内容
-                while (senderList.childNodes.length > 2) {
-                    senderList.removeChild(senderList.lastChild);
-                }
+                // 清除可滚动区域的内容
+                scrollableContainer.innerHTML = '';
                 
                 // 获取搜索关键词
                 const searchKeyword = searchInput.value.toLowerCase();
@@ -1563,20 +1578,18 @@ class SenderItemPool {
                     noSenders.textContent = '暂无消息记录';
                     noSenders.style.color = '#888';
                     noSenders.style.padding = '10px 0';
-                    senderList.appendChild(noSenders);
+                    scrollableContainer.appendChild(noSenders);
                     return;
                 }
                 
                 // 创建一个数组，包含所有发送者及其最新消息时间
                 const senders = [];
-                for (const memberNumber in messageHistory) {
+               for (const memberNumber in messageHistory) {
                     const chatHistory = messageHistory[memberNumber] || { messages: [], isHidden: false };
-                    const hasMessages = chatHistory.messages && chatHistory.messages.length > 0;
-                    const latestMessage = hasMessages ? chatHistory.messages[chatHistory.messages.length - 1] : null;
                     senders.push({
                         memberNumber: memberNumber,
-                        latestTime: latestMessage ? latestMessage.time : new Date(0), // 如果没有消息，使用最早的时间
-                        pinnedTime: chatHistory.pinnedTime || 0 // 添加置顶时间
+                        orderTimeStamp: chatHistory.orderTimeStamp || 0, 
+                        pinnedTime: chatHistory.pinnedTime || 0
                     });
                 }
                 
@@ -1586,8 +1599,8 @@ class SenderItemPool {
                     if (a.pinnedTime !== b.pinnedTime) {
                         return b.pinnedTime - a.pinnedTime;
                     }
-                    // 如果置顶时间相同，则按最新消息时间排序
-                    return b.latestTime - a.latestTime;
+                    // 如果置顶时间相同，则按排序时间排序
+                    return b.orderTimeStamp - a.orderTimeStamp;
                 });
                 
                 // 创建排序后的发送者列表
@@ -1643,7 +1656,7 @@ class SenderItemPool {
                     if (!chatHistory.isHidden) {
                         const senderItem = senderItemPool.getItem(memberNumber);
                         senderItem.update(memberNumber, chatHistory, selectedSenderNum);
-                        senderList.appendChild(senderItem.element);
+                        scrollableContainer.appendChild(senderItem.element);
                     }
                 }
                 
@@ -1653,7 +1666,7 @@ class SenderItemPool {
                     noResults.textContent = `没有找到匹配"${searchKeyword}"的消息成员`;
                     noResults.style.color = '#888';
                     noResults.style.padding = '10px 0';
-                    senderList.appendChild(noResults);
+                    scrollableContainer.appendChild(noResults);
                 }
             }
             
@@ -2259,6 +2272,7 @@ class SenderItemPool {
 
                 // 添加新的发送者
                 messageHistory[memberNumber] = [];
+                messageHistory[memberNumber].orderTimeStamp = Date.now();
                 changeSelectedSender(memberNumber);
             }
 
@@ -3232,8 +3246,10 @@ class SenderItemPool {
                 content: content,
                 time: new Date(), // 直接存储Date对象
                 type: type,
-                sender: senderNumber // 改为记录发送者编号
+                sender: senderNumber, // 改为记录发送者编号  
             });
+
+            messageHistory[memberNumber].orderTimeStamp = Date.now();
             
             // 如果是接收到的消息（发送者不是自己），且对话框未显示或者不是当前选中的发送者，增加未读计数
             if (senderNumber !== Player.MemberNumber && 
@@ -3661,7 +3677,7 @@ class SenderItemPool {
                     const parsedData = JSON.parse(decompressedData);
                     messageHistory = parsedData.messages;
                     
-                    // 将每条消息的时间字符串转换为 Date 对象
+                    // 将每条消息的时间字符串转换为 Date 对象，并处理orderTimeStamp
                     for (const memberNumber in messageHistory) {
                         if (messageHistory[memberNumber].messages) {
                             messageHistory[memberNumber].messages.forEach(msg => {
@@ -3669,6 +3685,15 @@ class SenderItemPool {
                                     msg.time = new Date(msg.time);
                                 }
                             });
+                            
+                            // 如果orderTimeStamp不存在或为0，使用最新消息的时间
+                            if (!messageHistory[memberNumber].orderTimeStamp || messageHistory[memberNumber].orderTimeStamp === 0) {
+                                const messages = messageHistory[memberNumber].messages;
+                                if (messages.length > 0) {
+                                    const latestMessage = messages[messages.length - 1];
+                                    messageHistory[memberNumber].orderTimeStamp = latestMessage.time.getTime();
+                                }
+                            }
                         }
                     }
                     
