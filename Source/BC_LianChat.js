@@ -226,7 +226,8 @@
          *      },
          *      isHidden?: boolean,
          *      unreadCount?: number,
-         *      pinnedTime?: number
+         *      pinnedTime?: number,
+         *      orderTimeStamp?: number
          * }>} */
         let messageHistory = {}; // 存储消息历史，按发送者MemberNumber分组
         let selectedSenderNum = 0; // 当前选中的发送者MemberNumber，0表示未选择
@@ -1569,14 +1570,12 @@ class SenderItemPool {
                 
                 // 创建一个数组，包含所有发送者及其最新消息时间
                 const senders = [];
-                for (const memberNumber in messageHistory) {
+               for (const memberNumber in messageHistory) {
                     const chatHistory = messageHistory[memberNumber] || { messages: [], isHidden: false };
-                    const hasMessages = chatHistory.messages && chatHistory.messages.length > 0;
-                    const latestMessage = hasMessages ? chatHistory.messages[chatHistory.messages.length - 1] : null;
                     senders.push({
                         memberNumber: memberNumber,
-                        latestTime: latestMessage ? latestMessage.time : new Date(0), // 如果没有消息，使用最早的时间
-                        pinnedTime: chatHistory.pinnedTime || 0 // 添加置顶时间
+                        orderTimeStamp: chatHistory.orderTimeStamp || 0, 
+                        pinnedTime: chatHistory.pinnedTime || 0
                     });
                 }
                 
@@ -1586,8 +1585,8 @@ class SenderItemPool {
                     if (a.pinnedTime !== b.pinnedTime) {
                         return b.pinnedTime - a.pinnedTime;
                     }
-                    // 如果置顶时间相同，则按最新消息时间排序
-                    return b.latestTime - a.latestTime;
+                    // 如果置顶时间相同，则按排序时间排序
+                    return b.orderTimeStamp - a.orderTimeStamp;
                 });
                 
                 // 创建排序后的发送者列表
@@ -2259,6 +2258,7 @@ class SenderItemPool {
 
                 // 添加新的发送者
                 messageHistory[memberNumber] = [];
+                messageHistory[memberNumber].orderTimeStamp = Date.now();
                 changeSelectedSender(memberNumber);
             }
 
@@ -3232,8 +3232,10 @@ class SenderItemPool {
                 content: content,
                 time: new Date(), // 直接存储Date对象
                 type: type,
-                sender: senderNumber // 改为记录发送者编号
+                sender: senderNumber, // 改为记录发送者编号  
             });
+
+            messageHistory[memberNumber].orderTimeStamp = Date.now();
             
             // 如果是接收到的消息（发送者不是自己），且对话框未显示或者不是当前选中的发送者，增加未读计数
             if (senderNumber !== Player.MemberNumber && 
@@ -3661,7 +3663,7 @@ class SenderItemPool {
                     const parsedData = JSON.parse(decompressedData);
                     messageHistory = parsedData.messages;
                     
-                    // 将每条消息的时间字符串转换为 Date 对象
+                    // 将每条消息的时间字符串转换为 Date 对象，并处理orderTimeStamp
                     for (const memberNumber in messageHistory) {
                         if (messageHistory[memberNumber].messages) {
                             messageHistory[memberNumber].messages.forEach(msg => {
@@ -3669,6 +3671,15 @@ class SenderItemPool {
                                     msg.time = new Date(msg.time);
                                 }
                             });
+                            
+                            // 如果orderTimeStamp不存在或为0，使用最新消息的时间
+                            if (!messageHistory[memberNumber].orderTimeStamp || messageHistory[memberNumber].orderTimeStamp === 0) {
+                                const messages = messageHistory[memberNumber].messages;
+                                if (messages.length > 0) {
+                                    const latestMessage = messages[messages.length - 1];
+                                    messageHistory[memberNumber].orderTimeStamp = latestMessage.time.getTime();
+                                }
+                            }
                         }
                     }
                     
