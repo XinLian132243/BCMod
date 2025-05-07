@@ -2962,7 +2962,7 @@ class SenderItemPool {
                     ];
 
                     // 如果不是好友，添加邀请成为好友选项
-                    if (!isFriend(selectedSenderNum)) {
+                    if (isWhisperAvailable(selectedSenderNum) && !isBeepAvailable(selectedSenderNum)) {
                         options.push({
                             text: '邀请成为好友',
                             action: function() {
