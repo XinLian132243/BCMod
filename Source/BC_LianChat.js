@@ -43,7 +43,7 @@
             'imgur.com',
             'postimg.cc'
         ],
-        maxMessageCount: 80,
+        maxMessageCount: 50,
         maxShowPlayerCountOnLoading: 20
     };
 
@@ -823,8 +823,7 @@
                 message = '•' + message.substring(1);
             }
 
-            ElementValue("InputChat", "/w " + targetMemberNumber + " " + message);
-            ChatRoomSendChat();
+            ChatRoomSendWhisper(targetMemberNumber, message);
             
             // 还原原始目标
             ChatRoomTargetMemberNumber = originalTarget;
