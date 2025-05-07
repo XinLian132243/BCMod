@@ -42,8 +42,11 @@
             'imgchest.com',
             'imgur.com',
             'postimg.cc'
-        ]
+        ],
+        maxMessageCount: 80,
+        maxShowPlayerCountOnLoading: 20
     };
+
 
     // 初始化全局图片缓存
     if (!window.ImageCache) {
@@ -206,6 +209,355 @@
         return message.replace(/[\r\n]+$/, '');
     }
 
+
+    // 消息历史持久化模块
+    const LCDataStorageModule = (function(dbName) {
+        const DB_VERSION = 1;
+        const STORE_MESSAGES = 'messages';
+        const STORE_SENDER_STATES = 'senderStates';
+        const STORE_PLAYER_CACHE = 'playerCache';
+
+        let db = null;
+
+        /**
+         * 初始化数据库
+         * @returns {Promise<IDBDatabase>}
+         */
+        async function initDB() {
+            if (db) return db;
+
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(dbName, DB_VERSION);
+
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    db = request.result;
+                    resolve(db);
+                };
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+
+                    // 创建消息存储
+                    if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
+                        const messageStore = db.createObjectStore(STORE_MESSAGES, { keyPath: 'id', autoIncrement: true });
+                        messageStore.createIndex('memberNumber', 'memberNumber', { unique: false });
+                        messageStore.createIndex('time', 'time', { unique: false });
+                    }
+
+                    // 创建状态存储
+                    if (!db.objectStoreNames.contains(STORE_SENDER_STATES)) {
+                        const stateStore = db.createObjectStore(STORE_SENDER_STATES, { keyPath: 'memberNumber' });
+                        stateStore.createIndex('pinnedTime', 'pinnedTime', { unique: false });
+                        stateStore.createIndex('orderTimeStamp', 'orderTimeStamp', { unique: false });
+                    }
+
+                    // 新增 playerCache 存储
+                    if (!db.objectStoreNames.contains(STORE_PLAYER_CACHE)) {
+                        db.createObjectStore(STORE_PLAYER_CACHE, { keyPath: 'memberNumber' });
+                    }
+                };
+            });
+        }
+
+        /**
+         * 异步删除指定玩家的所有消息数据
+         * @param {number} memberNumber - 玩家会员编号
+         * @returns {Promise<void>}
+         */
+        async function deletePlayerMessages(memberNumber) {
+            const database = await initDB();
+            const transaction = database.transaction([STORE_MESSAGES, STORE_SENDER_STATES], 'readwrite');
+            const store = transaction.objectStore(STORE_MESSAGES);
+            const stateStore = transaction.objectStore(STORE_SENDER_STATES);
+            const index = store.index('memberNumber');
+            
+            return new Promise((resolve, reject) => {
+                const request = index.openCursor(IDBKeyRange.only(memberNumber));
+                
+                request.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor) {
+                        store.delete(cursor.primaryKey);
+                        cursor.continue();
+                    } else {
+                        // 删除对应的状态数据
+                        stateStore.delete(memberNumber);
+                        resolve();
+                    }
+                };
+                
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        /**
+         * 异步获取指定玩家的消息记录
+         * @param {number} memberNumber - 玩家会员编号
+         * @param {number} [limit=-1] - 获取最近的n条消息，-1为全部
+         * @returns {Promise<Array>} - 消息记录数组
+         */
+        async function getPlayerMessages(memberNumber, limit = -1) {
+            const database = await initDB();
+            const transaction = database.transaction([STORE_MESSAGES], 'readonly');
+            const store = transaction.objectStore(STORE_MESSAGES);
+            const index = store.index('memberNumber');
+
+            return new Promise((resolve, reject) => {
+                const request = index.getAll(IDBKeyRange.only(memberNumber));
+                request.onsuccess = () => {
+                    let result = request.result || [];
+                    if (limit > 0) {
+                        // 按时间排序，取最近的n条
+                        result = result.sort((a, b) => b.time - a.time).slice(0, limit).reverse();
+                    }
+                    resolve(result);
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        /**
+         * 同步向指定玩家添加消息记录
+         * @param {number} memberNumber - 玩家会员编号
+         * @param {Object} message - 消息对象
+         */
+        function addMessage(memberNumber, message) {
+            if (!db) {
+                initDB().then(database => {
+                    const transaction = database.transaction([STORE_MESSAGES], 'readwrite');
+                    const store = transaction.objectStore(STORE_MESSAGES);
+                    store.add({ ...message, memberNumber });
+                }).catch(console.error);
+            } else {
+                const transaction = db.transaction([STORE_MESSAGES], 'readwrite');
+                const store = transaction.objectStore(STORE_MESSAGES);
+                store.add({ ...message, memberNumber });
+            }
+        }
+
+        /**
+         * 异步获取指定玩家的状态数据
+         * @param {number} memberNumber - 玩家会员编号
+         * @returns {Promise<Object>} - 状态数据
+         */
+        async function getSenderState(memberNumber) {
+            if (!db) return {};
+
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_SENDER_STATES], 'readonly');
+                const store = transaction.objectStore(STORE_SENDER_STATES);
+                const request = store.get(memberNumber);
+                
+                request.onsuccess = () => resolve(request.result || {});
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        /**
+         * 同步更新指定玩家的状态数据
+         * @param {number} memberNumber - 玩家会员编号
+         * @param {Object} state - 新的状态数据
+         */
+        function updateSenderState(memberNumber, state) {
+            if (!db) {
+                initDB().then(database => {
+                    const transaction = database.transaction([STORE_SENDER_STATES], 'readwrite');
+                    const store = transaction.objectStore(STORE_SENDER_STATES);
+                    store.put({ ...state, memberNumber });
+                }).catch(console.error);
+            } else {
+                const transaction = db.transaction([STORE_SENDER_STATES], 'readwrite');
+                const store = transaction.objectStore(STORE_SENDER_STATES);
+                store.put({ ...state, memberNumber });
+            }
+        }
+
+        /**
+         * 异步加载置顶和最近玩家的消息
+         * @param {Object} messageHistory - 要填充的消息历史对象
+         * @param {number} maxRecentPlayers - 最大最近玩家数
+         * @param {number} maxMessagesPerPlayer - 每个玩家最大消息数
+         * @returns {Promise<void>}
+         */
+        async function loadRecentMessages(messageHistory, maxRecentPlayers = 10, maxMessagesPerPlayer = 20) {
+            const database = await initDB();
+            
+            // 获取置顶玩家
+            const pinnedPlayers = await new Promise((resolve, reject) => {
+                const transaction = database.transaction([STORE_SENDER_STATES], 'readonly');
+                const store = transaction.objectStore(STORE_SENDER_STATES);
+                const index = store.index('pinnedTime');
+                
+                const request = index.openCursor(null, 'prev');
+                const players = [];
+                
+                request.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor && cursor.value.pinnedTime) {
+                        players.push(cursor.value.memberNumber);
+                        cursor.continue();
+                    } else {
+                        resolve(players);
+                    }
+                };
+                
+                request.onerror = () => reject(request.error);
+            });
+
+            // 获取最近且不隐藏的玩家
+            const recentPlayers = await new Promise((resolve, reject) => {
+                const transaction = database.transaction([STORE_SENDER_STATES], 'readonly');
+                const store = transaction.objectStore(STORE_SENDER_STATES);
+                const index = store.index('orderTimeStamp');
+                
+                const request = index.openCursor(null, 'prev');
+                const players = [];
+                
+                request.onsuccess = (event) => {
+                    const cursor = event.target.result;
+                    if (cursor && !cursor.value.pinnedTime && !cursor.value.isHidden && players.length < maxRecentPlayers) {
+                        players.push(cursor.value.memberNumber);
+                        cursor.continue();
+                    } else {
+                        resolve(players);
+                    }
+                };
+                
+                request.onerror = () => reject(request.error);
+            });
+
+            // 合并所有需要加载的玩家
+            const playersToLoad = [...pinnedPlayers, ...recentPlayers];
+
+            // 加载每个玩家的消息和状态
+            for (const memberNumber of playersToLoad) {
+                // 使用带limit参数的新方法，直接获取最新的maxMessagesPerPlayer条消息
+                const [messages, state] = await Promise.all([
+                    getPlayerMessages(memberNumber, maxMessagesPerPlayer),
+                    getSenderState(memberNumber)
+                ]);
+
+                // 不再需要 slice 截取，messages 已经是最新的maxMessagesPerPlayer条
+                const recentMessages = messages;
+
+                // 填充到messageHistory
+                messageHistory[memberNumber] = {
+                    messages: recentMessages,
+                    ...state
+                };
+            }
+        }
+
+        /**
+         * 异步获取所有 PlayerCache 并放入传入的 playerCache 对象
+         * @param {Object} playerCacheObj - 传入的 playerCache 对象
+         * @returns {Promise<void>}
+         */
+        async function loadAllPlayerCache(playerCacheObj) {
+            const database = await initDB();
+            return new Promise((resolve, reject) => {
+                const transaction = database.transaction([STORE_PLAYER_CACHE], 'readonly');
+                const store = transaction.objectStore(STORE_PLAYER_CACHE);
+                const request = store.getAll();
+                request.onsuccess = () => {
+                    const result = request.result || [];
+                    for (const item of result) {
+                        playerCacheObj[item.memberNumber] = item;
+                    }
+                    resolve();
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        /**
+         * 异步用传入的 playerCacheObj 替换整个 PlayerCache 库
+         * @param {Object} playerCacheObj - 要写入的 playerCache 对象
+         * @returns {Promise<void>}
+         */
+        async function replaceAllPlayerCache(playerCacheObj) {
+            const database = await initDB();
+            return new Promise((resolve, reject) => {
+                const transaction = database.transaction([STORE_PLAYER_CACHE], 'readwrite');
+                const store = transaction.objectStore(STORE_PLAYER_CACHE);
+                // 先清空
+                const clearReq = store.clear();
+                clearReq.onsuccess = () => {
+                    // 批量写入
+                    const values = Object.values(playerCacheObj);
+                    let i = 0;
+                    function putNext() {
+                        if (i >= values.length) {
+                            resolve();
+                            return;
+                        }
+                        const item = values[i++];
+                        store.put(item).onsuccess = putNext;
+                    }
+                    putNext();
+                };
+                clearReq.onerror = () => reject(clearReq.error);
+            });
+        }
+
+        /**
+         * 异步更新单个玩家的 PlayerCache
+         * @param {number} memberNumber
+         * @param {Object} cacheData
+         * @returns {Promise<void>}
+         */
+        async function updatePlayerCache(memberNumber, cacheData) {
+            const database = await initDB();
+            return new Promise((resolve, reject) => {
+                const transaction = database.transaction([STORE_PLAYER_CACHE], 'readwrite');
+                const store = transaction.objectStore(STORE_PLAYER_CACHE);
+                const data = { ...cacheData, memberNumber };
+                const req = store.put(data);
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        
+        /**
+         * 异步获取指定玩家的消息数量
+         * @param {number} memberNumber - 玩家会员编号
+         * @returns {Promise<number>} - 消息数量
+         */
+        async function getPlayerMessageCount(memberNumber) {
+            const database = await initDB();
+            const transaction = database.transaction([STORE_MESSAGES], 'readonly');
+            const store = transaction.objectStore(STORE_MESSAGES);
+            const index = store.index('memberNumber');
+            return new Promise((resolve, reject) => {
+                let countRequest = index.count(IDBKeyRange.only(memberNumber));
+                countRequest.onsuccess = () => resolve(countRequest.result || 0);
+                countRequest.onerror = () => reject(countRequest.error);
+            });
+        }
+
+        return {
+            deletePlayerMessages,
+            getPlayerMessages,
+            addMessage,
+            getSenderState,
+            updateSenderState,
+            loadRecentMessages,
+            loadAllPlayerCache,
+            replaceAllPlayerCache,
+            updatePlayerCache,
+            getPlayerMessageCount,
+            initDB // 导出initDB以便外部初始化
+        };
+    });
+
+        /**
+     * @type {ReturnType<typeof LCDataStorageModule>}
+     * 消息历史持久化模块实例
+     */
+    let LCDataStorage = null;
+
     // 消息对话框模块
     const MessageModule = (function() {
         // 私有变量
@@ -343,7 +695,7 @@
                     existingCache.Avatar !== newCache.Avatar ||
                     existingCache.Signature !== newCache.Signature) {
                     playerCache[memberNumber] = newCache;
-                    savePlayerCacheToLocal();
+                    LCDataStorage.updatePlayerCache(memberNumber, newCache);
                 }
                 return { cache: newCache, isSelf };
             }
@@ -990,7 +1342,7 @@ class SenderItem {
                     action: () => {
                         messageHistory[memberNumber].pinnedTime = 0;
                         messageDialog.updateSenderList();
-                        saveMessageHistoryToLocal();
+                        LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
                     }
                 });
             } else {
@@ -1002,7 +1354,7 @@ class SenderItem {
                         }
                         messageHistory[memberNumber].pinnedTime = Date.now();
                         messageDialog.updateSenderList();
-                        saveMessageHistoryToLocal();
+                        LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
                     }
                 });
             }
@@ -1024,7 +1376,7 @@ class SenderItem {
                     }
                     
                     messageDialog.updateSenderList();
-                    saveMessageHistoryToLocal();
+                    LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
                 }
             },
             {
@@ -1039,7 +1391,7 @@ class SenderItem {
                         }
                         
                         messageDialog.updateSenderList();
-                        saveMessageHistoryToLocal();
+                        LCDataStorage.deletePlayerMessages(memberNumber);
                     }
                 }
             }
@@ -1699,10 +2051,9 @@ class SenderItemPool {
                     return;
                 }
                 
-                const maxMessageCount = 100;
 
                 // 添加提示信息（如果消息超过100条）
-                if (chatHistory.messages.length > maxMessageCount) {
+                if (chatHistory.messages.length >= config.maxMessageCount) {
                     const tipElement = document.createElement('div');
                     tipElement.className = 'message-tip';
                     tipElement.style.cssText = 'text-align: center; color: #666; font-size: 12px; padding: 5px;';
@@ -1711,7 +2062,7 @@ class SenderItemPool {
                 }
                 
                 // 只显示最近的50条消息
-                const recentMessages = chatHistory.messages.slice(-maxMessageCount);
+                const recentMessages = chatHistory.messages.slice(-config.maxMessageCount);
                 displayMessages(recentMessages);
                 
                 // 滚动到底部
@@ -2250,7 +2601,6 @@ class SenderItemPool {
                     memberItem.addEventListener('click', function() {
                         addSenderToHistory(memberNumber);
                         hideAddSenderInterface(); // 隐藏添加发送者界面
-                        update();
                     });
 
                     list.appendChild(memberItem);
@@ -2267,15 +2617,34 @@ class SenderItemPool {
                     messageHistory[memberNumber].isHidden = false;
                     
                     changeSelectedSender(memberNumber);
+                    update();
                     return;
                 }
 
                 // 添加新的发送者
-                messageHistory[memberNumber] = [];
-                messageHistory[memberNumber].orderTimeStamp = Date.now();
-                changeSelectedSender(memberNumber);
+                // 先异步LCDataStorage查询消息数量（回调形式）
+                LCDataStorage.getPlayerMessageCount(memberNumber).then(msgCount => {
+                    if (msgCount > 0) {
+                        // 有历史消息，异步获取并填充
+                        LCDataStorage.getPlayerMessages(memberNumber, config.maxMessageCount).then(msgs => {
+                            messageHistory[memberNumber] = {
+                                messages: msgs,
+                                orderTimeStamp: Date.now()
+                            };
+                            changeSelectedSender(memberNumber);
+                            update();
+                        });
+                    } else {
+                        // 没有历史消息，初始化为空
+                        messageHistory[memberNumber] = {
+                            messages: [],
+                            orderTimeStamp: Date.now()
+                        };
+                        changeSelectedSender(memberNumber);
+                        update();
+                    }
+                });
             }
-
             
             // 创建单个消息项
             function createMessageItem(msg) {
@@ -2600,6 +2969,9 @@ class SenderItemPool {
                             action: function() {
                                 const playerName = getCharacterName(Player.MemberNumber);
                                 sendMessage(`(${playerName} 邀请你成为好友)`);
+                                if (!Player.FriendList.includes(selectedSenderNum)) { 
+                                    ChatRoomListManipulation(Player.FriendList, true, selectedSenderNum.toString());
+                                }
                             }
                         });
                     }
@@ -2615,7 +2987,7 @@ class SenderItemPool {
             // 创建下载聊天记录按钮
             function createDownloadButton() {
                 const downloadButton = document.createElement('button');
-                downloadButton.textContent = '⏬️';
+                downloadButton.textContent = '💾';
                 downloadButton.style.padding = '4px 8px';
                 downloadButton.style.backgroundColor = '#f0f0f0';
                 downloadButton.style.border = '1px solid #ddd';
@@ -2649,14 +3021,16 @@ class SenderItemPool {
                 }
                 
                 // 获取选中发送者的聊天记录
-                const chatHistory = messageHistory[selectedSenderNum] || { messages: [], isHidden: false };
-                
-                // 确保有聊天记录
-                if (!chatHistory || !chatHistory.messages || chatHistory.messages.length === 0) {
+               
+
+                    // 异步获取所有消息
+            LCDataStorage.getPlayerMessages(selectedSenderNum, -1).then(function(messages) 
+            {
+                if (!messages || messages.length === 0) {
                     alert('没有可下载的聊天记录');
                     return;
                 }
-                
+
                 // 获取发送者名称
                 const senderName = getCharacterName(selectedSenderNum) || selectedSenderNum;
                 
@@ -2664,7 +3038,7 @@ class SenderItemPool {
                 let chatText = `===== 与 ${senderName} 的聊天记录 =====\n\n`;
                 
                 // 使用正确的messages数组
-                chatHistory.messages.forEach(msg => {
+                messages.forEach(msg => {
                     const timeStr = msg.time.toLocaleString();
                     const isSelf = msg.sender === Player.MemberNumber;
                     const typeStr = getMessageTypeText(msg.type);
@@ -2702,6 +3076,8 @@ class SenderItemPool {
                 // 清理
                 document.body.removeChild(downloadLink);
                 URL.revokeObjectURL(url);
+            });
+            
             }
 
 
@@ -3197,7 +3573,7 @@ class SenderItemPool {
             if (messageHistory[memberNumber]?.unreadCount) {
                 messageHistory[memberNumber].unreadCount = 0;
                 // 保存到本地存储
-                saveMessageHistoryToLocal();
+                LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
 
                 return true; // 返回true表示有未读消息被清除
             }
@@ -3249,6 +3625,13 @@ class SenderItemPool {
                 sender: senderNumber, // 改为记录发送者编号  
             });
 
+            LCDataStorage.addMessage(memberNumber, {
+                content: content,
+                time: new Date(),
+                type: type,
+                sender: senderNumber
+            });
+
             messageHistory[memberNumber].orderTimeStamp = Date.now();
             
             // 如果是接收到的消息（发送者不是自己），且对话框未显示或者不是当前选中的发送者，增加未读计数
@@ -3268,7 +3651,7 @@ class SenderItemPool {
             }
              
             // 保存到本地存储
-            saveMessageHistoryToLocal();
+            LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
         }
         
         // 保存当前输入状态
@@ -3610,175 +3993,33 @@ class SenderItemPool {
         }
 
 
-        // 保存消息历史到本地存储
-        function saveMessageHistoryToLocal(recursionCount = 0) {
-            try {
-                // 默认保留1000条消息，只有在需要清理时才减少
-                const keepCount = recursionCount > 0 ? Math.max(50, 200 - recursionCount * 50) : 1000;
-                
-                // 创建清理后的数据副本
-                const cleanedData = createCleanedData(keepCount);
-                
-                const storageData = {
-                    messages: cleanedData,
-                    lastUpdate: new Date().toISOString()
-                };
-                
-                // 转换为JSON字符串
-                const jsonString = JSON.stringify(storageData);
-                
-                // 压缩数据
-                const compressedData = LZString.compressToBase64(jsonString);
-                
-                // 检查压缩后的存储大小
-                if (compressedData.length > 4 * 1024 * 1024) { // 4MB 
-                    if (recursionCount >= 3) {
-                        console.error('消息历史数据清理失败，将清空历史记录');
-                        // 保存空的历史记录
-                        localStorage.setItem(`BC_LCData_messageHistory_${Player.MemberNumber}`, 
-                            LZString.compressToBase64(JSON.stringify({messages: {}, lastUpdate: new Date().toISOString()})));
-                        return;
-                    }
-                    
-                    console.warn('消息历史数据过大，将清理更多数据');
-                    // 重新尝试保存，增加递归计数
-                    saveMessageHistoryToLocal(recursionCount + 1);
-                    return;
-                }
-                
-                try {
-                    // 存储压缩后的数据
-                    localStorage.setItem(`BC_LCData_messageHistory_${Player.MemberNumber}`, compressedData);
-                } catch (error) {
-                    if (error.name === 'QuotaExceededError') {
-                        console.warn('本地存储空间不足，将清空历史记录');
-                        // 保存空的历史记录
-                        localStorage.setItem(`BC_LCData_messageHistory_${Player.MemberNumber}`, 
-                            LZString.compressToBase64(JSON.stringify({messages: {}, lastUpdate: new Date().toISOString()})));
-                    } else {
-                        throw error; // 重新抛出其他类型的错误
+        // 从本地存储读取消息历史，并清理不需要的项
+        async function loadFromLocalAndClean() {
+            await LCDataStorage.loadAllPlayerCache(playerCache);    
+            // 遍历 playerCache，删除不需要的项
+            for (const memberNumber in playerCache) {
+                // 不是好友
+                const notFriend = !Player.FriendList?.includes(Number(memberNumber));
+                // 没有置顶
+                const notPinned = !messageHistory[memberNumber]?.pinnedTime;
+                if (notFriend && notPinned) {
+                    // 只有在前两个条件都满足时才查询消息数量
+                    const messageCount = await LCDataStorage.getPlayerMessageCount(Number(memberNumber));
+                    if (messageCount === 0) {
+                        // 删除 playerCache 中的该项
+                        delete playerCache[memberNumber];
+                        // 同步删除本地存储
+                        LCDataStorage.deletePlayerMessages(Number(memberNumber));
                     }
                 }
-            } catch (error) {
-                console.error('保存消息历史到本地存储失败:', error);
             }
-        }
-        
-        // 从本地存储读取消息历史
-        function loadFromLocal() {
+            // 清理后写回playerCache
+            await LCDataStorage.replaceAllPlayerCache(playerCache);
 
-            loadPlayerCache();
+            // 重新加载消息历史
+            await LCDataStorage.loadRecentMessages(messageHistory, config.maxShowPlayerCountOnLoading, config.maxMessageCount);
+        }        
 
-            try {
-                const storedData = localStorage.getItem(`BC_LCData_messageHistory_${Player.MemberNumber}`);
-                if (storedData) {
-                    // 解压缩数据
-                    const decompressedData = LZString.decompressFromBase64(storedData);
-                    const parsedData = JSON.parse(decompressedData);
-                    messageHistory = parsedData.messages;
-                    
-                    // 将每条消息的时间字符串转换为 Date 对象，并处理orderTimeStamp
-                    for (const memberNumber in messageHistory) {
-                        if (messageHistory[memberNumber].messages) {
-                            messageHistory[memberNumber].messages.forEach(msg => {
-                                if (msg.time && typeof msg.time === 'string') {
-                                    msg.time = new Date(msg.time);
-                                }
-                            });
-                            
-                            // 如果orderTimeStamp不存在或为0，使用最新消息的时间
-                            if (!messageHistory[memberNumber].orderTimeStamp || messageHistory[memberNumber].orderTimeStamp === 0) {
-                                const messages = messageHistory[memberNumber].messages;
-                                if (messages.length > 0) {
-                                    const latestMessage = messages[messages.length - 1];
-                                    messageHistory[memberNumber].orderTimeStamp = latestMessage.time.getTime();
-                                }
-                            }
-                        }
-                    }
-                    
-                    // 更新最后更新时间
-                    const lastUpdate = new Date(parsedData.lastUpdate);
-                    console.log(`已从本地存储加载消息历史，最后更新时间: ${lastUpdate.toLocaleString()}`);
-                }
-            } catch (error) {
-                console.error('从本地存储读取消息历史失败:', error);
-            }
-        }
-        
-        /**
-         * 保存玩家缓存到本地存储
-         */
-        function savePlayerCacheToLocal() {
-            try {
-                // 创建清理后的缓存
-                const cleanedCache = {};
-                
-                // 添加所有好友数据，以及有聊天记录或置顶的玩家数据
-                for (const memberNumber in playerCache) {
-                    if (isFriend(memberNumber) ||
-                        messageHistory[memberNumber]?.messages?.length > 0 ||
-                        messageHistory[memberNumber]?.pinnedTime > 0) {
-                        cleanedCache[memberNumber] = playerCache[memberNumber];
-                    }
-                }
-                
-                const storageData = {
-                    cache: cleanedCache,
-                    lastUpdate: new Date().toISOString()
-                };
-                
-                // 转换为JSON字符串
-                const jsonString = JSON.stringify(storageData);
-                
-                // 压缩数据
-                const compressedData = LZString.compressToBase64(jsonString);
-                
-                try {
-                    // 存储压缩后的数据
-                    localStorage.setItem(`BC_LCData_playerCache_${Player.MemberNumber}`, compressedData);
-                } catch (error) {
-                    if (error.name === 'QuotaExceededError') {
-                        console.warn('本地存储空间不足，将清空缓存');
-                        // 保存空的缓存
-                        localStorage.setItem(`BC_LCData_playerCache_${Player.MemberNumber}`, 
-                            LZString.compressToBase64(JSON.stringify({cache: {}, lastUpdate: new Date().toISOString()})));
-                    } else {
-                        throw error; // 重新抛出其他类型的错误
-                    }
-                }
-            } catch (error) {
-                console.error('保存玩家缓存到本地存储失败:', error);
-            }
-        }
-        
-        /**
-         * 从本地存储加载玩家缓存
-         */
-        function loadPlayerCache() {
-            try {
-                const storedData = localStorage.getItem(`BC_LCData_playerCache_${Player.MemberNumber}`);
-                if (storedData) {
-                    // 解压缩数据
-                    const decompressedData = LZString.decompressFromBase64(storedData);
-                    const parsedData = JSON.parse(decompressedData);
-                    playerCache = parsedData.cache;
-                    
-                    // 将时间戳字符串转换为数字
-                    for (const memberNumber in playerCache) {
-                        if (playerCache[memberNumber].UpdateTime && typeof playerCache[memberNumber].UpdateTime === 'string') {
-                            playerCache[memberNumber].UpdateTime = new Date(playerCache[memberNumber].UpdateTime).getTime();
-                        }
-                    }
-                    
-                    // 更新最后更新时间
-                    const lastUpdate = new Date(parsedData.lastUpdate);
-                    console.log(`已从本地存储加载玩家缓存，最后更新时间: ${lastUpdate.toLocaleString()}`);
-                }
-            } catch (error) {
-                console.error('从本地存储读取玩家缓存失败:', error);
-            }
-        }
 
      /**
      * 处理输入状态消息
@@ -3834,7 +4075,7 @@ class SenderItemPool {
                             ...messageSetting,
                             UpdateTime: Date.now()
                         };
-                        savePlayerCacheToLocal();
+                        LCDataStorage.updatePlayerCache(data.MemberNumber, playerCache[data.MemberNumber]);
                     }
                 }
             } catch (e) {
@@ -3928,7 +4169,7 @@ class SenderItemPool {
            updateonlineFriendsCache: updateonlineFriendsCache,
 
             // 消息历史相关接口
-            loadFromLocal: loadFromLocal,
+            loadFromLocalAndClean: loadFromLocalAndClean,
 
             handlePlayerInfoMessage: handlePlayerInfoMessage,
             handleTypingStatusMessage: handleTypingStatusMessage,
@@ -4268,14 +4509,17 @@ mod.hookFunction("LoginResponse", 0, (args, next) => {
     next(args);
     
     // 清理旧的定时器
-    cleanupFloatingButtonInterval();
-
-    // 初始化时加载消息历史
-    MessageModule.loadFromLocal();
-    
+    cleanupFloatingButtonInterval();    
     CheckOnlineLCSetting();
-    // 延迟初始化，确保DOM已完全加载
-    setTimeout(initFloatingMessageButton, 2000);
+
+    LCDataStorage = LCDataStorageModule("LCDB_" + Player.MemberNumber);
+    LCDataStorage.initDB().then(() => {
+        // 初始化时加载消息历史
+        MessageModule.loadFromLocalAndClean().then(() => {
+            // 延迟初始化，确保DOM已完全加载
+            setTimeout(initFloatingMessageButton, 1000);
+        });
+    }).catch(console.error);
 });
 
 console.log("[LianChat] Load Success");
