@@ -2094,13 +2094,73 @@ class SenderItemPool {
                 noMessages.style.color = '#888';
                 messageContent.appendChild(noMessages);
             }
+
+             // 创建时间分隔符
+             function createTimeDivider(currentTime, lastTime) 
+             {
+                if (lastTime === null || lastTime === undefined) 
+                    lastTime = new Date(0); 
+                    
+                    const timeDiff = currentTime - lastTime;
+                    const oneHour = 60 * 60 * 1000; // 1小时的毫秒数
+                    const oneWeek = 7 * 24 * oneHour; // 1周的毫秒数
+                    
+                    // 检查是否是同一天
+                    const today = new Date();
+                    const isSameDay = currentTime.toDateString() === today.toDateString();
+                    const isYesterday = currentTime.toDateString() === new Date(today.getTime() - 24 * 60 * 60 * 1000).toDateString();
+                    const isWithinWeek = (today - currentTime) <= oneWeek; // 是否在一周内
+                    
+                    if (timeDiff >= oneHour) {
+                        const timeDiv = document.createElement('div');
+                        timeDiv.className = 'message-time-divider';
+                        timeDiv.style.cssText = 'text-align: center; color: #666; font-size: 12px; padding: 2px 8px; margin: 5px auto; background-color: #fAfAfA; border-radius: 10px; display: inline-block; width: fit-content; line-height: 1.2;';
+                        
+                        // 创建一个容器来居中显示时间分隔符
+                        const container = document.createElement('div');
+                        container.style.cssText = 'width: 100%; text-align: center; margin: 0; padding: 0;';
+                        container.appendChild(timeDiv);
+                        
+                        // 根据条件设置不同的时间格式
+                        timeDiv.textContent = !isSameDay 
+                            ? (isYesterday 
+                                ? `昨天 ${currentTime.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+                                : (isWithinWeek 
+                                    ? `${currentTime.toLocaleDateString('zh-CN', { weekday: 'long' })} ${currentTime.toLocaleString('zh-CN', {
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                    })}`
+                                    : currentTime.toLocaleString('zh-CN', {
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                    })))
+                            : currentTime.toLocaleTimeString('zh-CN', {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            });
+                            
+                        return container;
+                    }
+                    
+                    return null;
+            }
             
             // 显示消息列表
             function displayMessages(messages) {
-                for (const msg of messages) {
-                    const messageItem = createMessageItem(msg);
-                    messageContent.appendChild(messageItem);
-                }
+                 let lastMessageTime = null;
+                 for (const msg of messages) {
+                     // 检查是否需要插入时间分隔
+                     const timeDivider = createTimeDivider(msg.time, lastMessageTime);
+                     if (timeDivider) {
+                         messageContent.appendChild(timeDivider);
+                     }
+                     
+                     const messageItem = createMessageItem(msg);
+                     messageContent.appendChild(messageItem);
+                     lastMessageTime = msg.time;
+                 }
             }
 
              // 显示添加发送者界面
