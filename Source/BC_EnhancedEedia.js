@@ -127,7 +127,7 @@
             {
                 return false;
             }
-            next(args);
+            return next(args);
         }
     );
 

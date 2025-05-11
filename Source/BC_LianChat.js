@@ -174,7 +174,7 @@
                 if(document.activeElement?.id?.startsWith("LC-Message")) {
                     return false;
                 }
-                next(args);
+                return next(args);
             }
         );
     });
