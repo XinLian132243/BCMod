@@ -2916,9 +2916,19 @@ class SenderItemPool {
                                 callback: function() {
                                     if (!message.status) message.status = {};
                                     message.status.addedFriend = true;
-                                    LCDataStorage.updateMessageById(message.id, message);
+                                    LCDataStorage.updateMessageById(message.id, message);   
                                     ChatRoomListManipulation(Player.FriendList, true, selectedSenderNum.toString()),
                                     updateMessageContent();
+                                    createConfirmDialog({
+                                        content: `已成功加${getCharacterName(selectedSenderNum)}为好友，是否立即发送回执消息？`,
+                                        confirmText: '发送',
+                                        cancelText: '取消',
+                                        onConfirm: () => {
+                                            sendMessage(`(${getCharacterName(Player.MemberNumber)} 已经成为了你的好友，让我们一起开始愉快的聊天吧)`);
+                                        },
+                                        onCancel: () => {
+                                        }
+                                    });   
                                 }
                             });
                         }
@@ -3081,7 +3091,7 @@ class SenderItemPool {
                                 const currentRoom = getCurrentRoomName();
                                 const playerName = getCharacterName(Player.MemberNumber);
                                 if (currentRoom) {
-                                    sendMessage(`(${playerName} 邀请进入房间 |${currentRoom}|)`);
+                                    sendMessage(`(${playerName} 邀请你进入房间 |${currentRoom}|)`);
                                 } else {
                                     alert('无法获取当前房间信息');
                                 }
