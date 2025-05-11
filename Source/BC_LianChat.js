@@ -477,7 +477,10 @@ keyDownFunctions.forEach(funcName => {
                 
                 request.onsuccess = (event) => {
                     const cursor = event.target.result;
-                    if (cursor && !cursor.value.pinnedTime && !cursor.value.isHidden && players.length < maxRecentPlayers) {
+                    if (cursor && !cursor.value.pinnedTime 
+                         && !cursor.value.isHidden
+                         && cursor.value.memberNumber != Player.MemberNumber 
+                         && players.length < maxRecentPlayers) {
                         players.push(cursor.value.memberNumber);
                         cursor.continue();
                     } else {
@@ -2000,7 +2003,12 @@ class SenderItemPool {
                 
                 // 创建一个数组，包含所有发送者及其最新消息时间
                 const senders = [];
-               for (const memberNumber in messageHistory) {
+               for (const memberNumber in messageHistory) {                    
+                    // 跳过隐藏的发送者
+                    if (messageHistory[memberNumber]?.isHidden || memberNumber == Player.MemberNumber) {
+                        continue;
+                    }
+
                     const chatHistory = messageHistory[memberNumber] || { messages: [], isHidden: false };
                     senders.push({
                         memberNumber: memberNumber,
@@ -2023,12 +2031,6 @@ class SenderItemPool {
                 let hasVisibleSenders = false;
                 for (const sender of senders) {
                     const memberNumber = parseInt(sender.memberNumber);
-                    
-                    // 跳过隐藏的发送者
-                    if (messageHistory[memberNumber]?.isHidden) {
-                        continue;
-                    }
-
                     // 搜索匹配逻辑
                     let isMatch = false;
                     
@@ -3889,7 +3891,7 @@ class SenderItemPool {
             let total = 0;
             for (const memberNumber in messageHistory) {
                 // 跳过隐藏的发送者
-                if (messageHistory[memberNumber].isHidden) {
+                if (messageHistory[memberNumber].isHidden || memberNumber == Player.MemberNumber) {
                     continue;
                 }
                 total += messageHistory[memberNumber].unreadCount || 0;
