@@ -307,6 +307,12 @@
                 const request = index.getAll(IDBKeyRange.only(memberNumber));
                 request.onsuccess = () => {
                     let result = request.result || [];
+                    // 确保每条消息都带有主键id
+                    result.forEach(msg => {
+                        if (msg.id === undefined && msg[store.keyPath] !== undefined) {
+                            msg.id = msg[store.keyPath];
+                        }
+                    });
                     if (limit > 0) {
                         // 按时间排序，取最近的n条
                         result = result.sort((a, b) => b.time - a.time).slice(0, limit).reverse();
@@ -323,18 +329,62 @@
          * @param {Object} message - 消息对象
          */
         function addMessage(memberNumber, message) {
-            if (!db) {
-                initDB().then(database => {
-                    const transaction = database.transaction([STORE_MESSAGES], 'readwrite');
-                    const store = transaction.objectStore(STORE_MESSAGES);
-                    store.add({ ...message, memberNumber });
-                }).catch(console.error);
-            } else {
-                const transaction = db.transaction([STORE_MESSAGES], 'readwrite');
+            const addMessageToDB = (database) => {
+                const transaction = database.transaction([STORE_MESSAGES], 'readwrite');
                 const store = transaction.objectStore(STORE_MESSAGES);
-                store.add({ ...message, memberNumber });
+                const request = store.add({ ...message, memberNumber });
+                
+                request.onsuccess = () => {
+                    // 将生成的ID添加到原始消息对象中
+                    message.id = request.result;
+                };
+            };
+
+            if (!db) {
+                initDB().then(addMessageToDB).catch(console.error);
+            } else {
+                addMessageToDB(db);
             }
         }
+
+
+        /**
+         * 根据ID更新消息
+         * @param {number} id - 消息ID
+         * @param {Object} message - 要更新的消息对象
+         */
+        function updateMessageById(id, message) {            
+            if (!id) {
+                return;
+            }
+            const updateMessageToDB = (database) => {
+                const transaction = database.transaction([STORE_MESSAGES], 'readwrite');
+                const store = transaction.objectStore(STORE_MESSAGES);
+                // 先查找该id是否存在
+                const getRequest = store.get(id);
+                getRequest.onsuccess = () => {
+                    if (!getRequest.result) {
+                        console.error('updateMessageById: 数据库中不存在该ID，无法更新', id, message);
+                        return;
+                    }
+                    // 存在才更新
+                    const request = store.put({ ...message, id });
+                    request.onerror = (e) => {
+                        console.error('消息更新失败', e, message);
+                    };
+                };
+                getRequest.onerror = (e) => {
+                    console.error('updateMessageById: 查询消息时出错', e, id, message);
+                };
+            };
+
+            if (!db) {
+                initDB().then(updateMessageToDB).catch(console.error);
+            } else {
+                updateMessageToDB(db);
+            }
+        }
+
 
         /**
          * 异步获取指定玩家的状态数据
@@ -362,14 +412,16 @@
         function updateSenderState(memberNumber, state) {
             if (!db) {
                 initDB().then(database => {
-                    const transaction = database.transaction([STORE_SENDER_STATES], 'readwrite');
+                    const transaction = db.transaction([STORE_SENDER_STATES], 'readwrite');
                     const store = transaction.objectStore(STORE_SENDER_STATES);
-                    store.put({ ...state, memberNumber });
+                    const { messages, ...stateWithoutMessages } = state;
+                    store.put({ ...stateWithoutMessages, memberNumber });
                 }).catch(console.error);
             } else {
                 const transaction = db.transaction([STORE_SENDER_STATES], 'readwrite');
                 const store = transaction.objectStore(STORE_SENDER_STATES);
-                store.put({ ...state, memberNumber });
+                const { messages, ...stateWithoutMessages } = state;
+                store.put({ ...stateWithoutMessages, memberNumber });
             }
         }
 
@@ -541,6 +593,7 @@
             deletePlayerMessages,
             getPlayerMessages,
             addMessage,
+            updateMessageById,
             getSenderState,
             updateSenderState,
             loadRecentMessages,
@@ -567,10 +620,12 @@
         let dragOffsetY = 0;
         /** @type {Object.<number, {
          *      messages: Array<{
+         *          id?: number, // 消息在IndexedDB中的唯一自增ID
          *          content: string,
          *          time: Date,
          *          type: string,
-         *          sender: number
+         *          sender: number,
+         *          status?: { [key: string]: string } // 用于描述消息处理状况的字典
          *      }>,
          *      inputState?: {
          *          text: string,
@@ -2754,7 +2809,7 @@ class SenderItemPool {
                 
                 // 处理消息内容，应用不同的样式和功能
                 // 只有在接收到的消息中才处理操作按钮
-                const { content, actions } = processMessageContent(msg.content, msg.sender !== Player.MemberNumber);
+                const { content, actions } = processMessageContent(msg, msg.content, msg.sender !== Player.MemberNumber);
                 
                 messageText.innerHTML = content;
                 messageText.style.margin = '2px 0'; 
@@ -2778,7 +2833,7 @@ class SenderItemPool {
             }
 
             // 处理消息内容，返回处理后的HTML和可能的操作按钮
-            function processMessageContent(content, allowActions = true) {
+            function processMessageContent(message, content, allowActions = true) {
                 // 初始化返回对象
                 const result = {
                     content: '',
@@ -2810,24 +2865,48 @@ class SenderItemPool {
                     
                     if (roomMatch) {
                         const roomName = roomMatch[1];
+                        // 判断status和status.entered
+                        const entered = message.status && message.status.entered === true;
                         // 添加进入房间的操作按钮
                         result.actions.push({
-                            text: '点击进入 '+ roomName +'',
+                            text: '进入 ' + roomName + '',
                             roomName: roomName,
+                            enabled : entered,
                             callback: function() {
-                                // 这里添加进入房间的逻辑
-                                enterInvitedRoom(roomName);
-                                hideMessageDialog();
+                                createConfirmDialog({
+                                    content: `是否传送至房间 "${roomName}" ？`,
+                                    confirmText: '进入',
+                                    cancelText: '取消',
+                                    onConfirm: () => {
+                                        if (!message.status) message.status = {};
+                                        message.status.entered = true;
+        
+ 
+                                        LCDataStorage.updateMessageById(message.id, message);        
+                                        enterInvitedRoom(roomName);
+                                        hideMessageDialog();
+                                    },
+                                    onCancel: () => {
+                                        // 如果取消，恢复消息状态
+                                        message.tempStatus.entered = false;
+                                    }
+                                });                              
                             }
                         });
                     }
 
                     // 检查是否包含好友邀请
                     if (processedContent.includes('邀请你成为好友')) {
-                        if (!isFriend(selectedSenderNum)) {
+                        // 判断status和status.addedFriend
+                        const addedFriend = message.status && message.status.addedFriend === true;
+                        if (!isFriend(selectedSenderNum) && !addedFriend) {
                             result.actions.push({
                                 text: '添加好友',
+                                enabled : addedFriend,
                                 callback: function() {
+                                    if (!message.status) message.status = {};
+                                    message.status.addedFriend = true;
+                                    LCDataStorage.updateMessageById(message.id, message);
                                     ChatRoomListManipulation(Player.FriendList, true, selectedSenderNum.toString()),
                                     updateMessageContent();
                                 }
@@ -2860,17 +2939,24 @@ class SenderItemPool {
                     button.style.cursor = 'pointer';
                     button.style.fontSize = '12px';
                     
-                    // 添加悬停效果
-                    button.addEventListener('mouseover', function() {
-                        this.style.backgroundColor = '#45a049';
-                    });
-                    
-                    button.addEventListener('mouseout', function() {
-                        this.style.backgroundColor = '#4CAF50';
-                    });
-                    
-                    // 添加点击事件
-                    button.addEventListener('click', action.callback);
+                    // 判断是否已处理
+                    if (action.enabled) {
+                        button.disabled = true;
+                        button.style.backgroundColor = 'transparent';
+                        button.style.color = '#999';
+                        button.style.border = '1px solid #999';
+                        button.style.cursor = 'not-allowed';
+                    } else {
+                        // 添加悬停效果
+                        button.addEventListener('mouseover', function() {
+                            this.style.backgroundColor = '#45a049';
+                        });
+                        button.addEventListener('mouseout', function() {
+                            this.style.backgroundColor = '#4CAF50';
+                        });
+                        // 添加点击事件
+                        button.addEventListener('click', action.callback);
+                    }
                     
                     container.appendChild(button);
                 });
@@ -3424,6 +3510,152 @@ class SenderItemPool {
             return menu;
         }
 
+        // 创建通用提示框函数
+        function createConfirmDialog(options) {
+            // 默认配置
+            const defaultOptions = {
+                title: 'LianChat',
+                content: '',
+                confirmText: '确定',
+                cancelText: '取消',
+                onConfirm: () => {},
+                onCancel: () => {},
+                width: '300px'
+            };
+
+            // 合并配置
+            const config = { ...defaultOptions, ...options };
+
+            // 如果已经存在对话框，先移除
+            const existingDialog = document.getElementById('confirmDialog');
+            if (existingDialog) {
+                existingDialog.remove();
+            }
+
+            // 创建遮罩层
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            overlay.style.zIndex = '99999';
+            overlay.style.display = 'flex';
+            overlay.style.justifyContent = 'center';
+            overlay.style.alignItems = 'center';
+
+            // 创建对话框容器
+            const dialog = document.createElement('div');
+            dialog.id = 'confirmDialog';
+            dialog.style.backgroundColor = 'white';
+            dialog.style.borderRadius = '8px';
+            dialog.style.padding = '20px';
+            dialog.style.width = config.width;
+            dialog.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+            dialog.style.position = 'relative';
+
+            // 创建标题
+            const title = document.createElement('div');
+            title.textContent = config.title;
+            title.style.fontSize = '16px';
+            title.style.fontWeight = 'bold';
+            title.style.marginBottom = '15px';
+            title.style.color = '#333';
+
+            // 创建内容
+            const content = document.createElement('div');
+            content.textContent = config.content;
+            content.style.marginBottom = '20px';
+            content.style.color = '#666';
+            content.style.lineHeight = '1.5';
+
+            // 创建按钮容器
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.display = 'flex';
+            buttonContainer.style.justifyContent = 'flex-end';
+            buttonContainer.style.gap = '10px';
+
+            // 创建取消按钮
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = config.cancelText;
+            cancelButton.style.padding = '6px 12px';
+            cancelButton.style.border = '1px solid #ddd';
+            cancelButton.style.borderRadius = '4px';
+            cancelButton.style.backgroundColor = 'white';
+            cancelButton.style.cursor = 'pointer';
+            cancelButton.style.color = '#666';
+
+            // 创建确认按钮
+            const confirmButton = document.createElement('button');
+            confirmButton.textContent = config.confirmText;
+            confirmButton.style.padding = '6px 12px';
+            confirmButton.style.border = 'none';
+            confirmButton.style.borderRadius = '4px';
+            confirmButton.style.backgroundColor = '#4CAF50';
+            confirmButton.style.cursor = 'pointer';
+            confirmButton.style.color = 'white';
+
+            // 添加按钮悬停效果
+            cancelButton.addEventListener('mouseover', () => {
+                cancelButton.style.backgroundColor = '#f5f5f5';
+            });
+            cancelButton.addEventListener('mouseout', () => {
+                cancelButton.style.backgroundColor = 'white';
+            });
+
+            confirmButton.addEventListener('mouseover', () => {
+                confirmButton.style.backgroundColor = '#45a049';
+            });
+            confirmButton.addEventListener('mouseout', () => {
+                confirmButton.style.backgroundColor = '#4CAF50';
+            });
+
+            // 添加按钮点击事件
+            cancelButton.addEventListener('click', () => {
+                config.onCancel();
+                overlay.remove();
+            });
+
+            confirmButton.addEventListener('click', () => {
+                config.onConfirm();
+                overlay.remove();
+            });
+
+            // 组装对话框
+            buttonContainer.appendChild(cancelButton);
+            buttonContainer.appendChild(confirmButton);
+            dialog.appendChild(title);
+            dialog.appendChild(content);
+            dialog.appendChild(buttonContainer);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+
+            // 点击遮罩层关闭对话框
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    config.onCancel();
+                    overlay.remove();
+                }
+            });
+
+            // 添加ESC键关闭功能
+            const handleKeyDown = (e) => {
+                if (e.key === 'Escape') {
+                    config.onCancel();
+                    overlay.remove();
+                    document.removeEventListener('keydown', handleKeyDown);
+                }
+            };
+            document.addEventListener('keydown', handleKeyDown);
+
+            return {
+                close: () => {
+                    overlay.remove();
+                    document.removeEventListener('keydown', handleKeyDown);
+                }
+            };
+        }
 
         // 处理缩放
         function handleResize(e) {
@@ -3676,20 +3908,20 @@ class SenderItemPool {
                 messageHistory[memberNumber].isHidden = false;
             }
 
-            // 保存消息，确保不会覆盖inputState属性
-            messageHistory[memberNumber].messages.push({
-                content: content,
-                time: new Date(), // 直接存储Date对象
-                type: type,
-                sender: senderNumber, // 改为记录发送者编号  
-            });
 
-            LCDataStorage.addMessage(memberNumber, {
+            // 保存消息，确保不会覆盖inputState属性
+            const msgObj = {
                 content: content,
                 time: new Date(),
                 type: type,
-                sender: senderNumber
-            });
+                sender: senderNumber,
+                // status 字段可选添加
+                // status: { delivered: "false" }
+            };
+
+            messageHistory[memberNumber].messages.push(msgObj);
+
+            LCDataStorage.addMessage(memberNumber, msgObj);
 
             messageHistory[memberNumber].orderTimeStamp = Date.now();
             
