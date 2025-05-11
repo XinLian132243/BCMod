@@ -167,18 +167,26 @@
     ];
 
     // 为每个函数添加相同的处理逻辑
-    keyDownFunctions.forEach(funcName => {
-        mod.hookFunction(
-            funcName,
-            99,
-            (args, next) => {                
-                if(document.activeElement?.id?.startsWith("LC-Message")) {
-                    return false;
-                }
-                return next(args);
+// ... existing code ...
+keyDownFunctions.forEach(funcName => {
+    mod.hookFunction(
+        funcName,
+        99,
+        (args, next) => {                
+            const event = args[0];
+            // 如果消息对话框显示且按下Escape键
+            if (MessageModule.isMessageDialogVisible() && event.key === 'Escape') {
+                MessageModule.toggleMessageDialog();
+                return false;
             }
-        );
-    });
+            // 如果焦点在消息输入框上
+            if (document.activeElement?.id?.startsWith("LC-Message")) {
+                return false;
+            }
+            return next(args);
+        }
+    );
+});
     
 
     /**
