@@ -2899,8 +2899,6 @@ class SenderItemPool {
                                         hideMessageDialog();
                                     },
                                     onCancel: () => {
-                                        // 如果取消，恢复消息状态
-                                        message.tempStatus.entered = false;
                                     }
                                 });                              
                             }
