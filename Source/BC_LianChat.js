@@ -1946,6 +1946,7 @@ class SenderItemPool {
                                 messageHistory[selectedSenderNum].inputState.text = '';
                             }
                         }
+                        LCDataStorage.updateSenderState(selectedSenderNum, messageHistory[selectedSenderNum]);
                     }
                     // 更新消息内容
                     updateMessageContent();
