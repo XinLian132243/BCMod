@@ -41,7 +41,8 @@
             'imgbb.com',
             'imgchest.com',
             'imgur.com',
-            'postimg.cc'
+            'postimg.cc',
+            'hd-r.icu'
         ],
         maxMessageCount: 50,
         maxShowPlayerCountOnLoading: 20
