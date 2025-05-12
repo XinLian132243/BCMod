@@ -434,79 +434,155 @@
         }
     );
 
-    mod.hookFunction("PreferenceRun", 50, (args, next) => {
-        next(args);
-        if (PreferenceSubscreen === "") {
-            DrawButton(920, 50, 400, 90, "        房间朗读设置", "White", "Icons/Audio.png");
-        }
-        if (PreferenceSubscreen === "ChatRoomExSetting") {
-            MainCanvas.textAlign = "left";
-            DrawText("- 房间朗读设置 -", 500, 125, "Black", "Gray");
-            DrawText("朗读音量", 800, 225, "Black", "Gray");
-            MainCanvas.textAlign = "center";
-            DrawBackNextButton(500, 193, 250, 64, Math.round(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume * 100) + "%", "White", "",
-                () => "-",
-                () => "+");
-            MainCanvas.textAlign = "left";
-            DrawText("朗读语速", 800, 310, "Black", "Gray");
-            MainCanvas.textAlign = "center";
-            DrawBackNextButton(500, 272, 250, 64, Math.round(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed * 100) + "%", "White", "",
-                () => "-",
-                () => "+");
-            
-            DrawButton(200, 225, 200, 64, "🎧 试听", "#FFFFFF");
-
-            MainCanvas.textAlign = "left";
-
-            DrawCheckbox(500, 352, 64, 64, "仅播放与自己有关的互动和消息", Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe);
-            DrawCheckbox(500, 432, 64, 64, "过长对话省略", Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat);
-            
-            DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
-        }
-    });
-
-    mod.hookFunction("PreferenceClick", 10, (args, next) => {
-        next(args);
-        // 初始按钮
-        if (MouseIn(920, 50, 400, 90) && PreferenceSubscreen === "") {
-            PreferenceSubscreen = "ChatRoomExSetting";
-            CheckOnlineCRESetting();
-        }
-
-        if(PreferenceSubscreen == "ChatRoomExSetting") {
-            // 窗口退出
-            if (MouseIn(1815, 75, 90, 90)) {            
-                //保存设置
-                ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
-                PreferenceSubscreenAudioExit();
+// 定义设置界面类
+class ChatRoomExSettingScreen {
+    constructor() {
+        this.settings = {
+            SpeakSetting: {
+                SpeakVolume: 1.0,
+                SpeakSpeed: 1.0,
+                SpeakMsgOnlyAboutMe: true,
+                SpeedLimitLengthChat: true
             }
+        };
+    }
 
-            // 音量
-            if (MouseIn(500, 193, 250, 64)) {
-                if (MouseX <= 625) 
-                    Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume - 0.1, 0.1);
-                else 
-                Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakVolume + 0.1, 1);
+    Run() {
+        MainCanvas.textAlign = "left";
+        DrawText("- 房间朗读设置 -", 500, 125, "Black", "Gray");
+        
+        // 音量设置
+        DrawText("朗读音量", 800, 225, "Black", "Gray");
+        MainCanvas.textAlign = "center";
+        DrawBackNextButton(500, 193, 250, 64, 
+            Math.round(this.settings.SpeakSetting.SpeakVolume * 100) + "%", 
+            "White", "", 
+            () => "-", 
+            () => "+"
+        );
+        
+        // 语速设置
+        MainCanvas.textAlign = "left";
+        DrawText("朗读语速", 1300, 225, "Black", "Gray");
+        MainCanvas.textAlign = "center";
+        DrawBackNextButton(1000, 193, 250, 64, 
+            Math.round(this.settings.SpeakSetting.SpeakSpeed * 100) + "%", 
+            "White", "", 
+            () => "-", 
+            () => "+"
+        );
+        
+        // 试听按钮
+        DrawButton(200, 225, 200, 64, "🎧 试听", "#FFFFFF");
+
+        // 复选框设置
+        MainCanvas.textAlign = "left";
+        DrawCheckbox(500, 272, 64, 64, 
+            "过长对话省略", 
+            this.settings.SpeakSetting.SpeedLimitLengthChat
+        );
+        DrawCheckbox(1000, 272, 64, 64, 
+            "仅播放与自己有关的互动和消息", 
+            this.settings.SpeakSetting.SpeakMsgOnlyAboutMe
+        );
+        
+        // 退出按钮
+        DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
+    }
+
+    Click() {
+        // 音量调整
+        if (MouseIn(500, 193, 250, 64)) {
+            if (MouseX <= 625) {
+                this.settings.SpeakSetting.SpeakVolume = Math.max(this.settings.SpeakSetting.SpeakVolume - 0.1, 0.1);
+            } else {
+                this.settings.SpeakSetting.SpeakVolume = Math.min(this.settings.SpeakSetting.SpeakVolume + 0.1, 1);
+            }
         }
 
-        // 语速
-        if (MouseIn(500, 272, 250, 64)) {
-            if (MouseX <= 625) 
-                Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed = Math.max(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed - 0.1, 0.1);
-            else 
-                Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed = Math.min(Player.OnlineSettings.CRE.SpeakSetting.SpeakSpeed + 0.1, 2);
+        // 语速调整
+        if (MouseIn(1000, 193, 250, 64)) {
+            if (MouseX <= 1125) {
+                this.settings.SpeakSetting.SpeakSpeed = Math.max(this.settings.SpeakSetting.SpeakSpeed - 0.1, 0.1);
+            } else {
+                this.settings.SpeakSetting.SpeakSpeed = Math.min(this.settings.SpeakSetting.SpeakSpeed + 0.1, 2);
+            }
         }
+
         // 试听按钮
         if (MouseIn(200, 225, 200, 64)) {
+            // 先保存当前设置
+            Player.OnlineSettings.CRE.SpeakSetting = this.settings.SpeakSetting;
+            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+            
+            // 然后进行试听
             SpeakModule.testSpeak();
         }
 
-        // Individual audio check-boxes
+        // 复选框点击
         if (MouseXIn(500, 64)) {
-            if (MouseYIn(352, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe = !Player.OnlineSettings.CRE.SpeakSetting.SpeakMsgOnlyAboutMe;
-            if (MouseYIn(432, 64)) Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat = !Player.OnlineSettings.CRE.SpeakSetting.SpeedLimitLengthChat;
+            if (MouseYIn(272, 64)) {
+                this.settings.SpeakSetting.SpeedLimitLengthChat = !this.settings.SpeakSetting.SpeedLimitLengthChat;
+            }
         }
-    }        
+        if (MouseXIn(1000, 64)) {
+            if (MouseYIn(272, 64)) {
+                this.settings.SpeakSetting.SpeakMsgOnlyAboutMe = !this.settings.SpeakSetting.SpeakMsgOnlyAboutMe;
+            }
+        }
+
+
+        // 退出按钮
+        if (MouseIn(1815, 75, 90, 90)) {
+            this.Exit();
+        }
+        return false;
+    }
+
+    Exit() {
+        // 保存设置
+        Player.OnlineSettings.CRE = {
+            SpeakSetting: this.settings.SpeakSetting,
+        };
+        ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+        PreferenceSubscreenExtensionsClear();
+        return true;
+    }
+
+    Unload() {
+        // 清理资源
+    }
+}
+
+ 
+// 创建设置界面实例
+const screen = new ChatRoomExSettingScreen();
+
+PreferenceRegisterExtensionSetting({
+    Identifier: "ChatRoomEx",
+    Image: "Icons/Audio.png",
+    ButtonText: "语音朗读扩展",
+    load: () => {
+        // 加载设置
+        if (Player.OnlineSettings.CRE) {
+            screen.settings = {
+                SpeakSetting: {
+                    SpeakVolume: Player.OnlineSettings.CRE.SpeakSetting?.SpeakVolume ?? 1.0,
+                    SpeakSpeed: Player.OnlineSettings.CRE.SpeakSetting?.SpeakSpeed ?? 1.0,
+                    SpeakMsgOnlyAboutMe: Player.OnlineSettings.CRE.SpeakSetting?.SpeakMsgOnlyAboutMe ?? true,
+                    SpeedLimitLengthChat: Player.OnlineSettings.CRE.SpeakSetting?.SpeedLimitLengthChat ?? true
+                }
+            };
+        }
+    },
+    run: () => {
+        const origAlign = MainCanvas.textAlign;
+        screen.Run();
+        MainCanvas.textAlign = origAlign;
+    },
+    click: () => screen.Click(),
+    unload: () => screen.Unload(),
+    exit: () => screen.Exit()
 });
 
 function CheckOnlineCRESetting() {
