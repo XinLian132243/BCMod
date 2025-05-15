@@ -684,9 +684,49 @@ keyDownFunctions.forEach(funcName => {
          * @type {Object.<number, PlayerCacheInfo>}
          */
         let playerCache = {};
-        
-        // 好友数据缓存
+        /**
+         * 好友数据缓存
+         * @type {Array<{
+         *     Type: string,
+         *     MemberNumber: number,
+         *     MemberName: string,
+         *     ChatRoomSpace: string,
+         *     ChatRoomName: string
+         * }>}
+         */
         let onlineFriendsCache = [];
+
+        let isReadyRevRoomList = false;
+
+        /**
+         * 房间列表数据缓存
+         * @type {Object.<string, {
+         *     Name: string,
+         *     Language: string,
+         *     Creator: string,
+         *     CreatorMemberNumber: number,
+         *     Creation: number,
+         *     MemberCount: number,
+         *     MemberLimit: number,
+         *     Description: string,
+         *     BlockCategory: string[],
+         *     Game: string,
+         *     Friends: Array<{
+         *         Type: string,
+         *         MemberNumber: number,
+         *         MemberName: string
+         *     }>,
+         *     Space: string,
+         *     Visibility: string[],
+         *     Access: string[],
+         *     Locked: boolean,
+         *     Private: boolean,
+         *     MapType: string,
+         *     CanJoin: boolean
+         * }>}
+         */
+        let onlineRoomListData = {};
+        let updateCounter = 0;
         
         // 自动刷新相关变量
         let refreshInterval = null;
@@ -3302,7 +3342,7 @@ class SenderItemPool {
             
             // 添加键盘事件监听器，用于ESC键关闭窗口
             const handleKeyDown = function(event) {
-                if (event.key === "Escape" && messageDialog && messageDialog.style.display !== 'none') {
+                if (event.key === "Escape" && MessageModule.isMessageDialogVisible()) {
                     hideMessageDialog();
                 }
             };
@@ -3760,7 +3800,7 @@ class SenderItemPool {
             
             // 设置新的定时器
             refreshInterval = setInterval(function() {
-                if (messageDialog && messageDialog.style.display !== 'none') {
+                if (MessageModule.isMessageDialogVisible()) {
                     update();
                 } else {
                     // 如果对话框不可见，停止刷新
@@ -3786,6 +3826,16 @@ class SenderItemPool {
             messageDialog.updateSenderList();
             // 更新正在输入状态
             updateTypingPlayers();
+
+            // 降低更新房间列表的频率
+            if(MessageModule.isMessageDialogVisible() && updateCounter % 2 == 0) 
+            {
+                const friend = onlineFriendsCache.find(f => f.MemberNumber === selectedSenderNum);
+                if (friend && friend.ChatRoomName) {                        
+                    sendQueryOnlineRoomListData(friend.ChatRoomName, friend.ChatRoomSpace);
+                }
+            }
+            updateCounter ++;
         }
 
 
@@ -3954,7 +4004,7 @@ class SenderItemPool {
             }
             
             // 如果对话框已打开，更新内容
-            if (messageDialog && messageDialog.style.display !== 'none') {
+            if (MessageModule.isMessageDialogVisible()) {
                 messageDialog.updateSenderList();
                 if (selectedSenderNum === memberNumber) {
                     messageDialog.updateMessageContent();
@@ -4028,6 +4078,12 @@ class SenderItemPool {
             });
         }
 
+        function sendQueryOnlineRoomListData(query = "", space = "") {
+            const SearchData = {Query: query.toUpperCase().trim(), Language: "", Space: space, Game: "", FullRooms: true};
+            isReadyRevRoomList = true;
+			ServerSend("ChatRoomSearch", SearchData);
+        }
+
         function updateChatHeader(memberNumber) {
             const header = document.getElementById(`chat-header-${memberNumber}`);
             if (!header) return;
@@ -4080,6 +4136,91 @@ class SenderItemPool {
             roomInfoSpan.textContent = isFriend(memberNumber) ? '🐾 ' + getCharacterRoomInfo(memberNumber) : getCharacterRoomInfo(memberNumber);
             
             titleContainer.appendChild(roomInfoSpan);
+
+            // 新增：如果是好友且有房间信息，显示房间详情按钮
+            if (isFriend(memberNumber)) {
+                const friend = onlineFriendsCache.find(f => f.MemberNumber === Number(memberNumber));
+                if (friend && friend.ChatRoomName && onlineRoomListData[friend.ChatRoomName]) {
+                    const room = onlineRoomListData[friend.ChatRoomName];
+
+                    // 创建按钮
+                    const infoBtn = document.createElement('button');
+                    infoBtn.textContent = `(${room.MemberCount}/${room.MemberLimit})`;
+                    infoBtn.style.marginLeft = '4px';  // 减小左边距
+                    infoBtn.style.padding = '0 4px';   // 减小内边距
+                    infoBtn.style.fontSize = '0.75em'; // 减小字体
+                    infoBtn.style.border = '1px solid #ddd'; // 改为浅灰色边框
+                    infoBtn.style.background = '#f5f5f5'; // 改为浅灰色背景
+                    infoBtn.style.color = '#666'; // 改为深灰色文字
+                    infoBtn.style.borderRadius = '4px'; // 统一圆角
+                    infoBtn.style.cursor = 'pointer';
+                    infoBtn.style.height = '18px';     // 固定高度
+                    infoBtn.style.lineHeight = '16px'; // 行高等于高度减去边框
+                    infoBtn.style.display = 'inline-flex'; // 使用flex布局
+                    infoBtn.style.alignItems = 'center';   // 垂直居中
+                    infoBtn.style.justifyContent = 'center'; // 水平居中
+
+                    // 点击弹出悬浮窗
+                    infoBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+
+                        // 先移除已有的悬浮窗
+                        const old = document.getElementById('roomInfoPopup');
+                        if (old) old.remove();
+
+                        // 创建悬浮窗
+                        const popup = document.createElement('div');
+                        popup.id = 'roomInfoPopup';
+                        popup.style.position = 'fixed';
+                        popup.style.left = (e.clientX + 10 - 220) + 'px';
+                        popup.style.top = (e.clientY + 10) + 'px';
+                        popup.style.background = 'white';
+                        popup.style.border = '1px solid #ddd';
+                        popup.style.borderRadius = '6px';
+                        popup.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+                        popup.style.padding = '14px 18px';
+                        popup.style.zIndex = 100001;
+                        popup.style.minWidth = '220px';
+
+                        // Friends转为名字
+                        let friendsNames = '';
+                        if (Array.isArray(room.Friends) && room.Friends.length > 0) {
+                            friendsNames = room.Friends.map(f => {
+                                // 使用 getCharacterName 获取名字
+                                return getCharacterName(f.MemberNumber);
+                            }).join('，');
+                        } else {
+                            friendsNames = '无';
+                        }
+
+                        // 填充内容
+                        popup.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:1.1em;margin-bottom:6px;">
+                            <span>${room.Name}</span>
+                            <span>(${room.MemberCount}/${room.MemberLimit})</span>
+                        </div>
+                        <div style="color:#666;margin-bottom:6px;">${room.Description || ''}</div>
+                        <div>好友：${friendsNames}</div>
+                        `;
+
+                        // 点击外部关闭
+                        function closePopup(ev) {
+                            if (!popup.contains(ev.target)) {
+                                popup.remove();
+                                document.removeEventListener('mousedown', closePopup);
+                            }
+                        }
+                        setTimeout(() => {
+                            document.addEventListener('mousedown', closePopup);
+                        }, 0);
+
+                        document.body.appendChild(popup);
+                    });
+
+                    titleContainer.appendChild(infoBtn);
+                }
+            }
+            
             
             // 添加标题容器到header
             header.appendChild(titleContainer);
@@ -4207,7 +4348,7 @@ class SenderItemPool {
         }
         
         // 更新好友缓存
-        function updateonlineFriendsCache(data) {
+        function updateOnlineFriendsCache(data) {
             if (Array.isArray(data)) {
                 // 检查新上线的好友
                 data.forEach(friend => {
@@ -4225,6 +4366,23 @@ class SenderItemPool {
                 // 更新缓存
                 onlineFriendsCache = data;
             }
+        }
+
+              // 更新好友缓存
+        function updateOnlineRoomListData(data) {
+            if (Array.isArray(data)) {
+                  // 遍历房间数据，以Name为key存储
+                data.forEach(room => {
+                    if (room && room.Name) {
+                        onlineRoomListData[room.Name] = room;
+                    }
+                });
+                isReadyRevRoomList = false;
+            }
+        }
+
+        function dialogisReadyRevRoomList() {
+            return isReadyRevRoomList;
         }
 
         // 添加检查URL是否有效的函数
@@ -4452,7 +4610,7 @@ class SenderItemPool {
             handleSentBeepMessage: handleSentBeepMessage,
             
             toggleMessageDialog: function() {
-                if (messageDialog && messageDialog.style.display !== 'none') {
+                if (MessageModule.isMessageDialogVisible()) {
                     hideMessageDialog();                    
                     updateFloatingButtonState();
                     return false;
@@ -4477,7 +4635,11 @@ class SenderItemPool {
             update: update,
 
             // 更新好友缓存的接口
-           updateonlineFriendsCache: updateonlineFriendsCache,
+           updateOnlineFriendsCache: updateOnlineFriendsCache,
+
+           updateOnlineRoomListData: updateOnlineRoomListData,
+
+           dialogisReadyRevRoomList: dialogisReadyRevRoomList,
 
             // 消息历史相关接口
             loadFromLocalAndClean: loadFromLocalAndClean,
@@ -4491,17 +4653,20 @@ class SenderItemPool {
     // 初始化消息模块
     MessageModule.init();
 
-    function FriendListLoadFriendListEx(data)
-    {
-        //console.log(data);
-        // 更新消息模块中的好友缓存
-        MessageModule.updateonlineFriendsCache(data);
-    }
-
 
     mod.hookFunction("FriendListLoadFriendList", 100, (args, next) => {
         let data = args[0];
-        FriendListLoadFriendListEx(data);
+        MessageModule.updateOnlineFriendsCache(data);
+        next(args);
+    });
+
+    
+    mod.hookFunction("ChatSearchResultResponse", 100, (args, next) => {
+        let data = args[0];
+        if (MessageModule.isMessageDialogVisible() && MessageModule.dialogisReadyRevRoomList()) {
+            MessageModule.updateOnlineRoomListData(data);
+            return;
+        }
         next(args);
     });
 
