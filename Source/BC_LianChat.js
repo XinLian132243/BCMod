@@ -4377,8 +4377,8 @@ class SenderItemPool {
                         onlineRoomListData[room.Name] = room;
                     }
                 });
-                isReadyRevRoomList = false;
             }
+            isReadyRevRoomList = false;
         }
 
         function dialogisReadyRevRoomList() {
@@ -4663,7 +4663,7 @@ class SenderItemPool {
     
     mod.hookFunction("ChatSearchResultResponse", 100, (args, next) => {
         let data = args[0];
-        if (MessageModule.isMessageDialogVisible() && MessageModule.dialogisReadyRevRoomList()) {
+        if (MessageModule.dialogisReadyRevRoomList()) {
             MessageModule.updateOnlineRoomListData(data);
             return;
         }
