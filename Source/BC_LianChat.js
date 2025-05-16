@@ -4663,7 +4663,7 @@ class SenderItemPool {
     
     mod.hookFunction("ChatSearchResultResponse", 100, (args, next) => {
         let data = args[0];
-        if (MessageModule.dialogisReadyRevRoomList()) {
+        if (MessageModule.dialogisReadyRevRoomList() || CurrentScreen === 'ChatRoom') {
             MessageModule.updateOnlineRoomListData(data);
             return;
         }
