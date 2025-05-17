@@ -944,12 +944,6 @@ keyDownFunctions.forEach(funcName => {
             // 发送悄悄话
             ChatRoomTargetMemberNumber = targetCharacter.MemberNumber;
 
-            // 检查消息是否以*开头，防止被BC发到公屏
-            if (message.startsWith('*')) {
-                // 使用相近的符号替换星号，如˙或•
-                message = '•' + message.substring(1);
-            }
-
             ChatRoomSendWhisper(targetMemberNumber, message);
             
             // 还原原始目标
@@ -2020,12 +2014,24 @@ class SenderItemPool {
                 }
                 
                 // 如果消息以*开头，在*后插入角色名称
-                if (message.startsWith('*') && !message.startsWith('**')) {
-                    // 获取当前选中角色的名称
-                    const characterName = getCharacterName(Player.MemberNumber);
-                    // 在*后插入角色名称
-                    message = `*${characterName} ${message.substring(1)}`;
-                }
+                if (message.startsWith('*')) {
+                    if (message.startsWith('**')) 
+                    { 
+                        message = message.substring(1);
+                    }
+                    else
+                    {
+                        // 获取当前选中角色的名称
+                        const characterName = getCharacterName(Player.MemberNumber);
+                        // 在*后插入角色名称
+                        message = `*${characterName} ${message.substring(1)}`;
+                    }
+                    
+                    if (!message.trimEnd().endsWith('*')) {                        
+                        message += `*`;
+                    }
+                }   
+                   
                 
                 let success = false;
                 
