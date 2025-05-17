@@ -48,6 +48,13 @@
         maxShowPlayerCountOnLoading: 20
     };
 
+    const HidePrivateChatEnum = {
+        NONE: 0,        // 不隐藏
+        HIDE_WHEN_SHOW_DIALOG: 1,    // 显示对话框时隐藏
+        HIDE_ALL_TIME: 2 // 隐藏所有私聊
+    };
+
+    const FloatZindex = 100001;
 
     // 初始化全局图片缓存
     if (!window.ImageCache) {
@@ -69,7 +76,7 @@
         };
     }
 
-    mod.hookFunction("ChatRoomMessageDisplay", 4, (args, next) => { 
+    mod.hookFunction("ChatRoomMessageDisplay", 99, (args, next) => { 
         var data = args[0];
         var msg = args[1];
         var SenderCharacter = args[2];
@@ -82,6 +89,19 @@
             SenderCharacter, 
             data.Target ? ChatRoomCharacter.find(c => c.MemberNumber === data.Target) : null
         );
+        if (data.Type == "Whisper" || (data.Type == "LocalMessage" && msg.includes("bce-beep-reply"))) 
+        {
+            if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
+                && MessageModule.isMessageDialogVisible())
+            {
+                return;
+            }
+            if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_ALL_TIME)
+            {
+                return;
+            }
+        }
+       
         
         return next(args);
     });
@@ -1652,10 +1672,41 @@ class SenderItemPool {
             titleBar.style.flexShrink = '0';
             titleBar.style.minHeight = '24px'; // 设置最小高度
             
-            // 标题文本
-            const titleText = document.createElement('div');
-            titleText.textContent = 'LianChat';
-            titleText.style.fontWeight = 'bold';
+            // 设置按钮
+            const settingsButton = document.createElement('button');
+            settingsButton.textContent = '⚙'; // 齿轮符号
+            settingsButton.title = '设置';
+            settingsButton.style.background = '#f0f0f0';
+            settingsButton.style.border = '1px solid #ddd';
+            settingsButton.style.borderRadius = '4px';
+            settingsButton.style.cursor = 'pointer';
+            settingsButton.style.fontSize = '18px';
+            settingsButton.style.fontWeight = 'bold';
+            settingsButton.style.color = '#555';
+            settingsButton.style.width = '30px';
+            settingsButton.style.height = '30px';
+            settingsButton.style.display = 'flex-end';
+            settingsButton.style.alignItems = 'center';
+            settingsButton.style.justifyContent = 'center';
+            settingsButton.style.padding = '0';
+            settingsButton.style.marginLeft = '0';
+            settingsButton.style.marginRight = '10px'; // 与关闭按钮间隔
+
+            // 悬停效果
+            settingsButton.addEventListener('mouseover', function() {
+                this.style.background = '#e0e0e0';
+                this.style.color = '#1890ff';
+            });
+            settingsButton.addEventListener('mouseout', function() {
+                this.style.background = '#f0f0f0';
+                this.style.color = '#555';
+            });
+
+            // 点击弹出设置界面
+            settingsButton.addEventListener('click', function(e) {
+                e.stopPropagation();
+                showLianChatSettingsDialog(); 
+            });
             
             // 关闭按钮
             const closeButton = document.createElement('button');
@@ -1936,7 +1987,7 @@ class SenderItemPool {
             addSenderContainer.style.width = '300px'; // 悬浮窗口宽度
             addSenderContainer.style.height = '400px'; // 悬浮窗口高度
             addSenderContainer.style.display = 'none'; // 初始隐藏
-            addSenderContainer.style.zIndex = '100000'; // 确保在其他元素之上
+            addSenderContainer.style.zIndex = FloatZindex; // 确保在其他元素之上
             addSenderContainer.style.backgroundColor = 'white'; // 背景色
             addSenderContainer.style.border = '1px solid #ddd'; // 边框
             addSenderContainer.style.borderRadius = '5px'; // 圆角
@@ -2542,7 +2593,7 @@ class SenderItemPool {
                 panel.style.borderRadius = '8px';
                 panel.style.padding = '15px';
                 panel.style.boxShadow = '0 2px 10px rgba(0,0,0,0.1)';
-                panel.style.zIndex = '100001';
+                panel.style.zIndex = FloatZindex;
 
                 // 第一行：头像和基本信息
                 const headerRow = document.createElement('div');
@@ -3063,20 +3114,6 @@ class SenderItemPool {
                 
                 return messageFooter;
             }
-
-            // 获取消息类型的显示文本
-            function getMessageTypeText(type) {
-                switch(type) {
-                    case 'Whisper':
-                        return '悄悄话';
-                    case 'Beep':
-                        return '私聊';
-                    default:
-                        return type || '消息';
-                }
-            }
-
-
                         
             // 创建工具按钮栏
             function createToolbar() {
@@ -3302,8 +3339,19 @@ class SenderItemPool {
             updateMessageContent();
             
             // 组装对话框
-            titleBar.appendChild(titleText);
-            titleBar.appendChild(closeButton);
+            const leftTitle = document.createElement('div');
+            leftTitle.textContent = 'LianChat';
+            leftTitle.style.fontWeight = 'bold';
+            
+            const rightBtns = document.createElement('div');
+            rightBtns.style.display = 'flex';
+            rightBtns.style.alignItems = 'center';
+            rightBtns.appendChild(settingsButton);
+            rightBtns.appendChild(closeButton);
+            
+            titleBar.appendChild(leftTitle);
+            titleBar.appendChild(rightBtns);
+
             contentContainer.appendChild(senderList);
             contentContainer.appendChild(rightContainer);
 
@@ -3494,7 +3542,7 @@ class SenderItemPool {
             menu.style.borderRadius = '4px';
             menu.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
             menu.style.padding = '5px 0';
-            menu.style.zIndex = '100000';
+            menu.style.zIndex = FloatZindex;
             menu.style.maxHeight = '300px';
             menu.style.overflowY = 'auto';
 
@@ -3600,7 +3648,7 @@ class SenderItemPool {
             overlay.style.width = '100%';
             overlay.style.height = '100%';
             overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-            overlay.style.zIndex = '99999';
+            overlay.style.zIndex = FloatZindex - 1;
             overlay.style.display = 'flex';
             overlay.style.justifyContent = 'center';
             overlay.style.alignItems = 'center';
@@ -3792,7 +3840,138 @@ class SenderItemPool {
                 stopAutoRefresh();
             }
         }
+       
         
+        function showLianChatSettingsDialog() 
+        {
+            // 如果已存在设置弹窗，先移除
+            const old = document.getElementById('lianChatSettingsDialog');
+            if (old) old.remove();
+
+            // 弹窗主体
+            const dialog = document.createElement('div');
+            dialog.id = 'lianChatSettingsDialog';
+            dialog.style.position = 'fixed'; // 关键：让弹窗脱离文档流
+            dialog.style.left = '50%';
+            dialog.style.top = '50%';
+            dialog.style.transform = 'translate(-50%, -50%)';
+            dialog.style.background = 'white';
+            dialog.style.borderRadius = '8px';
+            dialog.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
+            dialog.style.padding = '28px 32px 20px 32px';
+            dialog.style.minWidth = '320px';
+            dialog.style.maxWidth = '90vw';
+            dialog.style.display = 'flex';
+            dialog.style.flexDirection = 'column';
+            dialog.style.alignItems = 'stretch';
+            dialog.style.zIndex = FloatZindex; // 保证在最上层
+
+            // 标题
+            const title = document.createElement('div');
+            title.textContent = 'LianChat 设置';
+            title.style.fontSize = '1.2em';
+            title.style.fontWeight = 'bold';
+            title.style.marginBottom = '18px';
+            dialog.appendChild(title);
+
+            // 公屏隐藏悄悄话和私聊（单选）
+            const hideLabel = document.createElement('div');
+            hideLabel.textContent = '公屏隐藏收到的悄悄话和私聊：';
+            hideLabel.style.marginBottom = '8px';
+            dialog.appendChild(hideLabel);
+
+            const hideOptions = [
+                { label: '不隐藏', value: 0 },
+                { label: '打开时隐藏', value: 1 },
+                { label: '一直隐藏', value: 2 }
+            ];
+
+            const hideGroup = document.createElement('div');
+            hideGroup.style.display = 'flex';
+            hideGroup.style.flexDirection = 'column';
+            hideGroup.style.marginBottom = '18px';
+
+            // 当前设置
+            let currentHide = (Player.OnlineSettings?.LCData?.MessageSetting?.HidePrivateChat) ?? 0;
+
+            hideOptions.forEach(opt => {
+                const label = document.createElement('label');
+                label.style.display = 'flex';
+                label.style.alignItems = 'center';
+                label.style.marginBottom = '4px';
+
+                const radio = document.createElement('input');
+                radio.type = 'radio';
+                radio.name = 'hidePrivateChat';
+                radio.value = opt.value;
+                radio.checked = (currentHide == opt.value);
+
+                label.appendChild(radio);
+                label.appendChild(document.createTextNode(opt.label));
+                hideGroup.appendChild(label);
+            });
+            dialog.appendChild(hideGroup);
+
+            // 后台时消息通知（勾选框）
+            const notifyLabel = document.createElement('label');
+            notifyLabel.style.display = 'flex';
+            notifyLabel.style.alignItems = 'center';
+            notifyLabel.style.marginBottom = '18px';
+
+            const notifyCheckbox = document.createElement('input');
+            notifyCheckbox.type = 'checkbox';
+            notifyCheckbox.checked = !!(Player.OnlineSettings?.LCData?.MessageSetting?.NotifyWhenBackground);
+
+            notifyLabel.appendChild(notifyCheckbox);
+            notifyLabel.appendChild(document.createTextNode('网页后台时消息通知'));
+            dialog.appendChild(notifyLabel);
+
+            // 确定按钮
+            const okBtn = document.createElement('button');
+            okBtn.textContent = '确定';
+            okBtn.style.marginTop = '8px';
+            okBtn.style.alignSelf = 'center';
+            okBtn.style.padding = '6px 24px';
+            okBtn.style.border = '1px solid #4CAF50';
+            okBtn.style.background = '#4CAF50';
+            okBtn.style.color = 'white';
+            okBtn.style.borderRadius = '4px';
+            okBtn.style.fontSize = '1em';
+            okBtn.style.cursor = 'pointer';
+
+            okBtn.onclick = function() {
+                // 读取单选
+                const selectedRadio = dialog.querySelector('input[name="hidePrivateChat"]:checked');
+                const hideValue = selectedRadio ? Number(selectedRadio.value) : 0;
+                // 读取勾选
+                const notifyValue = notifyCheckbox.checked;
+
+                // 保存到设置
+                Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat = hideValue;
+                Player.OnlineSettings.LCData.MessageSetting.NotifyWhenBackground = notifyValue;
+
+                // 同步到服务器
+                ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+
+                dialog.remove();
+            };
+
+            dialog.appendChild(okBtn);
+            
+            // 点击弹窗外部关闭
+            function closeIfClickOutside(e) {
+                if (!dialog.contains(e.target)) {
+                    dialog.remove();
+                    document.removeEventListener('mousedown', closeIfClickOutside);
+                }
+            }
+            setTimeout(() => {
+                document.addEventListener('mousedown', closeIfClickOutside);
+            }, 0);
+            document.body.appendChild(dialog);
+        }
+        
+
         // 启动自动刷新
         function startAutoRefresh() {
             // 先清除可能存在的旧定时器
@@ -4013,6 +4192,11 @@ class SenderItemPool {
              
             // 保存到本地存储
             LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
+
+            // 新增：后台消息通知
+            if (senderNumber !== Player.MemberNumber) {
+                notifyIfBackground(senderNumber, type, content);
+            }
         }
         
         // 保存当前输入状态
@@ -4179,7 +4363,7 @@ class SenderItemPool {
                         popup.style.borderRadius = '6px';
                         popup.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
                         popup.style.padding = '14px 18px';
-                        popup.style.zIndex = 100001;
+                        popup.style.zIndex = FloatZindex;
                         popup.style.minWidth = '220px';
 
                         // Friends转为名字
@@ -4591,6 +4775,54 @@ class SenderItemPool {
             }, Math.floor(Math.random() * 4000) + 4000); // 随机4-8秒处理一个
         }
 
+
+        /**
+         * 在页面位于后台且开启设置时，发送浏览器通知
+         * @param {string} content - 消息内容
+         */
+        function notifyIfBackground(number, type,content) {
+            try {
+                if (
+                    Player.OnlineSettings?.LCData?.MessageSetting?.NotifyWhenBackground &&
+                    document.hidden &&
+                    "Notification" in window
+                ) {
+                    function sendNotification() {
+                        new Notification(getCharacterName(number) + " - " + getMessageTypeText(type), {
+                            body: content,
+                            icon: getCharacterInfo(number).Avatar || "/favicon.ico"
+                        });
+                    }
+
+                    if (Notification.permission === "granted") {
+                        sendNotification();
+                    } else if (Notification.permission !== "denied") {
+                        Notification.requestPermission().then(permission => {
+                            if (permission === "granted") {
+                                sendNotification();
+                            }
+                        });
+                    }
+                }
+            } catch (e) {
+                // 忽略通知异常
+            }
+        }
+
+            // 获取消息类型的显示文本
+        function getMessageTypeText(type) 
+        {
+            switch(type) {
+                case 'Whisper':
+                    return '悄悄话';
+                case 'Beep':
+                    return '私聊';
+                default:
+                    return type || '消息';
+            }
+        }
+
+
         // 公开接口
         return {
             init: function() {
@@ -4680,7 +4912,7 @@ function createFloatingMessageButton() {
     const buttonContainer = document.createElement('div');
     buttonContainer.id = 'floatingMessageButton';
     buttonContainer.style.position = 'fixed';
-    buttonContainer.style.zIndex = '10000';
+    buttonContainer.style.zIndex = FloatZindex;
     buttonContainer.style.width = '50px';
     buttonContainer.style.height = '50px';
     buttonContainer.style.borderRadius = '50%';
@@ -4825,7 +5057,7 @@ function updateFloatingButtonState() {
         button.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.3)';
     } else {
         // 对话框关闭状态
-        button.style.backgroundColor = '#a0a0a0';
+        button.style.backgroundColor = '#ebebeb';
         button.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
     }
     
@@ -4866,7 +5098,9 @@ function updateFloatingButtonState() {
         badge.style.boxShadow = '0 2px 5px rgba(0, 0, 0, 0.2)';
         
         button.appendChild(badge);
-        
+                // 添加亮红色描边
+        button.style.boxShadow = '0 0 0 3px #ff4d4f, 0 2px 10px rgba(0, 0, 0, 0.3)';
+
         // 添加轻微的动画效果
         button.style.transform = 'scale(1.05)';
     } else {
@@ -4978,6 +5212,15 @@ function CheckOnlineLCSetting()
             }
         };
     }
+    if (!Player.OnlineSettings.LCData)
+        {
+            Player.OnlineSettings.LCData = {
+                MessageSetting: {
+                    HidePrivateChat: HidePrivateChatEnum.NONE,
+                    NotifyWhenBackground: false 
+                }
+            };
+        }
 }
 
 // 在游戏退出时清理定时器
