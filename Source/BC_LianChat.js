@@ -2969,7 +2969,7 @@ class SenderItemPool {
                 // 只有当允许操作按钮时才检查和添加
                 if (allowActions) {
                     // 检查是否包含房间邀请 |房间名|格式
-                    const roomInviteRegex = /\|([a-zA-Z0-9 ]+)\|/;
+                    const roomInviteRegex = /\|([^\|]+)\|/;
                     const roomMatch = processedContent.match(roomInviteRegex);
                     
                     if (roomMatch) {
