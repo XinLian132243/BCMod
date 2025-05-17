@@ -497,12 +497,23 @@ keyDownFunctions.forEach(funcName => {
                 
                 request.onsuccess = (event) => {
                     const cursor = event.target.result;
-                    if (cursor && !cursor.value.pinnedTime 
-                         && !cursor.value.isHidden
-                         && cursor.value.memberNumber != Player.MemberNumber 
-                         && players.length < maxRecentPlayers) {
-                        players.push(cursor.value.memberNumber);
-                        cursor.continue();
+                    if (cursor) {
+                        // 对于 recentPlayers，只收集不置顶、不隐藏、不是自己，且数量未超限
+                        if (
+                            !cursor.value.pinnedTime &&
+                            !cursor.value.isHidden &&
+                            cursor.value.memberNumber != Player.MemberNumber &&
+                            players.length < maxRecentPlayers
+                        ) {
+                            players.push(cursor.value.memberNumber);
+                        }
+                        // 无论是否 push，都要继续遍历
+                        // 但如果数量已满，直接 resolve
+                        if (players.length < maxRecentPlayers) {
+                            cursor.continue();
+                        } else {
+                            resolve(players);
+                        }
                     } else {
                         resolve(players);
                     }
