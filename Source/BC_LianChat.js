@@ -89,7 +89,8 @@
             SenderCharacter, 
             data.Target ? ChatRoomCharacter.find(c => c.MemberNumber === data.Target) : null
         );
-        if (data.Type == "Whisper" || (data.Type == "LocalMessage" && msg.includes("bce-beep-reply"))) 
+        if (data.Type == "Whisper" 
+            || (data.Type == "LocalMessage" && (msg.includes("bce-beep-reply") || msg.includes("<a onclick=\"ServerOpenFriendList()\">")))) 
         {
             if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
                 && MessageModule.isMessageDialogVisible())
