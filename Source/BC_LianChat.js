@@ -897,25 +897,7 @@ keyDownFunctions.forEach(funcName => {
             
             const friendInfo = onlineFriendsCache.find(f => f.MemberNumber === parseInt(memberNumber));
             if (friendInfo) {
-                let roomText = '';
-                
-                // 根据房间名和私有状态显示不同文本
-                if (friendInfo.ChatRoomName) {
-                    // 有房间名
-                    if (friendInfo.Private) {
-                        roomText = `位于 [私] ${friendInfo.ChatRoomName}`;
-                    } else {
-                        roomText = `位于 ${friendInfo.ChatRoomName}`;
-                    }
-                } else if (friendInfo.Private) {
-                    // 无房间名但是私有房间
-                    roomText = `位于 [私人房间]`;
-                } else {
-                    // 既无房间名也不是私有房间
-                    roomText = `位于 大厅`;
-                }
-                
-                return roomText;
+                return "位于 " + getRoomLocationText(friendInfo);
             } else if (isFriend(memberNumber)) {
                 // 是好友但不在在线好友列表中
                 return "离线";
@@ -923,6 +905,31 @@ keyDownFunctions.forEach(funcName => {
                 // 既不是好友也不在同一个房间
                 return "已离开";
             }
+        }
+
+        /**
+         * 封装房间位置文本生成逻辑
+         * @param {Object} friendInfo
+         * @returns {string}
+         */
+        function getRoomLocationText(friendInfo) {
+            let location = '';
+            // 根据房间名和私有状态显示不同文本
+            if (friendInfo.ChatRoomName) {
+                // 有房间名
+                if (friendInfo.Private) {
+                    location = `[私] ${friendInfo.ChatRoomName}`;
+                } else {
+                    location = `${friendInfo.ChatRoomName}`;
+                }
+            } else if (friendInfo.Private) {
+                // 无房间名但是私有房间
+                location = `[私人房间]`;
+            } else {
+                // 既无房间名也不是私有房间
+                location = `大厅`;
+            }
+            return location;
         }
 
         // 重置对话框位置到初始状态
@@ -1216,7 +1223,6 @@ class SenderItem {
         this.secondRow = document.createElement('div');
         this.nameContainer = document.createElement('div');
         this.nameSpan = document.createElement('span');
-        this.memberNumberSpan = document.createElement('span');
         this.timeContainer = document.createElement('div');
         this.previewContainer = document.createElement('div');
         this.unreadIndicator = document.createElement('div');
@@ -1262,10 +1268,6 @@ class SenderItem {
         this.nameContainer.style.overflow = 'hidden';
         this.nameContainer.style.textOverflow = 'ellipsis';
         this.nameContainer.style.whiteSpace = 'nowrap';
-
-        // 会员号样式
-        this.memberNumberSpan.style.color = '#888888';
-        this.memberNumberSpan.style.fontSize = '0.9em';
 
         // 第二行样式
         this.secondRow.style.display = 'flex';
@@ -1379,14 +1381,12 @@ class SenderItem {
         this.element.appendChild(this.avatarContainer);
         this.element.appendChild(this.contentContainer);
 
-        // 更新名称和会员号
+        // 更新名称
         this.nameSpan.textContent = getCharacterName(memberNumber);
-        this.memberNumberSpan.textContent = ` (${memberNumber})`;
         
         // 清空并重新组装名称容器
         this.nameContainer.innerHTML = '';
         this.nameContainer.appendChild(this.nameSpan);
-        this.nameContainer.appendChild(this.memberNumberSpan);
 
         // 更新互动状态样式
         const canInteract = isBeepAvailable(memberNumber) || 
@@ -1568,6 +1568,159 @@ class SenderItemPool {
     }
 }
 
+
+// 角色小信息面板类
+class CharacterSmallInfoPanel {
+    constructor() {
+        this.element = document.createElement('div');
+        this.element.style.width = '100%';
+        this.element.style.boxSizing = 'border-box';
+        this.element.style.overflow = 'hidden';
+        this.element.style.textOverflow = 'ellipsis';
+        this.element.style.whiteSpace = 'nowrap';
+        this.element.style.minHeight = '50px';
+        this.element.style.display = 'flex';
+        this.element.style.padding = '8px';
+        this.element.style.borderBottom = '1px solid #ddd';
+        this.element.style.marginBottom = '10px';
+        this.element.style.gap = '10px';
+        this.element.style.alignItems = 'center';
+
+        // 头像
+        this.avatarContainer = null;
+        // 信息容器
+        this.infoContainer = document.createElement('div');
+        this.infoContainer.style.display = 'flex';
+        this.infoContainer.style.flexDirection = 'column';
+        this.infoContainer.style.gap = '2px';
+        this.infoContainer.style.width = '100%'; // 关键
+
+        // 姓名
+        this.nameRow = document.createElement('div');
+        this.nameRow.style.display = 'flex';
+        this.nameRow.style.alignItems = 'center';
+        this.nameRow.style.width = '100%'; // 关键
+        this.nameRow.style.boxSizing = 'border-box'; // 关键
+
+        this.nameSpan = document.createElement('span');
+        this.nameSpan.style.fontWeight = 'bold';
+        this.nameSpan.style.fontSize = '14px';
+        this.nameSpan.style.overflow = 'hidden';
+        this.nameSpan.style.textOverflow = 'ellipsis';
+        this.nameSpan.style.whiteSpace = 'nowrap';
+
+        this.roomNameSpan = document.createElement('span');
+        this.roomNameSpan.style.fontWeight = 'bold';
+        this.roomNameSpan.style.fontSize = '14px';
+        this.roomNameSpan.style.color = '#b0b0b0';
+        this.roomNameSpan.style.whiteSpace = 'nowrap';
+        this.roomNameSpan.style.overflow = 'hidden';
+        this.roomNameSpan.style.textOverflow = 'ellipsis';
+        this.roomNameSpan.style.marginLeft = 'auto';
+
+        this.nameRow.appendChild(this.nameSpan);
+        this.nameRow.appendChild(this.roomNameSpan);
+
+        this.infoContainer.appendChild(this.nameRow);
+
+        // 签名
+        this.signatureSpan = document.createElement('span');
+        this.signatureSpan.style.color = '#666';
+        this.signatureSpan.style.fontSize = '12px';
+        this.signatureSpan.style.maxWidth = '200px';
+        this.signatureSpan.style.overflow = 'hidden';
+        this.signatureSpan.style.textOverflow = 'ellipsis';
+        this.signatureSpan.style.whiteSpace = 'nowrap';
+
+        this.infoContainer.appendChild(this.signatureSpan);
+
+        this.element.appendChild(this.infoContainer);
+    }
+
+    update(memberNumber) {
+        this.element.id = `character-info-panel-${memberNumber}`;
+
+        // 更新头像
+        if (this.avatarContainer) {
+            this.element.removeChild(this.avatarContainer);
+        }
+        
+        this.avatarContainer = createOrUpdateAvatarContainer(memberNumber, this.avatarContainer);
+        this.avatarContainer.style.width = '36px';
+        this.avatarContainer.style.height = '36px';
+        this.avatarContainer.style.cursor = 'pointer';
+
+        // 头像点击事件
+        this.avatarContainer.onclick = (event) => {
+            event.stopPropagation();
+            messageDialog.showCharacterInfoPanel(memberNumber, event.clientX, event.clientY);
+        };
+
+        this.element.insertBefore(this.avatarContainer, this.infoContainer);
+
+        // 更新姓名
+        this.nameSpan.textContent = getCharacterName(memberNumber);
+
+        // 在线状态
+        const canWhisper = isWhisperAvailable(memberNumber);
+        const canBeep = isBeepAvailable(memberNumber);
+        const isSelf = memberNumber === Player.MemberNumber;
+        if (!canWhisper && !canBeep && !isSelf) {
+            this.nameSpan.style.color = '#888';
+        } else {
+            this.nameSpan.style.color = '';
+        }
+
+        // 签名
+        const characterInfo = getCharacterInfo(memberNumber);
+        this.signatureSpan.textContent = characterInfo.Signature || '';
+
+        // 房间名逻辑
+        const friendObj = onlineFriendsCache.find(f => f.MemberNumber === parseInt(memberNumber));
+        this.roomNameSpan.textContent = friendObj ? getRoomLocationText(friendObj) : '';
+    }
+}
+
+// 角色小信息面板池
+class CharacterSmallInfoPanelPool {
+    constructor() {
+        this.pool = [];
+        this.activePanels = new Map();
+    }
+
+    getPanel(memberNumber) {
+        let panel = this.activePanels.get(memberNumber);
+        if (!panel) {
+            if (this.pool.length > 0) {
+                panel = this.pool.pop();
+            } else {
+                panel = new CharacterSmallInfoPanel();
+            }
+            this.activePanels.set(memberNumber, panel);
+        }
+        panel.update(memberNumber);
+        return panel.element;
+    }
+
+    releasePanel(memberNumber) {
+        const panel = this.activePanels.get(memberNumber);
+        if (panel) {
+            this.activePanels.delete(memberNumber);
+            this.pool.push(panel);
+        }
+    }
+
+    clear() {
+        this.activePanels.clear();
+        this.pool = [];
+    }
+}
+
+// 创建全局角色小信息面板池实例
+const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
+
+
+
         // 创建全局SenderItem池实例
         const senderItemPool = new SenderItemPool();
 
@@ -1625,6 +1778,7 @@ class SenderItemPool {
                 selectedSenderNum = memberNumber;
                 messageDialog.updateSenderList();
                 messageDialog.updateMessageContent();
+                messageDialog.hideAddSenderInterface();
                 loadSenderInputState(memberNumber);
         }
 
@@ -1804,7 +1958,7 @@ class SenderItemPool {
 
             // 添加加号按钮
             const addButton = document.createElement('button');
-            addButton.textContent = '+';
+            addButton.textContent = '👤';
             addButton.id = 'addSenderButton'; // 添加唯一ID
             addButton.style.width = '32px';
             addButton.style.height = '32px';
@@ -1834,10 +1988,35 @@ class SenderItemPool {
 
             // 右侧消息内容和输入框容器
             const rightContainer = document.createElement('div');
-            rightContainer.style.flexGrow = '1';
+            rightContainer.style.position = 'relative';
+            rightContainer.style.flex = '1 1 0%';
             rightContainer.style.display = 'flex';
             rightContainer.style.flexDirection = 'column';
             rightContainer.style.height = '100%';
+
+            // 创建 rightMessageContainer（原有消息内容区）
+            const rightMessageContainer = document.createElement('div');
+            rightMessageContainer.style.width = '100%';
+            rightMessageContainer.style.height = '100%';
+            rightMessageContainer.style.display = 'flex';
+            rightMessageContainer.style.flexDirection = 'column';
+            rightMessageContainer.id = 'LC-Message-RightMessageContainer';
+
+            // 创建 addSenderContainer（添加发送者界面）
+            const addSenderContainer = document.createElement('div');
+            addSenderContainer.style.width = '100%';
+            addSenderContainer.style.height = '100%';
+            addSenderContainer.style.display = 'none'; // 默认隐藏
+            addSenderContainer.style.flexDirection = 'column';
+            addSenderContainer.id = 'LC-Message-AddSenderContainer';
+
+            // 将两个容器都加入 rightContainer
+            rightContainer.appendChild(rightMessageContainer);
+            rightContainer.appendChild(addSenderContainer);
+
+            // 用 rightContainer 替换原有的 rightMessageContainer
+            contentContainer.appendChild(rightContainer);
+
             
             // 消息标题区域
             const headerContainer = document.createElement('div');
@@ -1982,24 +2161,6 @@ class SenderItemPool {
             // 组装输入区域
             inputContainer.appendChild(inputField);
             inputContainer.appendChild(buttonContainer);
-
-
-            // 创建悬浮窗口
-            const addSenderContainer = document.createElement('div');
-            addSenderContainer.style.position = 'absolute'; // 绝对定位
-            addSenderContainer.style.top = '0'; // 初始位置，稍后根据加号按钮位置调整
-            addSenderContainer.style.left = '0'; // 初始位置，稍后根据加号按钮位置调整
-            addSenderContainer.style.width = '300px'; // 悬浮窗口宽度
-            addSenderContainer.style.height = '400px'; // 悬浮窗口高度
-            addSenderContainer.style.display = 'none'; // 初始隐藏
-            addSenderContainer.style.zIndex = FloatZindex; // 确保在其他元素之上
-            addSenderContainer.style.backgroundColor = 'white'; // 背景色
-            addSenderContainer.style.border = '1px solid #ddd'; // 边框
-            addSenderContainer.style.borderRadius = '5px'; // 圆角
-            addSenderContainer.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.2)'; // 阴影
-            addSenderContainer.style.overflow = 'hidden'; // 防止内容溢出
-            // 将悬浮窗口添加到文档中
-            document.body.appendChild(addSenderContainer);
 
             // 发送消息的函数
             function sendMessage(customMessage) {
@@ -2339,34 +2500,105 @@ class SenderItemPool {
             }
 
              // 显示添加发送者界面
-            function showAddSenderInterface() {
-                // 通过ID查找加号按钮
-                const addButton = document.getElementById('addSenderButton');
-                if (addButton) {
-                    const rect = addButton.getBoundingClientRect();
-                    // 获取rightContainer的尺寸
-                    const rightContainerRect = rightContainer.getBoundingClientRect();
-                    
-                    // 将悬浮窗口定位在加号按钮的右侧
-                    addSenderContainer.style.top = `${rect.top}px`; // 与加号按钮顶部对齐
-                    addSenderContainer.style.left = `${rect.right + 5}px`; // 加号按钮右侧 + 5px
-                    
-                    // 设置悬浮窗口的尺寸
-                    addSenderContainer.style.width = `${rightContainerRect.width}px`; // 使用rightContainer宽度的80%
-                    addSenderContainer.style.height = `${rightContainerRect.height}px`; // 使用rightContainer高度的80%
+            function showAddSenderInterface() {  
+                changeSelectedSender(0);
+                rightMessageContainer.style.display = 'none';
+                addSenderContainer.style.display = 'flex';
 
-                }
-     
                 // 清空并显示添加发送者容器
                 addSenderContainer.innerHTML = '';
                 addSenderContainer.style.display = 'block';
                 
                 // 创建搜索框容器
                 const searchContainer = document.createElement('div');
+                searchContainer.style.display = 'flex'; // 横向排列
+                searchContainer.style.alignItems = 'center';
                 searchContainer.style.padding = '15px 15px 0 15px';
                 searchContainer.style.marginBottom = '10px';
-                searchContainer.className = 'search-container'; // 添加类名
-                
+                searchContainer.className = 'search-container';
+
+                // 新增：切换按钮组
+                const switchGroup = document.createElement('div');
+                switchGroup.style.display = 'flex';
+                switchGroup.style.alignItems = 'center';
+                switchGroup.style.marginRight = '10px';
+                switchGroup.style.border = '1px solid #ddd';
+                switchGroup.style.borderRadius = '4px';
+                switchGroup.style.overflow = 'hidden';
+
+                // 好友按钮
+                const friendBtn = document.createElement('button');
+                friendBtn.textContent = '好友';
+                friendBtn.style.padding = '6px 16px';
+                friendBtn.style.border = 'none';
+                friendBtn.style.cursor = 'pointer';
+                friendBtn.style.outline = 'none';
+                friendBtn.style.fontWeight = 'bold';
+                friendBtn.style.minWidth = '48px'; // 保证横排
+                friendBtn.style.whiteSpace = 'nowrap'; // 禁止换行
+                // 新增：居中和黑色字体
+                friendBtn.style.display = 'flex';
+                friendBtn.style.alignItems = 'center';
+                friendBtn.style.justifyContent = 'center';
+                friendBtn.style.color = 'black';
+
+                // 房间按钮
+                const roomBtn = document.createElement('button');
+                roomBtn.textContent = '房间';
+                roomBtn.style.padding = '6px 16px';
+                roomBtn.style.border = 'none';
+                roomBtn.style.cursor = 'pointer';
+                roomBtn.style.outline = 'none';
+                roomBtn.style.fontWeight = 'bold';
+                roomBtn.style.minWidth = '48px'; // 保证横排
+                roomBtn.style.whiteSpace = 'nowrap'; // 禁止换行
+                // 新增：居中和黑色字体
+                roomBtn.style.display = 'flex';
+                roomBtn.style.alignItems = 'center';
+                roomBtn.style.justifyContent = 'center';
+                roomBtn.style.color = 'black';
+
+                // 当前模式变量
+                let currentMode = addSenderContainer.getAttribute('data-mode') || 'friend';
+
+                // 切换按钮样式函数
+                function updateSwitchStyle() {
+                    if (currentMode === 'friend') {
+                        friendBtn.style.background = '#e6f4ff'; // 浅蓝色
+                        friendBtn.style.color = 'black';        // 黑色字体
+                        roomBtn.style.background = 'white';
+                        roomBtn.style.color = 'black';
+                    } else {
+                        roomBtn.style.background = '#e6f4ff';   // 浅蓝色
+                        roomBtn.style.color = 'black';          // 黑色字体
+                        friendBtn.style.background = 'white';
+                        friendBtn.style.color = 'black';
+                    }
+                }
+
+                // 切换事件
+                friendBtn.addEventListener('click', function() {
+                    if (currentMode !== 'friend') {
+                        currentMode = 'friend';
+                        addSenderContainer.setAttribute('data-mode', 'friend'); // 存储模式
+                        updateSwitchStyle();
+                        updateAddSenderLists();
+                    }
+                });
+                roomBtn.addEventListener('click', function() {
+                    if (currentMode !== 'room') {
+                        currentMode = 'room';
+                        addSenderContainer.setAttribute('data-mode', 'room'); // 存储模式
+                        updateSwitchStyle();
+                        updateAddSenderLists();
+                    }
+                });
+
+                updateSwitchStyle();
+
+                switchGroup.appendChild(friendBtn);
+                switchGroup.appendChild(roomBtn);
+
                 // 创建搜索框
                 const addSenderSearchInput = document.createElement('input');
                 addSenderSearchInput.type = 'text';
@@ -2377,218 +2609,124 @@ class SenderItemPool {
                 addSenderSearchInput.style.borderRadius = '4px';
                 addSenderSearchInput.style.boxSizing = 'border-box';
                 addSenderSearchInput.id = 'LC-Message-AddSenderSearchInput';
-                
+
                 // 添加搜索事件监听
                 addSenderSearchInput.addEventListener('input', function() {
-                    refreshAddSenderLists(this.value);
+                    updateAddSenderLists();
                 });
-                
+
+                searchContainer.appendChild(switchGroup); // 把切换按钮加到最左侧
                 searchContainer.appendChild(addSenderSearchInput);
                 addSenderContainer.appendChild(searchContainer);
                 
                 // 创建并填充列表
-                refreshAddSenderLists('');
-                
-                // 添加全局点击事件监听器，使用捕获阶段
-                document.addEventListener('click', handleOutsideClick, true);
-                
-                // 聚焦搜索框
-                setTimeout(() => addSenderSearchInput.focus(), 100);
+                updateAddSenderLists();
             }
-            
+
             // 刷新添加发送者界面的列表
-            function refreshAddSenderLists(searchKeyword = '') {
+            function updateAddSenderLists() {                
                 // 获取搜索框容器，如果存在的话
                 const searchContainer = document.getElementById('LC-Message-AddSenderSearchInput');
-                const searchValue = searchKeyword || (searchContainer ? searchContainer.value : '');
+                const searchValue = searchContainer ? searchContainer.value : '';
+                const mode = addSenderContainer.getAttribute('data-mode') || 'friend';
                 
-                // 查找并移除现有的内容容器（如果存在）
+                // 记录上次滚动位置
+                let prevScrollTop = 0;
                 const existingContentContainer = addSenderContainer.querySelector('.add-sender-content-container');
                 if (existingContentContainer) {
+                    // 查找上一次成员列表（createMemberList返回的div），并记录其scrollTop
+                    const lastMemberList = existingContentContainer.querySelector('div[style*="flex-direction: column"]');
+                    if (lastMemberList) {
+                        prevScrollTop = lastMemberList.scrollTop;
+                    }
                     addSenderContainer.removeChild(existingContentContainer);
                 }
-                
+
                 // 创建内容容器
                 const container = document.createElement('div');
-                container.className = 'add-sender-content-container'; // 添加类名以便后续查找
+                container.className = 'add-sender-content-container';
                 container.style.display = 'flex';
                 container.style.gap = '20px';
                 container.style.padding = '15px';
-                container.style.height = 'calc(100% - 60px)'; // 减去搜索框的高度
-                container.style.overflow = 'auto'; // 启用滚动条
-                
-                // 创建成员列表容器
-                const listsContainer = document.createElement('div');
-                listsContainer.style.display = 'flex';
-                listsContainer.style.gap = '20px';
-                listsContainer.style.width = '100%';
-                listsContainer.style.overflow = 'auto'; // 启用滚动条
-                container.appendChild(listsContainer);
+                container.style.height = 'calc(100% - 60px)';
+                container.style.overflow = 'auto';
 
-                // 获取房间成员Number列表，过滤掉当前用户，并根据搜索关键词过滤
-                const roomMemberNumbers = ChatRoomCharacter
-                    .filter(c => c.MemberNumber !== Player.MemberNumber)
-                    .filter(c => {
+                // 生成成员列表
+                let memberList;
+                if (mode === 'room') {
+                    // 只显示房间成员
+                    const roomMemberNumbers = ChatRoomCharacter
+                        .filter(c => c.MemberNumber !== Player.MemberNumber)
+                        .filter(c => {
+                            if (!searchValue) return true;
+                            const name = getCharacterName(c.MemberNumber).toLowerCase();
+                            const memberNumber = c.MemberNumber.toString();
+                            const cachedInfo = getAndUpdateCharacterCache(c.MemberNumber).cache;
+                            let nickname = '';
+                            let characterName = '';
+                            if (cachedInfo) {
+                                if (cachedInfo.Nickname) nickname = cachedInfo.Nickname.toLowerCase();
+                                if (cachedInfo.Name) characterName = cachedInfo.Name.toLowerCase();
+                            }
+                            const searchLower = searchValue.toLowerCase();
+                            return name.includes(searchLower) ||
+                                memberNumber.includes(searchValue) ||
+                                nickname.includes(searchLower) ||
+                                characterName.includes(searchLower);
+                        })
+                        .map(c => c.MemberNumber);
+
+                    memberList = createMemberList(roomMemberNumbers);
+                } else {
+                    // 只显示好友
+                    const filterFriend = (memberNumber) => {
                         if (!searchValue) return true;
-                        
-                        // 获取角色名称和会员编号
-                        const name = getCharacterName(c.MemberNumber).toLowerCase();
-                        const memberNumber = c.MemberNumber.toString();
-                        
-                        // 检查playerCache中的昵称和名称
-                        const cachedInfo = getAndUpdateCharacterCache(c.MemberNumber).cache;
+                        const name = getCharacterName(memberNumber).toLowerCase();
+                        const memberNumberStr = memberNumber.toString();
+                        const cachedInfo = getAndUpdateCharacterCache(memberNumber).cache;
                         let nickname = '';
                         let characterName = '';
-                        
                         if (cachedInfo) {
                             if (cachedInfo.Nickname) nickname = cachedInfo.Nickname.toLowerCase();
                             if (cachedInfo.Name) characterName = cachedInfo.Name.toLowerCase();
                         }
-                        
-                        // 搜索匹配任何一个字段
                         const searchLower = searchValue.toLowerCase();
-                        return name.includes(searchLower) || 
-                               memberNumber.includes(searchValue) ||
-                               nickname.includes(searchLower) ||
-                               characterName.includes(searchLower);
-                    })
-                    .map(c => c.MemberNumber);
-                
-                // 创建房间成员列表
-                const roomMembersList = createMemberList('房间成员', roomMemberNumbers);
-                listsContainer.appendChild(roomMembersList);
+                        return name.includes(searchLower) ||
+                            memberNumberStr.includes(searchValue) ||
+                            nickname.includes(searchLower) ||
+                            characterName.includes(searchLower);
+                    };
 
-                // 好友过滤函数
-                const filterFriend = (memberNumber) => {
-                    if (!searchValue) return true;
-                    
-                    // 获取角色名称和会员编号
-                    const name = getCharacterName(memberNumber).toLowerCase();
-                    const memberNumberStr = memberNumber.toString();
-                    
-                    // 检查playerCache中的昵称和名称
-                    const cachedInfo = getAndUpdateCharacterCache(memberNumber).cache;
-                    let nickname = '';
-                    let characterName = '';
-                    
-                    if (cachedInfo) {
-                        if (cachedInfo.Nickname) nickname = cachedInfo.Nickname.toLowerCase();
-                        if (cachedInfo.Name) characterName = cachedInfo.Name.toLowerCase();
+                    const onlineFriendNumbers = onlineFriendsCache
+                        .map(f => f.MemberNumber)
+                        .filter(filterFriend);
+
+                    const offlineFriendNumbers = Player.FriendList
+                        .filter(memberNumber => isFriend(memberNumber) && Player.FriendNames.get(memberNumber) && !onlineFriendNumbers.includes(memberNumber))
+                        .filter(filterFriend);
+
+                    const allFriendNumbers = [...onlineFriendNumbers, ...offlineFriendNumbers];
+
+                    memberList = createMemberList(allFriendNumbers);
+                }
+
+                // 恢复滚动位置
+                if (memberList) {
+                    container.appendChild(memberList);
+                    function restoreScroll() {
+                        memberList.scrollTop = prevScrollTop;                       
                     }
-                    
-                    // 搜索匹配任何一个字段
-                    const searchLower = searchValue.toLowerCase();
-                    return name.includes(searchLower) || 
-                           memberNumberStr.includes(searchValue) ||
-                           nickname.includes(searchLower) ||
-                           characterName.includes(searchLower);
-                };
-
-                // 获取在线好友Number列表
-                const onlineFriendNumbers = onlineFriendsCache
-                    .map(f => f.MemberNumber)
-                    .filter(filterFriend);
-
-                // 获取非在线好友Number列表
-                const offlineFriendNumbers = Player.FriendList
-                    .filter(memberNumber => isFriend(memberNumber) && Player.FriendNames.get(memberNumber) && !onlineFriendNumbers.includes(memberNumber))
-                    .filter(filterFriend);
-
-                // 合并在线和非在线好友列表
-                const allFriendNumbers = [...onlineFriendNumbers, ...offlineFriendNumbers];
-                
-                // 创建所有好友列表
-                const allFriendsList = createMemberList('所有好友', allFriendNumbers);
-                listsContainer.appendChild(allFriendsList);
+                    requestAnimationFrame(restoreScroll);
+                }
 
                 // 添加到添加发送者容器
                 addSenderContainer.appendChild(container);
             }
 
-            // 隐藏添加发送者界面
-            function hideAddSenderInterface() {
-                addSenderContainer.style.display = 'none'; // 隐藏
-                // 移除全局点击事件监听器
-                document.removeEventListener('click', handleOutsideClick, true);
-            }
-
-            // 处理点击事件，判断是否点击了addSenderContainer以外的区域
-            function handleOutsideClick(event) {
-                // 如果点击目标不是addSenderContainer或其子元素
-                if (!addSenderContainer.contains(event.target)) {
-                    hideAddSenderInterface(); // 隐藏悬浮窗口
-                }
-            }
 
               // 创建角色小信息面板
               function createCharacterSmallInfoPanel(memberNumber) {
-                const panel = document.createElement('div');
-                panel.style.width = '100%'; // 设置宽度为100%
-                panel.style.boxSizing = 'border-box'; // 确保padding不会增加总宽度
-                panel.style.overflow = 'hidden'; // 防止内容溢出
-                panel.style.textOverflow = 'ellipsis'; // 文本溢出时显示省略号
-                panel.style.whiteSpace = 'nowrap'; // 防止文本换行
-                panel.style.minHeight = '60px'; // 设置最小高度，确保有足够空间显示内容
-                panel.id = `character-info-panel-${memberNumber}`;
-                panel.style.display = 'flex';
-                panel.style.padding = '8px';
-                panel.style.borderBottom = '1px solid #ddd';
-                panel.style.marginBottom = '10px';
-                panel.style.gap = '10px';
-                panel.style.alignItems = 'center';
-
-                // 左侧头像
-                const avatarContainer = createOrUpdateAvatarContainer(memberNumber);
-                avatarContainer.style.width = '36px';
-                avatarContainer.style.height = '36px';
-                avatarContainer.style.cursor = 'pointer'; // 添加鼠标指针样式到头像
-
-                // 添加点击事件到头像
-                avatarContainer.addEventListener('click', function(event) {
-                    event.stopPropagation(); // 阻止事件冒泡
-                    showCharacterInfoPanel(memberNumber, event.clientX, event.clientY);
-                });
-
-                panel.appendChild(avatarContainer);
-
-                // 右侧信息容器
-                const infoContainer = document.createElement('div');
-                infoContainer.style.display = 'flex';
-                infoContainer.style.flexDirection = 'column';
-                infoContainer.style.gap = '2px';
-
-                // 角色姓名
-                const nameSpan = document.createElement('span');
-                nameSpan.textContent = getCharacterName(memberNumber);
-                nameSpan.style.fontWeight = 'bold';
-                nameSpan.style.fontSize = '14px';
-                
-                // 检查角色是否在线或在房间
-                const canWhisper = isWhisperAvailable(memberNumber);
-                const canBeep = isBeepAvailable(memberNumber);
-                const isSelf = memberNumber === Player.MemberNumber;
-                
-                // 如果既不能悄悄话也不能Beep，且不是自己，添加灰色效果
-                if (!canWhisper && !canBeep && !isSelf) {
-                    nameSpan.style.color = '#888';
-                }
-
-                // 角色签名
-                const signatureSpan = document.createElement('span');
-                const characterInfo = getCharacterInfo(memberNumber);
-                signatureSpan.textContent = characterInfo.Signature || '';
-                signatureSpan.style.color = '#666';
-                signatureSpan.style.fontSize = '12px';
-                signatureSpan.style.maxWidth = '200px';
-                signatureSpan.style.overflow = 'hidden';
-                signatureSpan.style.textOverflow = 'ellipsis';
-                signatureSpan.style.whiteSpace = 'nowrap';
-
-                infoContainer.appendChild(nameSpan);
-                infoContainer.appendChild(signatureSpan);
-                panel.appendChild(infoContainer);
-
-                return panel;
+                return characterSmallInfoPanelPool.getPanel(memberNumber);
             }
 
             // 创建大型信息面板
@@ -2787,25 +2925,12 @@ class SenderItemPool {
             }
 
             // 修改成员列表创建函数，添加滚动条支持
-            function createMemberList(title, memberNumbers) {
-                const container = document.createElement('div');
-                container.style.flex = '1';
-                container.style.display = 'flex';
-                container.style.flexDirection = 'column';
-                container.style.maxHeight = '100%'; // 确保不超过父容器高度
-
-                // 标题
-                const titleElement = document.createElement('h4');
-                titleElement.textContent = title;
-                titleElement.style.margin = '0 0 10px 0';
-                titleElement.style.flexShrink = '0'; // 防止标题被压缩
-                container.appendChild(titleElement);
-
+            function createMemberList(memberNumbers) {
                 // 成员列表
                 const list = document.createElement('div');
                 list.style.display = 'flex';
                 list.style.flexDirection = 'column';
-                list.style.gap = '8px';
+                list.style.gap = '2px';
                 list.style.overflowY = 'auto'; // 启用垂直滚动条
                 list.style.flexGrow = '1'; // 允许列表占用剩余空间
                 list.style.paddingRight = '5px'; // 为滚动条留出空间
@@ -2840,8 +2965,7 @@ class SenderItemPool {
                     list.appendChild(memberItem);
                 });
 
-                container.appendChild(list);
-                return container;
+                return list;
             }
 
             // 添加发送者到消息历史
@@ -3346,10 +3470,12 @@ class SenderItemPool {
             }
             
             // 组装右侧容器
-            rightContainer.appendChild(headerContainer);
-            rightContainer.appendChild(messageContent);
-            rightContainer.appendChild(toolbarContainer);
-            rightContainer.appendChild(inputContainer);
+            rightMessageContainer.appendChild(headerContainer);
+            rightMessageContainer.appendChild(messageContent);
+            rightMessageContainer.appendChild(toolbarContainer);
+            rightMessageContainer.appendChild(inputContainer);
+            
+
             
             // 初始化界面
             updateSenderList();
@@ -3414,16 +3540,26 @@ class SenderItemPool {
             
             // 添加键盘事件监听
             document.addEventListener('keydown', handleKeyDown);
-            
-            // 在隐藏对话框函数中保存引用，以便在关闭时移除事件监听
-            messageDialog.handleKeyDown = handleKeyDown;
-            
+                        
             // 添加到文档
             document.body.appendChild(messageDialog);
-            
+
             // 公开更新方法
+            messageDialog.handleKeyDown = handleKeyDown;
+
             messageDialog.updateSenderList = updateSenderList;
             messageDialog.updateMessageContent = updateMessageContent;
+            messageDialog.hideAddSenderInterface = hideAddSenderInterface;
+            messageDialog.updateAddSenderLists = updateAddSenderLists;
+            messageDialog.showCharacterInfoPanel = showCharacterInfoPanel;
+
+            
+            showAddSenderInterface();
+        }
+        
+        function hideAddSenderInterface() {
+           document.getElementById('LC-Message-AddSenderContainer').style.display = 'none';
+           document.getElementById('LC-Message-RightMessageContainer').style.display = 'flex';
         }
         
         // 添加缩放边缘处理
@@ -4022,6 +4158,10 @@ class SenderItemPool {
             messageDialog.updateSenderList();
             // 更新正在输入状态
             updateTypingPlayers();
+            if (document.getElementById('LC-Message-AddSenderContainer').style.display !== 'none') 
+            {
+                messageDialog.updateAddSenderLists();
+            }
 
             // 降低更新房间列表的频率
             if(MessageModule.isMessageDialogVisible() && updateCounter % 2 == 0) 
@@ -4031,7 +4171,7 @@ class SenderItemPool {
                     sendQueryOnlineRoomListData(friend.ChatRoomName, friend.ChatRoomSpace);
                 }
             }
-            updateCounter ++;
+            updateCounter ++;            
         }
 
 
