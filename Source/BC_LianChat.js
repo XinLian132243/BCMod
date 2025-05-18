@@ -3360,6 +3360,12 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                         });
                     }
 
+                    options.push({
+                        text: '发送LianChat安装链接',
+                        action: function() {
+                            sendMessage(`[涟信] (https://xinlian132243.github.io/BCMod/BC_LianChat.user.js)`);
+                        }
+                    });     
                     const buttonRect = quickMessageButton.getBoundingClientRect();
                     createContextMenu(options, buttonRect.left, buttonRect.bottom);
                 });
