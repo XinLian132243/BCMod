@@ -5237,7 +5237,7 @@ function updateFloatingButtonState() {
     iconElement.style.backgroundRepeat = 'no-repeat';
     
     // 设置图片URL
-    iconElement.style.backgroundImage = `url('https://i.imgur.com/RlFhm7j.png')`;
+    iconElement.style.backgroundImage = `url('https://xinlian132243.github.io/BCMod/Assets/LianChatButton.png')`;
     
     button.appendChild(iconElement);
     
