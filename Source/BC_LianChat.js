@@ -83,7 +83,7 @@
         var metadata = args[3];
                 
         // 使用消息模块处理悄悄话消息
-        MessageModule?.handleChatRoomMessageDisplay(
+        MessageModule.handleChatRoomMessageDisplay(
             data, 
             msg, 
             SenderCharacter, 
@@ -93,7 +93,7 @@
             || (data.Type == "LocalMessage" && (msg.includes("<a onclick=\"FriendListShowBeep") || msg.includes("<a onclick=\"ServerOpenFriendList()\">")))) 
         {
             if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
-                && MessageModule?.isMessageDialogVisible())
+                && MessageModule.isMessageDialogVisible())
             {
                 return;
             }
@@ -758,6 +758,35 @@ keyDownFunctions.forEach(funcName => {
          * }>}
          */
         let onlineRoomListData = {};
+
+         /**
+         * 房间列表数据缓存
+         * @type {Array<{
+         *     Name: string,
+         *     Language: string,
+         *     Creator: string,
+         *     CreatorMemberNumber: number,
+         *     Creation: number,
+         *     MemberCount: number,
+         *     MemberLimit: number,
+         *     Description: string,
+         *     BlockCategory: string[],
+         *     Game: string,
+         *     Friends: Array<{
+         *         Type: string,
+         *         MemberNumber: number,
+         *         MemberName: string
+         *     }>,
+         *     Space: string,
+         *     Visibility: string[],
+         *     Access: string[],
+         *     Locked: boolean,
+         *     Private: boolean,
+         *     MapType: string,
+         *     CanJoin: boolean
+         * }>}
+         */
+        let searchRoomListResult = [];
         let updateCounter = 0;
         
         // 自动刷新相关变量
@@ -1717,9 +1746,168 @@ class CharacterSmallInfoPanelPool {
     }
 }
 
-// 创建全局角色小信息面板池实例
-const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
 
+class RoomItem {
+    constructor() {
+        this.element = document.createElement('div');
+        // 这里可以设置样式，参考 createRoomList 里的 item
+        this.element.style.borderTop = '1px solid #ddd';
+        this.element.style.borderBottom = '1px solid #ddd';
+        this.element.style.padding = '8px 12px';
+        this.element.style.background = '#fff';
+        this.element.style.marginBottom = '4px';
+        this.element.style.display = 'flex';
+        this.element.style.flexDirection = 'column';
+        this.element.style.transition = 'background-color 0.2s';
+
+        // 结构
+        this.firstRow = document.createElement('div');
+        this.firstRow.style.display = 'flex';
+        this.firstRow.style.alignItems = 'center';
+
+        this.memberCountSpan = document.createElement('span');
+        this.memberCountSpan.style.color = '#888';
+        this.memberCountSpan.style.fontSize = '13px';
+        this.memberCountSpan.style.marginRight = '8px';
+        this.memberCountSpan.style.width = '30px';
+
+        this.nameSpan = document.createElement('span');
+        this.nameSpan.style.fontWeight = 'bold';
+        this.nameSpan.style.fontSize = '16px';
+        this.nameSpan.style.marginRight = '8px';
+
+        this.creatorSpan = document.createElement('span');
+        this.creatorSpan.style.color = '#888';
+        this.creatorSpan.style.fontSize = '13px';
+
+        this.pinButton = document.createElement('button');
+        this.pinButton.style.marginLeft = 'auto';
+        this.pinButton.style.background = '#f5f5f5';
+        this.pinButton.style.color = '#888';
+        this.pinButton.style.border = 'none';
+        this.pinButton.style.borderRadius = '4px';
+        this.pinButton.style.padding = '2px 8px';
+        this.pinButton.style.cursor = 'pointer';
+        this.pinButton.style.fontSize = '16px';
+        this.pinButton.style.transition = 'background 0.2s, color 0.2s';
+
+        this.firstRow.appendChild(this.memberCountSpan);
+        this.firstRow.appendChild(this.nameSpan);
+        this.firstRow.appendChild(this.creatorSpan);
+        this.firstRow.appendChild(this.pinButton);
+
+        this.descRow = document.createElement('div');
+        this.descRow.style.color = '#666';
+        this.descRow.style.fontSize = '13px';
+        this.descRow.style.margin = '4px 0 0 0';
+        this.descRow.style.wordBreak = 'break-all';
+
+        this.friendsRow = document.createElement('div');
+        this.friendsRow.style.display = 'flex';
+        this.friendsRow.style.alignItems = 'center';
+        this.friendsRow.style.gap = '4px';
+        this.friendsRow.style.marginTop = '4px';
+
+        this.element.appendChild(this.firstRow);
+        this.element.appendChild(this.descRow);
+        this.element.appendChild(this.friendsRow);
+
+        this.lastFriends = null; // 记录上次的好友数组
+        this.lastRoomName = null; // 记录上次的房间名
+
+        // 只绑定一次 pinButton 事件
+        this.pinButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const pinnedRooms = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+            if (pinnedRooms[this.lastRoomName] !== undefined) {
+                delete pinnedRooms[this.lastRoomName];
+            } else {
+                pinnedRooms[this.lastRoomName] = Date.now();
+            }
+            messageDialog.updateAddSenderLists();
+            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+        });
+    }
+
+    update(room) {
+        
+        const pinnedRoomsDict = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+
+        // 更新内容
+        this.memberCountSpan.textContent = `${room.MemberCount}/${room.MemberLimit}`;
+        this.nameSpan.textContent = room.Name;
+        this.creatorSpan.textContent = `- ${room.Creator}`;
+        this.descRow.textContent = room.Description || '';
+
+        // 置顶按钮样式和title更新
+        const isPinned = pinnedRoomsDict[room.Name] !== undefined;
+        this.pinButton.textContent = '☆';
+        this.pinButton.title = isPinned ? '取消置顶' : '置顶此房间';
+        this.pinButton.style.background = isPinned ? '#e6f4ff' : '#f5f5f5';
+        this.pinButton.style.color = isPinned ? '#2196f3' : '#888';
+
+        // 记录当前房间名，供事件用
+        this.lastRoomName = room.Name;
+
+        // 只有好友数组变化时才重建头像
+        const friendsKey = Array.isArray(room.Friends) ? room.Friends.map(f => f.MemberNumber).join(',') : '';
+        if (this.lastFriends !== friendsKey) {
+            this.friendsRow.innerHTML = '';
+            if (Array.isArray(room.Friends) && room.Friends.length > 0) {
+                room.Friends.forEach(friend => {
+                    const avatar = createOrUpdateAvatarContainer(friend.MemberNumber);
+                    avatar.style.width = '28px';
+                    avatar.style.height = '28px';
+                    avatar.style.borderRadius = '50%';
+                    avatar.style.cursor = 'pointer';
+                    avatar.title = friend.MemberName || friend.MemberNumber;
+                    avatar.onclick = (event) => {
+                        event.stopPropagation();
+                        messageDialog.showCharacterInfoPanel(friend.MemberNumber, event.clientX, event.clientY);
+                    };
+                    this.friendsRow.appendChild(avatar);
+                });
+            }
+            this.lastFriends = friendsKey;
+        }
+    }
+}
+
+// 房间项对象池
+class RoomItemPool {
+    constructor() {
+        this.pool = [];
+        this.activeItems = [];
+    }
+
+    getItem(room) {
+        let item;
+        if (this.pool.length > 0) {
+            item = this.pool.pop();
+        } else {
+            item = new RoomItem();
+        }
+        item.update(room);
+        this.activeItems.push(item);
+        return item.element;
+    }
+
+    releaseAll() {
+        while (this.activeItems.length > 0) {
+            const item = this.activeItems.pop();
+            this.pool.push(item);
+        }
+    }
+
+    clear() {
+        this.pool = [];
+        this.activeItems = [];
+    }
+}
+
+// 创建内存池实例
+        const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
+        const roomItemPool = new RoomItemPool();
 
 
         // 创建全局SenderItem池实例
@@ -2510,100 +2698,10 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                 addSenderContainer.innerHTML = '';
                 addSenderContainer.style.display = 'block';
                 
-                // 创建搜索框容器
-                const searchContainer = document.createElement('div');
-                searchContainer.style.display = 'flex'; // 横向排列
-                searchContainer.style.alignItems = 'center';
-                searchContainer.style.padding = '15px 15px 0 15px';
-                searchContainer.style.marginBottom = '10px';
-                searchContainer.className = 'search-container';
-
-                // 新增：切换按钮组
-                const switchGroup = document.createElement('div');
-                switchGroup.style.display = 'flex';
-                switchGroup.style.alignItems = 'center';
-                switchGroup.style.marginRight = '10px';
-                switchGroup.style.border = '1px solid #ddd';
-                switchGroup.style.borderRadius = '4px';
-                switchGroup.style.overflow = 'hidden';
-
-                // 好友按钮
-                const friendBtn = document.createElement('button');
-                friendBtn.textContent = '好友';
-                friendBtn.style.padding = '6px 16px';
-                friendBtn.style.border = 'none';
-                friendBtn.style.cursor = 'pointer';
-                friendBtn.style.outline = 'none';
-                friendBtn.style.fontWeight = 'bold';
-                friendBtn.style.minWidth = '48px'; // 保证横排
-                friendBtn.style.whiteSpace = 'nowrap'; // 禁止换行
-                // 新增：居中和黑色字体
-                friendBtn.style.display = 'flex';
-                friendBtn.style.alignItems = 'center';
-                friendBtn.style.justifyContent = 'center';
-                friendBtn.style.color = 'black';
-
-                // 房间按钮
-                const roomBtn = document.createElement('button');
-                roomBtn.textContent = '房间';
-                roomBtn.style.padding = '6px 16px';
-                roomBtn.style.border = 'none';
-                roomBtn.style.cursor = 'pointer';
-                roomBtn.style.outline = 'none';
-                roomBtn.style.fontWeight = 'bold';
-                roomBtn.style.minWidth = '48px'; // 保证横排
-                roomBtn.style.whiteSpace = 'nowrap'; // 禁止换行
-                // 新增：居中和黑色字体
-                roomBtn.style.display = 'flex';
-                roomBtn.style.alignItems = 'center';
-                roomBtn.style.justifyContent = 'center';
-                roomBtn.style.color = 'black';
-
-                // 当前模式变量
-                let currentMode = addSenderContainer.getAttribute('data-mode') || 'friend';
-
-                // 切换按钮样式函数
-                function updateSwitchStyle() {
-                    if (currentMode === 'friend') {
-                        friendBtn.style.background = '#e6f4ff'; // 浅蓝色
-                        friendBtn.style.color = 'black';        // 黑色字体
-                        roomBtn.style.background = 'white';
-                        roomBtn.style.color = 'black';
-                    } else {
-                        roomBtn.style.background = '#e6f4ff';   // 浅蓝色
-                        roomBtn.style.color = 'black';          // 黑色字体
-                        friendBtn.style.background = 'white';
-                        friendBtn.style.color = 'black';
-                    }
-                }
-
-                // 切换事件
-                friendBtn.addEventListener('click', function() {
-                    if (currentMode !== 'friend') {
-                        currentMode = 'friend';
-                        addSenderContainer.setAttribute('data-mode', 'friend'); // 存储模式
-                        updateSwitchStyle();
-                        updateAddSenderLists();
-                    }
-                });
-                roomBtn.addEventListener('click', function() {
-                    if (currentMode !== 'room') {
-                        currentMode = 'room';
-                        addSenderContainer.setAttribute('data-mode', 'room'); // 存储模式
-                        updateSwitchStyle();
-                        updateAddSenderLists();
-                    }
-                });
-
-                updateSwitchStyle();
-
-                switchGroup.appendChild(friendBtn);
-                switchGroup.appendChild(roomBtn);
-
-                // 创建搜索框
+                // 添加搜索框
                 const addSenderSearchInput = document.createElement('input');
                 addSenderSearchInput.type = 'text';
-                addSenderSearchInput.placeholder = '搜索成员...';
+                addSenderSearchInput.placeholder = '搜索...';
                 addSenderSearchInput.style.width = '100%';
                 addSenderSearchInput.style.padding = '8px';
                 addSenderSearchInput.style.border = '1px solid #ddd';
@@ -2615,6 +2713,87 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                 addSenderSearchInput.addEventListener('input', function() {
                     updateAddSenderLists();
                 });
+                
+                addSenderSearchInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        sendUpdateRoomListOnShow();
+                    }
+                });
+
+                // 创建搜索框容器
+                const searchContainer = document.createElement('div');
+                searchContainer.style.display = 'flex'; // 横向排列
+                searchContainer.style.alignItems = 'center';
+                searchContainer.style.padding = '15px 15px 0 15px';
+                searchContainer.style.marginBottom = '10px';
+                searchContainer.className = 'search-container';
+
+                // 按钮配置数组
+                const modeButtons = [
+                    { mode: 'friend', text: '好友' },
+                    { mode: 'room', text: '房间' },
+                    { mode: 'lobby', text: '大厅' }
+                ];
+
+                const buttonElements = {};
+                const switchGroup = document.createElement('div');
+                switchGroup.style.display = 'flex';
+                switchGroup.style.alignItems = 'center';
+                switchGroup.style.marginRight = '10px';
+                switchGroup.style.border = '1px solid #ddd';
+                switchGroup.style.borderRadius = '4px';
+                switchGroup.style.overflow = 'hidden';
+                switchGroup.style.minWidth = '140px';
+
+                // 当前模式变量
+                let currentMode = addSenderContainer.getAttribute('data-mode') || 'friend';
+
+                // 创建按钮并添加到切换组
+                modeButtons.forEach(({ mode, text }) => {
+                    const btn = document.createElement('button');
+                    btn.textContent = text;
+                    btn.style.padding = '6px 16px';
+                    btn.style.border = 'none';
+                    btn.style.cursor = 'pointer';
+                    btn.style.outline = 'none';
+                    btn.style.fontWeight = 'bold';
+                    btn.style.minWidth = '48px';
+                    btn.style.whiteSpace = 'nowrap';
+                    btn.style.display = 'flex';
+                    btn.style.alignItems = 'center';
+                    btn.style.justifyContent = 'center';
+                    btn.style.color = 'black';
+
+                    btn.addEventListener('click', function() {
+                        if (currentMode !== mode) {
+                            currentMode = mode;
+                            addSenderSearchInput.value = '';
+                            addSenderContainer.setAttribute('data-mode', mode);
+                            updateSwitchStyle();
+                            sendUpdateRoomListOnShow();
+                            updateAddSenderLists();
+                        }
+                    });
+
+                    buttonElements[mode] = btn;
+                    switchGroup.appendChild(btn);
+                });
+
+                // 切换按钮样式函数
+                function updateSwitchStyle() {
+                    modeButtons.forEach(({ mode }) => {
+                        const btn = buttonElements[mode];
+                        if (currentMode === mode) {
+                            btn.style.background = '#e6f4ff';
+                            btn.style.color = 'black';
+                        } else {
+                            btn.style.background = 'white';
+                            btn.style.color = 'black';
+                        }
+                    });
+                }
+
+                updateSwitchStyle();
 
                 searchContainer.appendChild(switchGroup); // 把切换按钮加到最左侧
                 searchContainer.appendChild(addSenderSearchInput);
@@ -2635,25 +2814,26 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                 let prevScrollTop = 0;
                 const existingContentContainer = addSenderContainer.querySelector('.add-sender-content-container');
                 if (existingContentContainer) {
-                    // 查找上一次成员列表（createMemberList返回的div），并记录其scrollTop
-                    const lastMemberList = existingContentContainer.querySelector('div[style*="flex-direction: column"]');
-                    if (lastMemberList) {
-                        prevScrollTop = lastMemberList.scrollTop;
-                    }
+                    prevScrollTop = existingContentContainer.scrollTop;
                     addSenderContainer.removeChild(existingContentContainer);
                 }
 
                 // 创建内容容器
                 const container = document.createElement('div');
                 container.className = 'add-sender-content-container';
-                container.style.display = 'flex';
-                container.style.gap = '20px';
-                container.style.padding = '15px';
+                container.style.display = 'grid';
+                container.style.gap = '4px';
+                container.style.padding = '12px';
                 container.style.height = 'calc(100% - 60px)';
-                container.style.overflow = 'auto';
-
+                container.style.overflowY = 'auto';
+                container.style.alignContent = 'start'; // 让内容始终靠上对齐
+                
+                // 根据addSenderContainer宽度判断列数
+                let columnCount = Math.min(3, Math.max(1, Math.floor(addSenderContainer.offsetWidth / 400)));
+                container.style.gridTemplateColumns = `repeat(${columnCount}, 1fr)`;
+                
                 // 生成成员列表
-                let memberList;
+                let showList;
                 if (mode === 'room') {
                     // 只显示房间成员
                     const roomMemberNumbers = ChatRoomCharacter
@@ -2677,8 +2857,8 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                         })
                         .map(c => c.MemberNumber);
 
-                    memberList = createMemberList(roomMemberNumbers);
-                } else {
+                        createMemberList(roomMemberNumbers, container);
+                } else if (mode === 'friend') {
                     // 只显示好友
                     const filterFriend = (memberNumber) => {
                         if (!searchValue) return true;
@@ -2708,22 +2888,29 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
 
                     const allFriendNumbers = [...onlineFriendNumbers, ...offlineFriendNumbers];
 
-                    memberList = createMemberList(allFriendNumbers);
+                    createMemberList(allFriendNumbers, container);
+                } 
+                else if (mode === 'lobby') 
+                {
+                    createRoomList(searchRoomListResult, container)
                 }
 
-                // 恢复滚动位置
-                if (memberList) {
-                    container.appendChild(memberList);
-                    function restoreScroll() {
-                        memberList.scrollTop = prevScrollTop;                       
-                    }
-                    requestAnimationFrame(restoreScroll);
+                function restoreScroll() {
+                    container.scrollTop = prevScrollTop;                       
                 }
+                requestAnimationFrame(restoreScroll);
 
                 // 添加到添加发送者容器
                 addSenderContainer.appendChild(container);
             }
 
+            function sendUpdateRoomListOnShow()
+            {
+                if (needUpdateRoomList()) {
+                    const searchInput = document.getElementById('LC-Message-AddSenderSearchInput');
+                    sendQueryOnlineRoomListData(searchInput.value, '');
+                }
+            }
 
               // 创建角色小信息面板
               function createCharacterSmallInfoPanel(memberNumber) {
@@ -2926,16 +3113,7 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
             }
 
             // 修改成员列表创建函数，添加滚动条支持
-            function createMemberList(memberNumbers) {
-                // 成员列表
-                const list = document.createElement('div');
-                list.style.display = 'flex';
-                list.style.flexDirection = 'column';
-                list.style.gap = '2px';
-                list.style.overflowY = 'auto'; // 启用垂直滚动条
-                list.style.flexGrow = '1'; // 允许列表占用剩余空间
-                list.style.paddingRight = '5px'; // 为滚动条留出空间
-
+            function createMemberList(memberNumbers, container) {
                 memberNumbers.forEach(memberNumber => {
                     // 使用createCharacterSmallInfoPanel创建成员项
                     const memberItem = createCharacterSmallInfoPanel(memberNumber);
@@ -2947,14 +3125,15 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                     memberItem.style.borderRadius = '4px';
                     memberItem.style.padding = '8px';
                     memberItem.style.marginBottom = '4px';
-                    
+                    memberItem.style.backgroundColor = '#fafafa';
+                    memberItem.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)';
                     // 添加悬停效果
                     memberItem.addEventListener('mouseover', function() {
-                        this.style.backgroundColor = '#f5f5f5';
+                        this.style.backgroundColor = '#e6e6e6';
                     });
                     
                     memberItem.addEventListener('mouseout', function() {
-                        this.style.backgroundColor = 'transparent';
+                        this.style.backgroundColor = '#fafafa';
                     });
                     
                     // 添加点击事件
@@ -2963,10 +3142,49 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                         hideAddSenderInterface(); // 隐藏添加发送者界面
                     });
 
-                    list.appendChild(memberItem);
+                    container.appendChild(memberItem);
                 });
+            }
 
-                return list;
+            /**
+             * 生成房间信息列表
+             * @param {Array} roomList - 房间数据数组
+             * @param {HTMLDivElement} container - 容器元素
+             * @returns {HTMLDivElement} - 房间列表容器
+             */
+            function createRoomList(roomList, container) {
+                // 先释放所有活跃的房间项，准备复用
+                roomItemPool.releaseAll();
+
+                const pinnedRoomsDict = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+
+                roomList
+                    .slice() // 防止修改原数组
+                    .sort((a, b) => {
+                        const aPinned = pinnedRoomsDict[a.Name] !== undefined;
+                        const bPinned = pinnedRoomsDict[b.Name] !== undefined;
+                        if (aPinned && bPinned) {
+                            // 都置顶，按时间戳降序
+                            return pinnedRoomsDict[b.Name] - pinnedRoomsDict[a.Name];
+                        }
+                        if (aPinned) return -1; // a置顶，排前
+                        if (bPinned) return 1;  // b置顶，排前
+                        // 都不置顶，按好友数降序
+                        const aFriends = Array.isArray(a.Friends) ? a.Friends.length : 0;
+                        const bFriends = Array.isArray(b.Friends) ? b.Friends.length : 0;
+                        return bFriends - aFriends;
+                    })
+                    .forEach(room => {
+                        // 用对象池获取房间项
+                        const itemElement = roomItemPool.getItem(room);
+                        container.appendChild(itemElement);
+                    });
+            }
+
+            function needUpdateRoomList()
+            {
+                return addSenderContainer.style.display !== 'none' 
+                && addSenderContainer.getAttribute('data-mode') === 'lobby';
             }
 
             // 添加发送者到消息历史
@@ -3559,7 +3777,8 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
             messageDialog.hideAddSenderInterface = hideAddSenderInterface;
             messageDialog.updateAddSenderLists = updateAddSenderLists;
             messageDialog.showCharacterInfoPanel = showCharacterInfoPanel;
-
+            messageDialog.needUpdateRoomList = needUpdateRoomList;
+            messageDialog.sendUpdateRoomListOnShow = sendUpdateRoomListOnShow;
             
             showAddSenderInterface();
         }
@@ -3980,6 +4199,7 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                     
                     messageDialog.updateSenderList();
                     messageDialog.updateMessageContent();
+                    messageDialog.sendUpdateRoomListOnShow();
                 }
             }
             
@@ -4171,13 +4391,23 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
             }
 
             // 降低更新房间列表的频率
-            if(MessageModule.isMessageDialogVisible() && updateCounter % 2 == 0) 
+            if(MessageModule.isMessageDialogVisible() 
+                && selectedSenderNum 
+                && updateCounter % 2 == 0) 
             {
                 const friend = onlineFriendsCache.find(f => f.MemberNumber === selectedSenderNum);
                 if (friend && friend.ChatRoomName) {                        
                     sendQueryOnlineRoomListData(friend.ChatRoomName, friend.ChatRoomSpace);
                 }
             }
+
+            if(MessageModule.isMessageDialogVisible() 
+                && messageDialog.needUpdateRoomList() 
+                && updateCounter % 2 == 0) 
+            {
+                messageDialog.sendUpdateRoomListOnShow()
+            }
+            
             updateCounter ++;            
         }
 
@@ -4725,8 +4955,14 @@ const characterSmallInfoPanelPool = new CharacterSmallInfoPanelPool();
                         onlineRoomListData[room.Name] = room;
                     }
                 });
+                searchRoomListResult = data;
             }
             isReadyRevRoomList = false;
+
+            if(messageDialog.needUpdateRoomList())
+            {
+                messageDialog.updateAddSenderLists();
+            }
         }
 
         function dialogisReadyRevRoomList() {
@@ -5381,10 +5617,13 @@ function CheckOnlineLCSetting()
             Player.OnlineSettings.LCData = {
                 MessageSetting: {
                     HidePrivateChat: HidePrivateChatEnum.NONE,
-                    NotifyWhenBackground: false 
+                    NotifyWhenBackground: false,
                 }
             };
         }
+
+     Player.OnlineSettings.LCData.MessageSetting.PinnedRooms 
+     = Player.OnlineSettings.LCData.MessageSetting.PinnedRooms || {};
 }
 
 // 在游戏退出时清理定时器
