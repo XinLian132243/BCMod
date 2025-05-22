@@ -1751,14 +1751,48 @@ class RoomItem {
     constructor() {
         this.element = document.createElement('div');
         // 这里可以设置样式，参考 createRoomList 里的 item
-        this.element.style.borderTop = '1px solid #ddd';
-        this.element.style.borderBottom = '1px solid #ddd';
-        this.element.style.padding = '8px 12px';
-        this.element.style.background = '#fff';
-        this.element.style.marginBottom = '4px';
-        this.element.style.display = 'flex';
-        this.element.style.flexDirection = 'column';
+        this.element.style.cursor = 'pointer';
         this.element.style.transition = 'background-color 0.2s';
+        this.element.style.border = '1px solid #ddd';
+        this.element.style.borderRadius = '4px';
+        this.element.style.padding = '8px';
+        this.element.style.marginBottom = '4px';
+        this.element.style.backgroundColor = '#fafafa';
+        this.element.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)';
+        
+        // 悬浮效果
+        this.element.addEventListener('click', (e) => {
+            if (this.CantJoin || ChatRoomData.Name == this.lastRoomName) return;
+
+            // 如果是在房间里
+            if (ChatRoomData)
+            {
+                createMouseConfirmDialog({
+                    content: `需要先离开房间`,
+                }, e); 
+            }
+            else
+            {
+                createMouseConfirmDialog({
+                    content: `进入房间 ${this.lastRoomName}？`,
+                    onConfirm: () => {
+                        MessageModule.toggleMessageDialog();
+                        enterRoom(this.lastRoomName);
+                    }
+                }, e); 
+            }
+
+        });
+        
+        this.element.addEventListener('mouseover', function() {
+            if (this.CantJoin) return; // 房间已满，不响应悬浮
+            this.style.backgroundColor = '#e6e6e6';
+        });
+        
+        this.element.addEventListener('mouseleave', function(event) {
+            if (this.CantJoin) return; // 房间已满，不响应滑出
+            this.style.backgroundColor = '#fafafa';
+        });
 
         // 结构
         this.firstRow = document.createElement('div');
@@ -1827,8 +1861,16 @@ class RoomItem {
             messageDialog.updateAddSenderLists();
             ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
         });
+
+
+
+        
     }
 
+    /**
+     * 更新房间项
+     * @param {Object} room - 房间对象
+     */
     update(room) {
         
         const pinnedRoomsDict = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
@@ -1836,16 +1878,36 @@ class RoomItem {
         // 更新内容
         this.memberCountSpan.textContent = `${room.MemberCount}/${room.MemberLimit}`;
         this.nameSpan.textContent = room.Name;
+        if (room.Locked) {
+            this.nameSpan.textContent = '[锁] ' + room.Name;
+        }
+        if (room.Private) {
+            this.nameSpan.textContent = '[私] ' + room.Name;
+        }
         this.creatorSpan.textContent = `- ${room.Creator}`;
         this.descRow.textContent = room.Description || '';
 
         // 置顶按钮样式和title更新
         const isPinned = pinnedRoomsDict[room.Name] !== undefined;
-        this.pinButton.textContent = '☆';
-        this.pinButton.title = isPinned ? '取消置顶' : '置顶此房间';
+        const cantJoin = !room.CanJoin || room.MemberCount >= room.MemberLimit;
+        this.pinButton.textContent = isPinned ? '★' : '☆';
+        this.pinButton.title = isPinned ? '取消标星' : '标星房间';
         this.pinButton.style.background = isPinned ? '#e6f4ff' : '#f5f5f5';
         this.pinButton.style.color = isPinned ? '#2196f3' : '#888';
+        this.pinButton.style.width = '30px';
 
+        // 禁用整个 RoomItem 的交互和悬浮效果
+        if (cantJoin) {
+            this.element.style.backgroundColor = '';        // 无背景色
+            this.element.style.cursor = 'not-allowed';      // 鼠标为禁止
+            this.element.style.opacity = '0.6';             // 降低不活跃感
+            this.CantJoin = true;                         // 标记房间不可加入
+        } else {
+            this.element.style.backgroundColor = '#fafafa'; // 恢复背景色
+            this.element.style.cursor = 'pointer';          // 恢复鼠标样式
+            this.element.style.opacity = '1';
+            this.CantJoin = false;                        // 标记房间可加入
+        }
         // 记录当前房间名，供事件用
         this.lastRoomName = room.Name;
 
@@ -2743,7 +2805,7 @@ class RoomItemPool {
                 switchGroup.style.border = '1px solid #ddd';
                 switchGroup.style.borderRadius = '4px';
                 switchGroup.style.overflow = 'hidden';
-                switchGroup.style.minWidth = '140px';
+                switchGroup.style.minWidth = '160px';
 
                 // 当前模式变量
                 let currentMode = addSenderContainer.getAttribute('data-mode') || 'friend';
@@ -2772,6 +2834,14 @@ class RoomItemPool {
                             updateSwitchStyle();
                             sendUpdateRoomListOnShow();
                             updateAddSenderLists();
+
+                            if (mode === 'lobby') {
+                                roomSpaceSwitchContainer.style.display = 'flex';
+                            }
+                            else
+                            {
+                                roomSpaceSwitchContainer.style.display = 'none';
+                            }
                         }
                     });
 
@@ -2795,8 +2865,104 @@ class RoomItemPool {
 
                 updateSwitchStyle();
 
+                const roomSpaceSwitchContainer = document.createElement('div');
+                roomSpaceSwitchContainer.style.display = 'flex';
+                roomSpaceSwitchContainer.style.alignItems = 'center';
+                roomSpaceSwitchContainer.style.marginRight = '10px';
+                roomSpaceSwitchContainer.style.border = '1px solid #ddd';
+                roomSpaceSwitchContainer.style.borderRadius = '4px';
+                roomSpaceSwitchContainer.style.overflow = 'hidden';
+                roomSpaceSwitchContainer.style.minWidth = '72px';
+                roomSpaceSwitchContainer.style.width = '72px';
+                roomSpaceSwitchContainer.style.background = '#fafafa';
+                
+                // 性别选项
+                const roomSpaceOptions = ['♀', '♀♂', '♂'];
+                const roomSpaceMap = {
+                    '♀': '',
+                    '♀♂': 'X',
+                    '♂': 'M'
+                };
+                const currentRoomSpaceValue = (Player?.LastChatRoom?.Space !== undefined && Player?.LastChatRoom?.Space !== null)
+                ? Player.LastChatRoom.Space
+                : Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace;
+
+                let roomSpaceIndex = roomSpaceOptions.findIndex(opt => roomSpaceMap[opt] === currentRoomSpaceValue);
+                
+                const roomSpaceLeftBtn = document.createElement('button');
+                roomSpaceLeftBtn.textContent = '<';
+                roomSpaceLeftBtn.style.padding = '6px 10px';
+                roomSpaceLeftBtn.style.border = 'none';
+                roomSpaceLeftBtn.style.cursor = 'pointer';
+                roomSpaceLeftBtn.style.outline = 'none';
+                roomSpaceLeftBtn.style.background = 'none';
+                roomSpaceLeftBtn.style.fontWeight = 'bold';
+                roomSpaceLeftBtn.style.display = 'flex';
+                roomSpaceLeftBtn.style.alignItems = 'center';
+                roomSpaceLeftBtn.style.justifyContent = 'center';
+                roomSpaceLeftBtn.style.color = 'black';
+                roomSpaceLeftBtn.style.width = '20px';
+                
+                const roomSpaceRightBtn = document.createElement('button');
+                roomSpaceRightBtn.textContent = '>';
+                roomSpaceRightBtn.style.padding = '6px 10px';
+                roomSpaceRightBtn.style.border = 'none';
+                roomSpaceRightBtn.style.cursor = 'pointer';
+                roomSpaceRightBtn.style.outline = 'none';
+                roomSpaceRightBtn.style.background = 'none';
+                roomSpaceRightBtn.style.fontWeight = 'bold';
+                roomSpaceRightBtn.style.display = 'flex';
+                roomSpaceRightBtn.style.alignItems = 'center';
+                roomSpaceRightBtn.style.justifyContent = 'center';
+                roomSpaceRightBtn.style.color = 'black';
+                roomSpaceRightBtn.style.width = '20px';
+
+                const roomSpaceDisplay = document.createElement('span');
+                roomSpaceDisplay.textContent = roomSpaceOptions[roomSpaceIndex];
+                roomSpaceDisplay.style.minWidth = '32px';
+                roomSpaceDisplay.style.textAlign = 'center';
+                roomSpaceDisplay.style.fontWeight = 'bold';
+                roomSpaceDisplay.style.fontSize = '18px';
+                roomSpaceDisplay.style.display = 'flex';
+                roomSpaceDisplay.style.alignItems = 'center';
+                roomSpaceDisplay.style.justifyContent = 'center';
+                roomSpaceDisplay.style.width = '20px';
+                
+                // 切换逻辑
+                function updateroomSpaceDisplay() {
+                    roomSpaceDisplay.textContent = roomSpaceOptions[roomSpaceIndex];
+                    addSenderContainer.setAttribute('data-roomSpace', roomSpaceMap[roomSpaceOptions[roomSpaceIndex]]);
+                    Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace = roomSpaceMap[roomSpaceOptions[roomSpaceIndex]];
+                    ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+                    
+                }
+                roomSpaceLeftBtn.addEventListener('click', () => {
+                    roomSpaceIndex = (roomSpaceIndex + roomSpaceOptions.length - 1) % roomSpaceOptions.length;
+                    updateroomSpaceDisplay();
+                    sendUpdateRoomListOnShow(); 
+                });
+                roomSpaceRightBtn.addEventListener('click', () => {
+                    roomSpaceIndex = (roomSpaceIndex + 1) % roomSpaceOptions.length;
+                    updateroomSpaceDisplay();
+                    sendUpdateRoomListOnShow();
+                });
+                
+                // 初始赋值
+                updateroomSpaceDisplay();
+                
+                // 组装控件
+                roomSpaceSwitchContainer.appendChild(roomSpaceLeftBtn);
+                roomSpaceSwitchContainer.appendChild(roomSpaceDisplay);
+                roomSpaceSwitchContainer.appendChild(roomSpaceRightBtn);
+                
+                // 初始隐藏，只有大厅模式才显示
+                roomSpaceSwitchContainer.style.display = 'none';
+               
+
                 searchContainer.appendChild(switchGroup); // 把切换按钮加到最左侧
-                searchContainer.appendChild(addSenderSearchInput);
+                searchContainer.appendChild(roomSpaceSwitchContainer);
+                searchContainer.appendChild(addSenderSearchInput);    
+
                 addSenderContainer.appendChild(searchContainer);
                 
                 // 创建并填充列表
@@ -2908,7 +3074,8 @@ class RoomItemPool {
             {
                 if (needUpdateRoomList()) {
                     const searchInput = document.getElementById('LC-Message-AddSenderSearchInput');
-                    sendQueryOnlineRoomListData(searchInput.value, '');
+                    const roomSpace = addSenderContainer.getAttribute('data-roomSpace') || '';
+                    sendQueryOnlineRoomListData(searchInput.value, roomSpace);
                 }
             }
 
@@ -3165,7 +3332,7 @@ class RoomItemPool {
                         const bPinned = pinnedRoomsDict[b.Name] !== undefined;
                         if (aPinned && bPinned) {
                             // 都置顶，按时间戳降序
-                            return pinnedRoomsDict[b.Name] - pinnedRoomsDict[a.Name];
+                            return pinnedRoomsDict[a.Name] - pinnedRoomsDict[b.Name];
                         }
                         if (aPinned) return -1; // a置顶，排前
                         if (bPinned) return 1;  // b置顶，排前
@@ -3346,7 +3513,7 @@ class RoomItemPool {
         
  
                                         LCDataStorage.updateMessageById(message.id, message);        
-                                        enterInvitedRoom(roomName);
+                                        enterRoom(roomName);
                                         hideMessageDialog();
                                     },
                                     onCancel: () => {
@@ -3433,17 +3600,6 @@ class RoomItemPool {
                 });
                 
                 return container;
-            }
-
-            // 进入邀请的房间
-            function enterInvitedRoom(roomName) {
-                ChatRoomLeave();
-                CommonSetScreen("Online", "ChatSearch");    
-                ChatSearchLastQueryJoinTime = CommonTime();
-                ChatSearchLastQueryJoin = roomName;
-                ChatRoomPlayerCanJoin = true;
-                ServerSend("ChatRoomJoin", { Name: roomName });
-                ChatRoomPingLeashedPlayers();
             }
 
             // 创建消息底部信息栏
@@ -3903,246 +4059,6 @@ class RoomItemPool {
             });
         }
         
-
-        // 创建通用菜单函数
-        function createContextMenu(options, x, y) {
-            // 如果已经存在菜单，先移除
-            const existingMenu = document.getElementById('contextMenu');
-            if (existingMenu) {
-                existingMenu.remove();
-            }
-
-            // 创建菜单容器
-            const menu = document.createElement('div');
-            menu.id = 'contextMenu';
-            menu.style.position = 'fixed';
-            menu.style.backgroundColor = 'white';
-            menu.style.border = '1px solid #ddd';
-            menu.style.borderRadius = '4px';
-            menu.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
-            menu.style.padding = '5px 0';
-            menu.style.zIndex = FloatZindex;
-            menu.style.maxHeight = '300px';
-            menu.style.overflowY = 'auto';
-
-            // 为每个选项创建菜单项
-            options.forEach(option => {
-                const menuItem = document.createElement('div');
-                menuItem.textContent = option.text;
-                menuItem.style.padding = '6px 12px';
-                menuItem.style.cursor = 'pointer';
-                menuItem.style.color = '#333';
-                
-                // 鼠标悬停效果
-                menuItem.addEventListener('mouseover', function() {
-                    this.style.backgroundColor = '#f5f5f5';
-                });
-                menuItem.addEventListener('mouseout', function() {
-                    this.style.backgroundColor = 'transparent';
-                });
-
-                // 点击事件
-                menuItem.addEventListener('click', function() {
-                    option.action();
-                    menu.remove();
-                });
-
-                menu.appendChild(menuItem);
-            });
-
-            // 添加到文档以获取实际尺寸
-            document.body.appendChild(menu);
-            const menuRect = menu.getBoundingClientRect();
-            
-            // 计算最佳显示位置
-            const windowWidth = window.innerWidth;
-            const windowHeight = window.innerHeight;
-            
-            // 水平位置：尽量居中
-            let left = x;
-            if (x + menuRect.width > windowWidth) {
-                left = windowWidth - menuRect.width;
-            }
-            if (left < 0) {
-                left = 0;
-            }
-            
-            // 垂直位置：根据点击位置决定向上或向下显示
-            let top = y;
-            if (y + menuRect.height > windowHeight) {
-                // 如果向下显示会超出窗口，则向上显示
-                top = y - menuRect.height;
-            }
-            if (top < 0) {
-                // 如果向上显示会超出窗口，则向下显示
-                top = 0;
-            }
-            
-            // 应用计算后的位置
-            menu.style.left = `${left}px`;
-            menu.style.top = `${top}px`;
-
-            // 点击其他地方关闭菜单
-            const closeMenu = function(e) {
-                if (!menu.contains(e.target)) {
-                    menu.remove();
-                    document.removeEventListener('click', closeMenu);
-                }
-            };
-            
-            setTimeout(() => {
-                document.addEventListener('click', closeMenu);
-            }, 0);
-
-            return menu;
-        }
-
-        // 创建通用提示框函数
-        function createConfirmDialog(options) {
-            // 默认配置
-            const defaultOptions = {
-                title: 'LianChat',
-                content: '',
-                confirmText: '确定',
-                cancelText: '取消',
-                onConfirm: () => {},
-                onCancel: () => {},
-                width: '300px'
-            };
-
-            // 合并配置
-            const config = { ...defaultOptions, ...options };
-
-            // 如果已经存在对话框，先移除
-            const existingDialog = document.getElementById('confirmDialog');
-            if (existingDialog) {
-                existingDialog.remove();
-            }
-
-            // 创建遮罩层
-            const overlay = document.createElement('div');
-            overlay.style.position = 'fixed';
-            overlay.style.top = '0';
-            overlay.style.left = '0';
-            overlay.style.width = '100%';
-            overlay.style.height = '100%';
-            overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-            overlay.style.zIndex = FloatZindex - 1;
-            overlay.style.display = 'flex';
-            overlay.style.justifyContent = 'center';
-            overlay.style.alignItems = 'center';
-
-            // 创建对话框容器
-            const dialog = document.createElement('div');
-            dialog.id = 'confirmDialog';
-            dialog.style.backgroundColor = 'white';
-            dialog.style.borderRadius = '8px';
-            dialog.style.padding = '20px';
-            dialog.style.width = config.width;
-            dialog.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
-            dialog.style.position = 'relative';
-
-            // 创建标题
-            const title = document.createElement('div');
-            title.textContent = config.title;
-            title.style.fontSize = '16px';
-            title.style.fontWeight = 'bold';
-            title.style.marginBottom = '15px';
-            title.style.color = '#333';
-
-            // 创建内容
-            const content = document.createElement('div');
-            content.textContent = config.content;
-            content.style.marginBottom = '20px';
-            content.style.color = '#666';
-            content.style.lineHeight = '1.5';
-
-            // 创建按钮容器
-            const buttonContainer = document.createElement('div');
-            buttonContainer.style.display = 'flex';
-            buttonContainer.style.justifyContent = 'flex-end';
-            buttonContainer.style.gap = '10px';
-
-            // 创建取消按钮
-            const cancelButton = document.createElement('button');
-            cancelButton.textContent = config.cancelText;
-            cancelButton.style.padding = '6px 12px';
-            cancelButton.style.border = '1px solid #ddd';
-            cancelButton.style.borderRadius = '4px';
-            cancelButton.style.backgroundColor = 'white';
-            cancelButton.style.cursor = 'pointer';
-            cancelButton.style.color = '#666';
-
-            // 创建确认按钮
-            const confirmButton = document.createElement('button');
-            confirmButton.textContent = config.confirmText;
-            confirmButton.style.padding = '6px 12px';
-            confirmButton.style.border = 'none';
-            confirmButton.style.borderRadius = '4px';
-            confirmButton.style.backgroundColor = '#4CAF50';
-            confirmButton.style.cursor = 'pointer';
-            confirmButton.style.color = 'white';
-
-            // 添加按钮悬停效果
-            cancelButton.addEventListener('mouseover', () => {
-                cancelButton.style.backgroundColor = '#f5f5f5';
-            });
-            cancelButton.addEventListener('mouseout', () => {
-                cancelButton.style.backgroundColor = 'white';
-            });
-
-            confirmButton.addEventListener('mouseover', () => {
-                confirmButton.style.backgroundColor = '#45a049';
-            });
-            confirmButton.addEventListener('mouseout', () => {
-                confirmButton.style.backgroundColor = '#4CAF50';
-            });
-
-            // 添加按钮点击事件
-            cancelButton.addEventListener('click', () => {
-                config.onCancel();
-                overlay.remove();
-            });
-
-            confirmButton.addEventListener('click', () => {
-                config.onConfirm();
-                overlay.remove();
-            });
-
-            // 组装对话框
-            buttonContainer.appendChild(cancelButton);
-            buttonContainer.appendChild(confirmButton);
-            dialog.appendChild(title);
-            dialog.appendChild(content);
-            dialog.appendChild(buttonContainer);
-            overlay.appendChild(dialog);
-            document.body.appendChild(overlay);
-
-            // 点击遮罩层关闭对话框
-            overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) {
-                    config.onCancel();
-                    overlay.remove();
-                }
-            });
-
-            // 添加ESC键关闭功能
-            const handleKeyDown = (e) => {
-                if (e.key === 'Escape') {
-                    config.onCancel();
-                    overlay.remove();
-                    document.removeEventListener('keydown', handleKeyDown);
-                }
-            };
-            document.addEventListener('keydown', handleKeyDown);
-
-            return {
-                close: () => {
-                    overlay.remove();
-                    document.removeEventListener('keydown', handleKeyDown);
-                }
-            };
-        }
 
         // 处理缩放
         function handleResize(e) {
@@ -5302,6 +5218,418 @@ class RoomItemPool {
         next(args);
     });
 
+ // 创建通用菜单函数
+ function createContextMenu(options, x, y) {
+    // 如果已经存在菜单，先移除
+    const existingMenu = document.getElementById('contextMenu');
+    if (existingMenu) {
+        existingMenu.remove();
+    }
+
+    // 创建菜单容器
+    const menu = document.createElement('div');
+    menu.id = 'contextMenu';
+    menu.style.position = 'fixed';
+    menu.style.backgroundColor = 'white';
+    menu.style.border = '1px solid #ddd';
+    menu.style.borderRadius = '4px';
+    menu.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+    menu.style.padding = '5px 0';
+    menu.style.zIndex = FloatZindex;
+    menu.style.maxHeight = '300px';
+    menu.style.overflowY = 'auto';
+
+    // 为每个选项创建菜单项
+    options.forEach(option => {
+        const menuItem = document.createElement('div');
+        menuItem.textContent = option.text;
+        menuItem.style.padding = '6px 12px';
+        menuItem.style.cursor = 'pointer';
+        menuItem.style.color = '#333';
+        
+        // 鼠标悬停效果
+        menuItem.addEventListener('mouseover', function() {
+            this.style.backgroundColor = '#f5f5f5';
+        });
+        menuItem.addEventListener('mouseout', function() {
+            this.style.backgroundColor = 'transparent';
+        });
+
+        // 点击事件
+        menuItem.addEventListener('click', function() {
+            option.action();
+            menu.remove();
+        });
+
+        menu.appendChild(menuItem);
+    });
+
+    // 添加到文档以获取实际尺寸
+    document.body.appendChild(menu);
+    const menuRect = menu.getBoundingClientRect();
+    
+    // 计算最佳显示位置
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+    
+    // 水平位置：尽量居中
+    let left = x;
+    if (x + menuRect.width > windowWidth) {
+        left = windowWidth - menuRect.width;
+    }
+    if (left < 0) {
+        left = 0;
+    }
+    
+    // 垂直位置：根据点击位置决定向上或向下显示
+    let top = y;
+    if (y + menuRect.height > windowHeight) {
+        // 如果向下显示会超出窗口，则向上显示
+        top = y - menuRect.height;
+    }
+    if (top < 0) {
+        // 如果向上显示会超出窗口，则向下显示
+        top = 0;
+    }
+    
+    // 应用计算后的位置
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+
+    // 点击其他地方关闭菜单
+    const closeMenu = function(e) {
+        if (!menu.contains(e.target)) {
+            menu.remove();
+            document.removeEventListener('click', closeMenu);
+        }
+    };
+    
+    setTimeout(() => {
+        document.addEventListener('click', closeMenu);
+    }, 0);
+
+    return menu;
+}
+
+// 创建通用提示框函数
+function createConfirmDialog(options) {
+    // 默认配置
+    const defaultOptions = {
+        title: 'LianChat',
+        content: '',
+        confirmText: '确定',
+        cancelText: '取消',
+        onConfirm: () => {},
+        onCancel: () => {},
+        width: '300px'
+    };
+
+    // 合并配置
+    const config = { ...defaultOptions, ...options };
+
+    // 如果已经存在对话框，先移除
+    const existingDialog = document.getElementById('confirmDialog');
+    if (existingDialog) {
+        existingDialog.remove();
+    }
+
+    // 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    overlay.style.zIndex = FloatZindex - 1;
+    overlay.style.display = 'flex';
+    overlay.style.justifyContent = 'center';
+    overlay.style.alignItems = 'center';
+
+    // 创建对话框容器
+    const dialog = document.createElement('div');
+    dialog.id = 'confirmDialog';
+    dialog.style.backgroundColor = 'white';
+    dialog.style.borderRadius = '8px';
+    dialog.style.padding = '20px';
+    dialog.style.width = config.width;
+    dialog.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+    dialog.style.position = 'relative';
+
+    // 创建标题
+    const title = document.createElement('div');
+    title.textContent = config.title;
+    title.style.fontSize = '16px';
+    title.style.fontWeight = 'bold';
+    title.style.marginBottom = '15px';
+    title.style.color = '#333';
+
+    // 创建内容
+    const content = document.createElement('div');
+    content.textContent = config.content;
+    content.style.marginBottom = '20px';
+    content.style.color = '#666';
+    content.style.lineHeight = '1.5';
+
+    // 创建按钮容器
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'flex-end';
+    buttonContainer.style.gap = '10px';
+
+    // 创建取消按钮
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = config.cancelText;
+    cancelButton.style.padding = '6px 12px';
+    cancelButton.style.border = '1px solid #ddd';
+    cancelButton.style.borderRadius = '4px';
+    cancelButton.style.backgroundColor = 'white';
+    cancelButton.style.cursor = 'pointer';
+    cancelButton.style.color = '#666';
+
+    // 创建确认按钮
+    const confirmButton = document.createElement('button');
+    confirmButton.textContent = config.confirmText;
+    confirmButton.style.padding = '6px 12px';
+    confirmButton.style.border = 'none';
+    confirmButton.style.borderRadius = '4px';
+    confirmButton.style.backgroundColor = '#4CAF50';
+    confirmButton.style.cursor = 'pointer';
+    confirmButton.style.color = 'white';
+
+    // 添加按钮悬停效果
+    cancelButton.addEventListener('mouseover', () => {
+        cancelButton.style.backgroundColor = '#f5f5f5';
+    });
+    cancelButton.addEventListener('mouseout', () => {
+        cancelButton.style.backgroundColor = 'white';
+    });
+
+    confirmButton.addEventListener('mouseover', () => {
+        confirmButton.style.backgroundColor = '#45a049';
+    });
+    confirmButton.addEventListener('mouseout', () => {
+        confirmButton.style.backgroundColor = '#4CAF50';
+    });
+
+    // 添加按钮点击事件
+    cancelButton.addEventListener('click', () => {
+        config.onCancel();
+        overlay.remove();
+    });
+
+    confirmButton.addEventListener('click', () => {
+        config.onConfirm();
+        overlay.remove();
+    });
+
+    // 组装对话框
+    buttonContainer.appendChild(cancelButton);
+    buttonContainer.appendChild(confirmButton);
+    dialog.appendChild(title);
+    dialog.appendChild(content);
+    dialog.appendChild(buttonContainer);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    // 点击遮罩层关闭对话框
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+            config.onCancel();
+            overlay.remove();
+        }
+    });
+
+    // 添加ESC键关闭功能
+    const handleKeyDown = (e) => {
+        if (e.key === 'Escape') {
+            config.onCancel();
+            overlay.remove();
+            document.removeEventListener('keydown', handleKeyDown);
+        }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return {
+        close: () => {
+            overlay.remove();
+            document.removeEventListener('keydown', handleKeyDown);
+        }
+    };
+}
+
+function createMouseConfirmDialog(options, mouseEvent) {
+    // 默认配置
+    const defaultOptions = {
+        content: '',
+        confirmText: '确定',
+        cancelText: '取消',
+        onConfirm: () => {},
+        onCancel: () => {},
+    };
+
+    // 合并配置
+    const config = { ...defaultOptions, ...options };
+
+    // 如果已经存在对话框，先移除
+    const existingDialog = document.getElementById('mouseConfirmDialog');
+    if (existingDialog) {
+        existingDialog.remove();
+    }
+
+    // 创建对话框容器
+    const dialog = document.createElement('div');
+    dialog.id = 'mouseConfirmDialog';
+    dialog.style.backgroundColor = 'white';
+    dialog.style.borderRadius = '8px';
+    dialog.style.padding = '16px';
+    dialog.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+    dialog.style.position = 'fixed';
+    dialog.style.zIndex = FloatZindex || 9999;
+    dialog.style.display = 'flex';
+    dialog.style.flexDirection = 'column';
+    dialog.style.alignItems = 'flex-end';
+    dialog.style.width = 'auto'; // 宽度自适应内容
+    dialog.style.maxWidth = '80vw'; // 防止过宽
+
+    // 创建内容
+    const content = document.createElement('div');
+    content.textContent = config.content;
+    content.style.marginBottom = '16px';
+    content.style.color = '#666';
+    content.style.lineHeight = '1.5';
+    content.style.whiteSpace = 'nowrap'; // 只显示一行
+    content.style.overflow = 'hidden'; // 超出隐藏
+    content.style.textOverflow = 'ellipsis'; // 超出显示省略号
+
+    // 创建按钮容器
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'flex-end';
+    buttonContainer.style.gap = '10px';
+
+    // 创建取消按钮
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = config.cancelText;
+    cancelButton.style.padding = '6px 12px';
+    cancelButton.style.border = '1px solid #ddd';
+    cancelButton.style.borderRadius = '4px';
+    cancelButton.style.backgroundColor = 'white';
+    cancelButton.style.cursor = 'pointer';
+    cancelButton.style.color = '#666';
+
+    // 创建确认按钮
+    const confirmButton = document.createElement('button');
+    confirmButton.textContent = config.confirmText;
+    confirmButton.style.padding = '6px 12px';
+    confirmButton.style.border = 'none';
+    confirmButton.style.borderRadius = '4px';
+    confirmButton.style.backgroundColor = '#4CAF50';
+    confirmButton.style.cursor = 'pointer';
+    confirmButton.style.color = 'white';
+
+    // 添加按钮悬停效果
+    cancelButton.addEventListener('mouseover', () => {
+        cancelButton.style.backgroundColor = '#f5f5f5';
+    });
+    cancelButton.addEventListener('mouseout', () => {
+        cancelButton.style.backgroundColor = 'white';
+    });
+
+    confirmButton.addEventListener('mouseover', () => {
+        confirmButton.style.backgroundColor = '#45a049';
+    });
+    confirmButton.addEventListener('mouseout', () => {
+        confirmButton.style.backgroundColor = '#4CAF50';
+    });
+
+    // 添加按钮点击事件
+    cancelButton.addEventListener('click', () => {
+        config.onCancel();
+        dialog.remove();
+    });
+
+    confirmButton.addEventListener('click', () => {
+        config.onConfirm();
+        dialog.remove();
+    });
+
+    // 组装对话框
+    buttonContainer.appendChild(cancelButton);
+    buttonContainer.appendChild(confirmButton);
+    dialog.appendChild(content);
+    dialog.appendChild(buttonContainer);
+    document.body.appendChild(dialog);
+
+    // 计算对话框出现位置（鼠标位置，且鼠标在确定按钮上）
+    let x = mouseEvent.clientX;
+    let y = mouseEvent.clientY;
+
+    // 先让dialog渲染出来，获取宽高
+    const dialogRect = dialog.getBoundingClientRect();
+    // 让确定按钮在鼠标下方
+    const confirmBtnRect = confirmButton.getBoundingClientRect();
+    // 计算偏移量，使鼠标在确定按钮中心
+    const offsetX = x - (dialogRect.left + dialogRect.width - confirmBtnRect.width / 2);
+    const offsetY = y - (dialogRect.top + dialogRect.height - confirmBtnRect.height / 2);
+
+    // 让对话框右下角的确定按钮中心对准鼠标
+    dialog.style.left = (x - dialogRect.width + confirmBtnRect.width / 2) + 'px';
+    dialog.style.top = (y - dialogRect.height + confirmBtnRect.height / 2) + 'px';
+
+    // 防止超出窗口
+    const maxLeft = window.innerWidth - dialogRect.width - 8;
+    const maxTop = window.innerHeight - dialogRect.height - 8;
+    if (parseInt(dialog.style.left) < 8) dialog.style.left = '8px';
+    if (parseInt(dialog.style.top) < 8) dialog.style.top = '8px';
+    if (parseInt(dialog.style.left) > maxLeft) dialog.style.left = maxLeft + 'px';
+    if (parseInt(dialog.style.top) > maxTop) dialog.style.top = maxTop + 'px';
+
+    // ESC键关闭
+    const handleKeyDown = (e) => {
+        if (e.key === 'Escape') {
+            config.onCancel();
+            dialog.remove();
+            document.removeEventListener('keydown', handleKeyDown);
+        }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    // 失焦关闭
+    setTimeout(() => {
+        document.addEventListener('mousedown', function onDocClick(e) {
+            if (!dialog.contains(e.target)) {
+                config.onCancel();
+                dialog.remove();
+                document.removeEventListener('mousedown', onDocClick);
+                document.removeEventListener('keydown', handleKeyDown);
+            }
+        });
+    }, 0);
+
+    // 自动让鼠标悬停在确定按钮上
+    confirmButton.focus();
+
+    return {
+        close: () => {
+            dialog.remove();
+            document.removeEventListener('keydown', handleKeyDown);
+        }
+    };
+}
+
+            // 进入邀请的房间
+function enterRoom(roomName) {
+    ChatRoomLeave();
+    CommonSetScreen("Online", "ChatSearch");    
+    ChatSearchLastQueryJoinTime = CommonTime();
+    ChatSearchLastQueryJoin = roomName;
+    ChatRoomPlayerCanJoin = true;
+    ServerSend("ChatRoomJoin", { Name: roomName });
+    ChatRoomPingLeashedPlayers();
+}
+
+
 
 // 创建悬浮消息按钮
 function createFloatingMessageButton() {
@@ -5624,6 +5952,9 @@ function CheckOnlineLCSetting()
 
      Player.OnlineSettings.LCData.MessageSetting.PinnedRooms 
      = Player.OnlineSettings.LCData.MessageSetting.PinnedRooms || {};
+
+     Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace =  Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace == undefined? 
+     'X' : Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace;
 }
 
 // 在游戏退出时清理定时器
