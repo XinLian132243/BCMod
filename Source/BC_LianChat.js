@@ -1748,7 +1748,19 @@ class CharacterSmallInfoPanelPool {
 
 
 class RoomItem {
+ // 设定颜色
+ static COLOR_DEFAULT = '#fafafa';
+ static COLOR_HOVER = '#e6e6e6';
+ static COLOR_SELECTED = '#f5f5f5';
+ static COLOR_PINNED = '#fAfAfA';
+ static COLOR_DISABLED = '';
+
     constructor() {
+        this.lastFriends = null; // 记录上次的好友数组
+        this.lastRoomName = null; // 记录上次的房间名
+        this.IsCurrentRoom = false;
+        this.CantJoin = false;
+
         this.element = document.createElement('div');
         // 这里可以设置样式，参考 createRoomList 里的 item
         this.element.style.cursor = 'pointer';
@@ -1760,9 +1772,13 @@ class RoomItem {
         this.element.style.backgroundColor = '#fafafa';
         this.element.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)';
         
+        this.cantTouch = () => {
+            return (this.CantJoin || this.IsCurrentRoom);
+        }
+
         // 悬浮效果
         this.element.addEventListener('click', (e) => {
-            if (this.CantJoin || ChatRoomData.Name == this.lastRoomName) return;
+            if (this.cantTouch()) return;
 
             // 如果是在房间里
             if (ChatRoomData)
@@ -1784,14 +1800,14 @@ class RoomItem {
 
         });
         
-        this.element.addEventListener('mouseover', function() {
-            if (this.CantJoin) return; // 房间已满，不响应悬浮
-            this.style.backgroundColor = '#e6e6e6';
+        this.element.addEventListener('mouseover', (e) => {
+            if (this.cantTouch()) return; 
+            this.element.style.backgroundColor = RoomItem.COLOR_HOVER;
         });
         
-        this.element.addEventListener('mouseleave', function(event) {
-            if (this.CantJoin) return; // 房间已满，不响应滑出
-            this.style.backgroundColor = '#fafafa';
+        this.element.addEventListener('mouseleave', (e) => {
+            if (this.cantTouch()) return; 
+            this.element.style.backgroundColor = RoomItem.COLOR_DEFAULT;
         });
 
         // 结构
@@ -1846,8 +1862,6 @@ class RoomItem {
         this.element.appendChild(this.descRow);
         this.element.appendChild(this.friendsRow);
 
-        this.lastFriends = null; // 记录上次的好友数组
-        this.lastRoomName = null; // 记录上次的房间名
 
         // 只绑定一次 pinButton 事件
         this.pinButton.addEventListener('click', (e) => {
@@ -1861,10 +1875,6 @@ class RoomItem {
             messageDialog.updateAddSenderLists();
             ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
         });
-
-
-
-        
     }
 
     /**
@@ -1890,24 +1900,36 @@ class RoomItem {
         // 置顶按钮样式和title更新
         const isPinned = pinnedRoomsDict[room.Name] !== undefined;
         const cantJoin = !room.CanJoin || room.MemberCount >= room.MemberLimit;
+        this.IsCurrentRoom = room.Name == ChatRoomData?.Name;
+
         this.pinButton.textContent = isPinned ? '★' : '☆';
         this.pinButton.title = isPinned ? '取消标星' : '标星房间';
         this.pinButton.style.background = isPinned ? '#e6f4ff' : '#f5f5f5';
         this.pinButton.style.color = isPinned ? '#2196f3' : '#888';
         this.pinButton.style.width = '30px';
 
+        this.element.style.cursor = 'pointer';          // 恢复鼠标样式
+        this.element.style.opacity = '1';
         // 禁用整个 RoomItem 的交互和悬浮效果
-        if (cantJoin) {
-            this.element.style.backgroundColor = '';        // 无背景色
+        if (this.IsCurrentRoom)
+        {
+            this.element.style.backgroundColor = RoomItem.COLOR_SELECTED; // 恢复背景色
+        }
+        else if (cantJoin) {
+            this.element.style.backgroundColor = RoomItem.COLOR_DISABLED;        // 无背景色
             this.element.style.cursor = 'not-allowed';      // 鼠标为禁止
             this.element.style.opacity = '0.6';             // 降低不活跃感
-            this.CantJoin = true;                         // 标记房间不可加入
         } else {
-            this.element.style.backgroundColor = '#fafafa'; // 恢复背景色
-            this.element.style.cursor = 'pointer';          // 恢复鼠标样式
-            this.element.style.opacity = '1';
-            this.CantJoin = false;                        // 标记房间可加入
+            if (this.element.matches(':hover')) {
+                this.element.style.backgroundColor = RoomItem.COLOR_HOVER;
+            } else {
+                this.element.style.backgroundColor = RoomItem.COLOR_DEFAULT;
+            }
         }
+
+        this.CantJoin = cantJoin;   
+        //   置顶房间的边框
+        this.element.style.border = isPinned? '1px solid #2196f3':'1px solid #ddd'; 
         // 记录当前房间名，供事件用
         this.lastRoomName = room.Name;
 
@@ -3328,6 +3350,10 @@ class RoomItemPool {
                 roomList
                     .slice() // 防止修改原数组
                     .sort((a, b) => {
+                        // 当前房间始终排在最前
+                        if (a.Name === ChatRoomData?.Name) return -1;
+                        if (b.Name === ChatRoomData?.Name) return 1;
+
                         const aPinned = pinnedRoomsDict[a.Name] !== undefined;
                         const bPinned = pinnedRoomsDict[b.Name] !== undefined;
                         if (aPinned && bPinned) {
