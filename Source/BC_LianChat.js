@@ -2328,10 +2328,12 @@ class RoomItemPool {
             inputField.style.border = '1px solid #ddd';
             inputField.style.borderRadius = '4px';
             inputField.style.boxSizing = 'border-box'; // 确保 padding 不会增加总宽度
-            inputField.style.minHeight = '60px'; // 设置最小高度
-            inputField.rows = 2; // 默认显示 1 行
+            inputField.style.minHeight = '36px'; // 设置最小高度
+            inputField.rows = 1; // 默认显示 1 行
             inputField.id = 'LC-Message-InputField'; // 添加 ID 以便在外部函数中引用
             inputField.style.verticalAlign = 'bottom'; // 可选，进一步保证底部对齐
+            inputField.style.overflowY = 'hidden'; // 隐藏滚动条，体验更好
+            inputField.style.maxHeight = '200px';
 
             // 添加焦点和输入事件处理
             const TYPING_DELAY = 5000; // 5秒延迟
@@ -2339,6 +2341,17 @@ class RoomItemPool {
             // 处理输入状态变化
             function handleTypingChange() {
                 const isTyping = inputField.value.trim().length > 0;
+                
+                inputField.style.height = 'auto'; // 先重置高度
+                inputField.style.height = inputField.scrollHeight + 'px'; // 再设置为内容高度
+            
+                // 判断是否超出最大高度，决定是否显示滚动条
+                if (inputField.scrollHeight > parseInt(inputField.style.maxHeight)) {
+                    inputField.style.overflowY = 'auto';
+                } else {
+                    inputField.style.overflowY = 'hidden';
+                }
+
                 let currentText = "";
 
                 if (isTyping && !typingTimer) {
@@ -2496,7 +2509,10 @@ class RoomItemPool {
                 if (success) {
                     // 只有在使用输入框内容时才清空输入框
                     if (customMessage === undefined) {
-                        inputField.value = '';
+                        inputField.value = '';                        
+                        inputField.style.height = 'auto'; // 先重置高度
+                        inputField.style.height = inputField.scrollHeight + 'px'; // 再设置为内容高度
+
                         // 更新保存的输入状态
                         if (messageHistory[selectedSenderNum]) {
                             if (messageHistory[selectedSenderNum].inputState) {
@@ -4817,7 +4833,9 @@ class RoomItemPool {
                 if (refreshInput) {
                     const storedText = messageHistory[memberNumber].inputState.text || '';
                     if (inputField.value !== storedText) {
-                        inputField.value = storedText;
+                        inputField.value = storedText;                                      
+                        inputField.style.height = 'auto'; // 先重置高度
+                        inputField.style.height = inputField.scrollHeight + 'px'; // 再设置为内容高度
                     }
                 }
                 
@@ -4831,7 +4849,9 @@ class RoomItemPool {
                 }
             } else if (refreshInput) {
                 // 如果没有保存的状态且需要刷新输入框，清空输入框
-                inputField.value = '';
+                inputField.value = '';               
+                inputField.style.height = 'auto'; // 先重置高度
+                inputField.style.height = inputField.scrollHeight + 'px'; // 再设置为内容高度         
                 
                 // 根据历史消息设置默认消息类型
                 if (messageHistory[memberNumber] && messageHistory[memberNumber].messages && messageHistory[memberNumber].messages.length > 0) {
