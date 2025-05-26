@@ -90,7 +90,10 @@
             data.Target ? ChatRoomCharacter.find(c => c.MemberNumber === data.Target) : null
         );
         if (data.Type == "Whisper" 
-            || (data.Type == "LocalMessage" && (msg.includes("<a onclick=\"FriendListShowBeep") || msg.includes("<a onclick=\"ServerOpenFriendList()\">")))) 
+            || (data.Type == "LocalMessage" && (msg.includes("<a onclick=\"FriendListShowBeep")
+             || msg.includes("<a onclick=\"ServerOpenFriendList()\">")
+             || msg.includes("bce-beep-reply")
+             ))) 
         {
             if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
                 && MessageModule.isMessageDialogVisible())
@@ -2230,27 +2233,48 @@ class RoomItemPool {
             });
 
             // 添加加号按钮
-            const addButton = document.createElement('button');
-            addButton.textContent = '👤';
-            addButton.id = 'addSenderButton'; // 添加唯一ID
-            addButton.style.width = '32px';
-            addButton.style.height = '32px';
-            addButton.style.border = '1px solid #ddd';
-            addButton.style.borderRadius = '4px';
-            addButton.style.cursor = 'pointer';
-            addButton.style.backgroundColor = '#f5f5f5';
-            addButton.style.display = 'flex';
-            addButton.style.alignItems = 'center';
-            addButton.style.justifyContent = 'center';
+            const friendButton = document.createElement('button');
+            friendButton.style.width = '32px';
+            friendButton.style.height = '32px';
+            friendButton.style.border = '1px solid #ddd';
+            friendButton.style.borderRadius = '4px';
+            friendButton.style.cursor = 'pointer';
+            friendButton.style.backgroundColor = '#f5f5f5';
+            friendButton.style.display = 'flex';
+            friendButton.style.alignItems = 'center';
+            friendButton.style.justifyContent = 'center';
+            friendButton.style.fontSize = '10px'; // 调小字体
+            friendButton.style.gap = '2px'; // 图标和数字间距
+
+            // 创建图标和数字显示
+            const iconSpan = document.createElement('span');
+            iconSpan.textContent = '👤';
+            iconSpan.style.fontSize = '12px';
+
+            const countSpan = document.createElement('span');
+            countSpan.style.fontSize = '10px';
+            countSpan.style.color = '#666';
+
+            friendButton.appendChild(iconSpan);
+            friendButton.appendChild(countSpan);
+
+            // 更新在线好友数量显示
+            function updateFriendButtonCount() {
+                const onlineFriendsCount = onlineFriendsCache ? onlineFriendsCache.length : 0;
+                countSpan.textContent = onlineFriendsCount.toString();
+            }
+            
+            // 初始化数量显示
+            updateFriendButtonCount();
 
             // 添加点击事件
-            addButton.addEventListener('click', function() {
+            friendButton.addEventListener('click', function() {
                 showAddSenderInterface();
             });
 
             // 将搜索框和加号按钮添加到容器
             searchContainer.appendChild(searchInput);
-            searchContainer.appendChild(addButton);
+            searchContainer.appendChild(friendButton);
 
             fixedContainer.appendChild(createCharacterSmallInfoPanel(Player.MemberNumber));           
             fixedContainer.appendChild(searchContainer);                        
@@ -3980,6 +4004,7 @@ class RoomItemPool {
             messageDialog.showCharacterInfoPanel = showCharacterInfoPanel;
             messageDialog.needUpdateRoomList = needUpdateRoomList;
             messageDialog.sendUpdateRoomListOnShow = sendUpdateRoomListOnShow;
+            messageDialog.updateFriendButtonCount = updateFriendButtonCount;
             
             showAddSenderInterface();
         }
@@ -4344,6 +4369,7 @@ class RoomItemPool {
             loadSenderInputState(selectedSenderNum, false);    
             // 更新发送者列表 
             messageDialog.updateSenderList();
+            messageDialog.updateFriendButtonCount();
             // 更新正在输入状态
             updateTypingPlayers();
             if (document.getElementById('LC-Message-AddSenderContainer').style.display !== 'none') 
