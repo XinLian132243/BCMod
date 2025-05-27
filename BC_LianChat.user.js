@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BC 涟信
+// @name         BC LianChat
 // @namespace    https://www.bondageprojects.com/
 // @version      0.1.1
-// @description  涟信
+// @description  LianChat
 // @author       XinLian
 // @match https://*.bondageprojects.elementfx.com/R*/*
 // @match https://*.bondage-europe.com/R*/*

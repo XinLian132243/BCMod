@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         BC 涟信
+// @name         BC LianChat
 // @namespace    https://www.bondageprojects.com/
 // @version      0.1.1
-// @description  涟信
+// @description  LianChat
 // @author       XinLian
 // @match https://*.bondageprojects.elementfx.com/R*/*
 // @match https://*.bondage-europe.com/R*/*
@@ -17,8 +17,8 @@
     // =======================================================================================
     var bcModSdk=function(){"use strict";const o="1.2.0";function e(o){alert("Mod ERROR:\n"+o);const e=new Error(o);throw console.error(e),e}const t=new TextEncoder;function n(o){return!!o&&"object"==typeof o&&!Array.isArray(o)}function r(o){const e=new Set;return o.filter((o=>!e.has(o)&&e.add(o)))}const i=new Map,a=new Set;function c(o){a.has(o)||(a.add(o),console.warn(o))}function s(o){const e=[],t=new Map,n=new Set;for(const r of f.values()){const i=r.patching.get(o.name);if(i){e.push(...i.hooks);for(const[e,a]of i.patches.entries())t.has(e)&&t.get(e)!==a&&c(`ModSDK: Mod '${r.name}' is patching function ${o.name} with same pattern that is already applied by different mod, but with different pattern:\nPattern:\n${e}\nPatch1:\n${t.get(e)||""}\nPatch2:\n${a}`),t.set(e,a),n.add(r.name)}}e.sort(((o,e)=>e.priority-o.priority));const r=function(o,e){if(0===e.size)return o;let t=o.toString().replaceAll("\r\n","\n");for(const[n,r]of e.entries())t.includes(n)||c(`ModSDK: Patching ${o.name}: Patch ${n} not applied`),t=t.replaceAll(n,r);return(0,eval)(`(${t})`)}(o.original,t);let i=function(e){var t,i;const a=null===(i=(t=m.errorReporterHooks).hookChainExit)||void 0===i?void 0:i.call(t,o.name,n),c=r.apply(this,e);return null==a||a(),c};for(let t=e.length-1;t>=0;t--){const n=e[t],r=i;i=function(e){var t,i;const a=null===(i=(t=m.errorReporterHooks).hookEnter)||void 0===i?void 0:i.call(t,o.name,n.mod),c=n.hook.apply(this,[e,o=>{if(1!==arguments.length||!Array.isArray(e))throw new Error(`Mod ${n.mod} failed to call next hook: Expected args to be array, got ${typeof o}`);return r.call(this,o)}]);return null==a||a(),c}}return{hooks:e,patches:t,patchesSources:n,enter:i,final:r}}function l(o,e=!1){let r=i.get(o);if(r)e&&(r.precomputed=s(r));else{let e=window;const a=o.split(".");for(let t=0;t<a.length-1;t++)if(e=e[a[t]],!n(e))throw new Error(`ModSDK: Function ${o} to be patched not found; ${a.slice(0,t+1).join(".")} is not object`);const c=e[a[a.length-1]];if("function"!=typeof c)throw new Error(`ModSDK: Function ${o} to be patched not found`);const l=function(o){let e=-1;for(const n of t.encode(o)){let o=255&(e^n);for(let e=0;e<8;e++)o=1&o?-306674912^o>>>1:o>>>1;e=e>>>8^o}return((-1^e)>>>0).toString(16).padStart(8,"0").toUpperCase()}(c.toString().replaceAll("\r\n","\n")),d={name:o,original:c,originalHash:l};r=Object.assign(Object.assign({},d),{precomputed:s(d),router:()=>{},context:e,contextProperty:a[a.length-1]}),r.router=function(o){return function(...e){return o.precomputed.enter.apply(this,[e])}}(r),i.set(o,r),e[r.contextProperty]=r.router}return r}function d(){for(const o of i.values())o.precomputed=s(o)}function p(){const o=new Map;for(const[e,t]of i)o.set(e,{name:e,original:t.original,originalHash:t.originalHash,sdkEntrypoint:t.router,currentEntrypoint:t.context[t.contextProperty],hookedByMods:r(t.precomputed.hooks.map((o=>o.mod))),patchedByMods:Array.from(t.precomputed.patchesSources)});return o}const f=new Map;function u(o){f.get(o.name)!==o&&e(`Failed to unload mod '${o.name}': Not registered`),f.delete(o.name),o.loaded=!1,d()}function g(o,t){o&&"object"==typeof o||e("Failed to register mod: Expected info object, got "+typeof o),"string"==typeof o.name&&o.name||e("Failed to register mod: Expected name to be non-empty string, got "+typeof o.name);let r=`'${o.name}'`;"string"==typeof o.fullName&&o.fullName||e(`Failed to register mod ${r}: Expected fullName to be non-empty string, got ${typeof o.fullName}`),r=`'${o.fullName} (${o.name})'`,"string"!=typeof o.version&&e(`Failed to register mod ${r}: Expected version to be string, got ${typeof o.version}`),o.repository||(o.repository=void 0),void 0!==o.repository&&"string"!=typeof o.repository&&e(`Failed to register mod ${r}: Expected repository to be undefined or string, got ${typeof o.version}`),null==t&&(t={}),t&&"object"==typeof t||e(`Failed to register mod ${r}: Expected options to be undefined or object, got ${typeof t}`);const i=!0===t.allowReplace,a=f.get(o.name);a&&(a.allowReplace&&i||e(`Refusing to load mod ${r}: it is already loaded and doesn't allow being replaced.\nWas the mod loaded multiple times?`),u(a));const c=o=>{let e=g.patching.get(o.name);return e||(e={hooks:[],patches:new Map},g.patching.set(o.name,e)),e},s=(o,t)=>(...n)=>{var i,a;const c=null===(a=(i=m.errorReporterHooks).apiEndpointEnter)||void 0===a?void 0:a.call(i,o,g.name);g.loaded||e(`Mod ${r} attempted to call SDK function after being unloaded`);const s=t(...n);return null==c||c(),s},p={unload:s("unload",(()=>u(g))),hookFunction:s("hookFunction",((o,t,n)=>{"string"==typeof o&&o||e(`Mod ${r} failed to patch a function: Expected function name string, got ${typeof o}`);const i=l(o),a=c(i);"number"!=typeof t&&e(`Mod ${r} failed to hook function '${o}': Expected priority number, got ${typeof t}`),"function"!=typeof n&&e(`Mod ${r} failed to hook function '${o}': Expected hook function, got ${typeof n}`);const s={mod:g.name,priority:t,hook:n};return a.hooks.push(s),d(),()=>{const o=a.hooks.indexOf(s);o>=0&&(a.hooks.splice(o,1),d())}})),patchFunction:s("patchFunction",((o,t)=>{"string"==typeof o&&o||e(`Mod ${r} failed to patch a function: Expected function name string, got ${typeof o}`);const i=l(o),a=c(i);n(t)||e(`Mod ${r} failed to patch function '${o}': Expected patches object, got ${typeof t}`);for(const[n,i]of Object.entries(t))"string"==typeof i?a.patches.set(n,i):null===i?a.patches.delete(n):e(`Mod ${r} failed to patch function '${o}': Invalid format of patch '${n}'`);d()})),removePatches:s("removePatches",(o=>{"string"==typeof o&&o||e(`Mod ${r} failed to patch a function: Expected function name string, got ${typeof o}`);const t=l(o);c(t).patches.clear(),d()})),callOriginal:s("callOriginal",((o,t,n)=>{"string"==typeof o&&o||e(`Mod ${r} failed to call a function: Expected function name string, got ${typeof o}`);const i=l(o);return Array.isArray(t)||e(`Mod ${r} failed to call a function: Expected args array, got ${typeof t}`),i.original.apply(null!=n?n:globalThis,t)})),getOriginalHash:s("getOriginalHash",(o=>{"string"==typeof o&&o||e(`Mod ${r} failed to get hash: Expected function name string, got ${typeof o}`);return l(o).originalHash}))},g={name:o.name,fullName:o.fullName,version:o.version,repository:o.repository,allowReplace:i,api:p,loaded:!0,patching:new Map};return f.set(o.name,g),Object.freeze(p)}function h(){const o=[];for(const e of f.values())o.push({name:e.name,fullName:e.fullName,version:e.version,repository:e.repository});return o}let m;const y=void 0===window.bcModSdk?window.bcModSdk=function(){const e={version:o,apiVersion:1,registerMod:g,getModsInfo:h,getPatchingInfo:p,errorReporterHooks:Object.seal({apiEndpointEnter:null,hookEnter:null,hookChainExit:null})};return m=e,Object.freeze(e)}():(n(window.bcModSdk)||e("Failed to init Mod SDK: Name already in use"),1!==window.bcModSdk.apiVersion&&e(`Failed to init Mod SDK: Different version already loaded ('1.2.0' vs '${window.bcModSdk.version}')`),window.bcModSdk.version!==o&&alert(`Mod SDK warning: Loading different but compatible versions ('1.2.0' vs '${window.bcModSdk.version}')\nOne of mods you are using is using an old version of SDK. It will work for now but please inform author to update`),window.bcModSdk);return"undefined"!=typeof exports&&(Object.defineProperty(exports,"__esModule",{value:!0}),exports.default=y),y}();
 
-    const MOD_NAME = "涟信";
-    const MOD_FULL_NAME = "涟信";
+    const MOD_NAME = "LianChat";
+    const MOD_FULL_NAME = "LianChat";
     const MOD_VERSION = "0.1.1";
 
 
@@ -658,6 +658,202 @@ keyDownFunctions.forEach(funcName => {
      */
     let LCDataStorage = null;
 
+    // 国际化模块
+    const I18nModule = (function() {
+        // 翻译字典
+        const translations = {
+            'CN': {
+                'input_placeholder': '输入消息...',
+                'enter_room': '进入房间',
+                'leave_room_first': '需要先离开房间',
+                'confirm_enter_room': '进入房间 {0}？',
+                'typing': '(正在输入...)',
+                'offline': '离线',
+                'left_room': '已离开',
+                'current_room': '当前房间',
+                'private_room': '[私人房间]',
+                'friends': '好友',
+                'room': '房间',
+                'lobby': '大厅',
+                'whisper': '悄悄话',
+                'beep': '私聊',
+                'search_members': '搜索消息成员...',
+                'no_message_history': '暂无消息记录',
+                'room_location': '位于 {0}',
+                'current_room_location': '位于 当前房间',
+                'private_room_prefix': '[私]',
+                'confirm': '确定',
+                'cancel': '取消',
+                'unpin': '取消置顶',
+                'pin': '置顶',
+                'hide': '不显示',
+                'delete_chat_history': '删除聊天记录',
+                'confirm_delete_chat': '确定要删除与 {0} 的所有聊天记录吗？此操作不可恢复。',
+                'search...': '搜索...',
+                'confirm_teleport_room': '是否传送至房间 "{0}" ？',
+                'enter': '进入',
+                'lianchat_settings': 'LianChat 设置',
+                'hide_private_messages': '公屏隐藏收到的悄悄话和私聊：',
+                'no_hide': '不隐藏',
+                'hide_when_open': '打开时隐藏',
+                'always_hide': '一直隐藏',
+                'background_notification': '网页后台时消息通知',
+                'signature_placeholder': '输入新的签名...（最多50字）',
+                'avatar_url_placeholder': '输入头像地址...',
+                'avatar_sites_tip': '悬停此处查看目前头像可用网站',
+                'save': '保存',
+                'invalid_image_url': '不可用的图片URL，请使用以下网站：\n{0}',
+                'select_sender_prompt': '请选择一个发送者查看消息',
+                'no_messages': '暂无消息',
+                'invite_to_current_room': '邀请进入当前房间',
+                'invite_room_message': '({0} 邀请你进入房间 |{1}|)',
+                'cannot_get_room_info': '无法获取当前房间信息',
+                'send_member_status': '发送成员状态列表',
+                'not_in_chatroom': '您当前不在聊天室中',
+                'room_members_count': '👥 房间内{0}人:\n',
+                'invite_friend': '邀请成为好友',
+                'invite_friend_message': '({0} 邀请你成为好友)',
+                'send_lianchat_link': '发送LianChat安装链接',
+                'lianchat_link_message': '[LianChat] (https://xinlian132243.github.io/BCMod/BC_LianChat.user.js)',
+                'chat_record_file_name': '聊天记录_{0}_{1}-{2}_{3}-{4}.txt',
+                'cannot_send': '无法发送',
+                'send': '发送',
+                'locked_prefix': '[锁] ',
+                'private_prefix': '[私] ',
+                'no_signature': '暂无签名',
+                'add_friend': '添加好友',
+                'friend_added_confirm': '已成功加{0}为好友，是否立即发送回执消息？',
+                'friend_added_message': '({0} 已经成为了你的好友，让我们一起开始愉快的聊天吧)',
+                'message_limit_tip': '超出显示范围的消息请下载后查看'
+            },
+            'EN': {
+                'input_placeholder': 'Type a message...',
+                'enter_room': 'Enter Room',
+                'leave_room_first': 'Need to leave current room first',
+                'confirm_enter_room': 'Enter room {0}?',
+                'typing': 'Typing...',
+                'offline': 'Offline',
+                'left_room': 'Left',
+                'current_room': 'current Room',
+                'private_room': '[Private Room]',
+                'friends': 'Friends',
+                'room': 'Room',
+                'lobby': 'Lobby',
+                'whisper': 'Whisper',
+                'beep': 'Beep',
+                'search_members': 'Search members...',
+                'no_message_history': 'No message history',
+                'room_location': 'In {0}',
+                'current_room_location': 'In current room',
+                'private_room_prefix': '[Private]',
+                'confirm': 'Confirm',
+                'cancel': 'Cancel',
+                'unpin': 'Unpin',
+                'pin': 'Pin',
+                'hide': 'Hide',
+                'delete_chat_history': 'Delete Chat History',
+                'confirm_delete_chat': 'Are you sure you want to delete all chat history with {0}? This action cannot be undone.',
+                'search...': 'Search...',
+                'confirm_teleport_room': 'Teleport to room "{0}"?',
+                'enter': 'Enter',
+                'lianchat_settings': 'LianChat Settings',
+                'hide_private_messages': 'Hide received whispers and private messages on public screen:',
+                'no_hide': 'No hide',
+                'hide_when_open': 'Hide when open',
+                'always_hide': 'Always hide',
+                'background_notification': 'Message notification when page is in background',
+                'signature_placeholder': 'Enter new signature... (max 50 characters)',
+                'avatar_url_placeholder': 'Enter avatar URL...',
+                'avatar_sites_tip': 'Hover here to view available avatar sites',
+                'save': 'Save',
+                'invalid_image_url': 'Invalid image URL, please use the following sites:\n{0}',
+                'select_sender_prompt': 'Please select a sender to view messages',
+                'no_messages': 'No messages',
+                'invite_to_current_room': 'Invite to current room',
+                'invite_room_message': '({0} invites you to join room |{1}|)',
+                'cannot_get_room_info': 'Cannot get current room information',
+                'send_member_status': 'Send member status list',
+                'not_in_chatroom': 'You are not currently in a chat room',
+                'room_members_count': '👥 {0} members in room:\n',
+                'invite_friend': 'Invite as friend',
+                'invite_friend_message': '({0} invites you to be friends)',
+                'send_lianchat_link': 'Send LianChat installation link',
+                'lianchat_link_message': '[LianChat] (https://xinlian132243.github.io/BCMod/BC_LianChat.user.js)',
+                'chat_record_file_name': 'Chat_Record_{0}_{1}-{2}_{3}-{4}.txt',                
+                'cannot_send': 'Cannot send',
+                'send': 'Send',
+                'locked_prefix': '[L] ',
+                'private_prefix': '[P] ',
+                'no_signature': 'No signature',
+                'add_friend': 'Add Friend',
+                'friend_added_confirm': 'Successfully added {0} as friend. Send confirmation message now?',
+                'friend_added_message': '({0} is now your friend, let\'s start chatting happily together!)',
+                'message_limit_tip': 'Messages beyond the display range can be viewed after downloading'
+            }
+        };
+
+        /**
+         * 获取当前语言
+         * @returns {string} - 语言代码，如 'CN' 或 'EN'
+         */
+        function getCurrentLanguage() {
+            // 从 TranslationLanguage 获取当前语言，默认为 'CN'
+            const lang = typeof TranslationLanguage !== 'undefined' ? TranslationLanguage : 'EN';
+            if (lang === 'TW') return 'CN';
+            // 确保语言代码存在于翻译字典中
+            return translations[lang] ? lang : 'EN';
+        }
+
+        /**
+         * 根据 key 获取对应语言的文本
+         * @param {string} key - 翻译键
+         * @param {...string} args - 用于替换占位符的参数
+         * @returns {string} - 翻译后的文本
+         */
+        function getText(key, ...args) {
+            const lang = getCurrentLanguage();
+            let text = translations[lang][key] || translations['CN'][key] || key;
+            
+            // 替换占位符 {0}, {1}, {2} 等
+            args.forEach((arg, index) => {
+                text = text.replace(new RegExp(`\\{${index}\\}`, 'g'), arg);
+            });
+            
+            return text;
+        }
+
+        /**
+         * 检查指定语言是否支持某个键
+         * @param {string} key - 翻译键
+         * @param {string} [lang] - 语言代码，默认为当前语言
+         * @returns {boolean} - 是否支持
+         */
+        function hasKey(key, lang = null) {
+            const targetLang = lang || getCurrentLanguage();
+            return translations[targetLang] && translations[targetLang][key] !== undefined;
+        }
+
+        /**
+         * 添加或更新翻译
+         * @param {string} lang - 语言代码
+         * @param {string} key - 翻译键
+         * @param {string} value - 翻译值
+         */
+        function addTranslation(lang, key, value) {
+            if (!translations[lang]) {
+                translations[lang] = {};
+            }
+            translations[lang][key] = value;
+        }
+
+        return {
+            getText,
+            hasKey,
+            addTranslation,
+            getCurrentLanguage
+        };
+    })();
+
     // 消息对话框模块
     const MessageModule = (function() {
         // 私有变量
@@ -914,11 +1110,12 @@ keyDownFunctions.forEach(funcName => {
             // 检查是否在当前房间
             if (CurrentScreen === "ChatRoom" && ChatRoomCharacter) {
                 const isInCurrentRoom = ChatRoomCharacter.some(c => c.MemberNumber === parseInt(memberNumber));
-                if (isInCurrentRoom) {
+                if (isInCurrentRoom) 
+                {
                     if (parseInt(memberNumber) === Player.MemberNumber) {
-                        return `位于 ${ChatRoomData?.Name || "当前房间"}`;
+                        return I18nModule.getText('room_location', ChatRoomData?.Name || I18nModule.getText('current_room'));
                     } else {
-                        return "位于 当前房间";
+                        return I18nModule.getText('current_room_location');
                     }
                 }
             }
@@ -930,13 +1127,13 @@ keyDownFunctions.forEach(funcName => {
             
             const friendInfo = onlineFriendsCache.find(f => f.MemberNumber === parseInt(memberNumber));
             if (friendInfo) {
-                return "位于 " + getRoomLocationText(friendInfo);
+                return I18nModule.getText('room_location', getRoomLocationText(friendInfo));
             } else if (isFriend(memberNumber)) {
                 // 是好友但不在在线好友列表中
-                return "离线";
+                return I18nModule.getText('offline');
             } else {
                 // 既不是好友也不在同一个房间
-                return "已离开";
+                return I18nModule.getText('left_room');
             }
         }
 
@@ -951,16 +1148,16 @@ keyDownFunctions.forEach(funcName => {
             if (friendInfo.ChatRoomName) {
                 // 有房间名
                 if (friendInfo.Private) {
-                    location = `[私] ${friendInfo.ChatRoomName}`;
+                    location = `${I18nModule.getText('private_room_prefix')} ${friendInfo.ChatRoomName}`;
                 } else {
                     location = `${friendInfo.ChatRoomName}`;
                 }
             } else if (friendInfo.Private) {
                 // 无房间名但是私有房间
-                location = `[私人房间]`;
+                location = I18nModule.getText('private_room');
             } else {
                 // 既无房间名也不是私有房间
-                location = `大厅`;
+                location = I18nModule.getText('lobby');
             }
             return location;
         }
@@ -1502,7 +1699,7 @@ class SenderItem {
         if (messageHistory[memberNumber]) {
             if (messageHistory[memberNumber].pinnedTime) {
                 options.push({
-                    text: '取消置顶',
+                    text: I18nModule.getText('unpin'),
                     action: () => {
                         messageHistory[memberNumber].pinnedTime = 0;
                         messageDialog.updateSenderList();
@@ -1511,7 +1708,7 @@ class SenderItem {
                 });
             } else {
                 options.push({
-                    text: '置顶',
+                    text: I18nModule.getText('pin'),
                     action: () => {
                         if (!messageHistory[memberNumber]) {
                             messageHistory[memberNumber] = { messages: [] };
@@ -1526,7 +1723,7 @@ class SenderItem {
 
         options.push(
             {
-                text: '不显示',
+                text: I18nModule.getText('hide'),
                 action: () => {
                     if (messageHistory[memberNumber]) {
                         messageHistory[memberNumber].isHidden = true;
@@ -1544,9 +1741,9 @@ class SenderItem {
                 }
             },
             {
-                text: '删除聊天记录',
+                text: I18nModule.getText('delete_chat_history'),
                 action: () => {
-                    if (confirm(`确定要删除与 ${getCharacterName(memberNumber)} 的所有聊天记录吗？此操作不可恢复。`)) {
+                    if (confirm(I18nModule.getText('confirm_delete_chat', getCharacterName(memberNumber)))) {
                         delete messageHistory[memberNumber];
                         
                         if (selectedSenderNum === memberNumber) {
@@ -1787,13 +1984,13 @@ class RoomItem {
             if (ChatRoomData)
             {
                 createMouseConfirmDialog({
-                    content: `需要先离开房间`,
+                    content: I18nModule.getText('leave_room_first'),
                 }, e); 
             }
             else
             {
                 createMouseConfirmDialog({
-                    content: `进入房间 ${this.lastRoomName}？`,
+                    content: I18nModule.getText('confirm_enter_room', this.lastRoomName),
                     onConfirm: () => {
                         MessageModule.toggleMessageDialog();
                         enterRoom(this.lastRoomName);
@@ -1892,10 +2089,10 @@ class RoomItem {
         this.memberCountSpan.textContent = `${room.MemberCount}/${room.MemberLimit}`;
         this.nameSpan.textContent = room.Name;
         if (room.Locked) {
-            this.nameSpan.textContent = '[锁] ' + room.Name;
+            this.nameSpan.textContent = I18nModule.getText('locked_prefix') + room.Name;
         }
         if (room.Private) {
-            this.nameSpan.textContent = '[私] ' + room.Name;
+            this.nameSpan.textContent = I18nModule.getText('private_prefix') + room.Name;
         }
         this.creatorSpan.textContent = `- ${room.Creator}`;
         this.descRow.textContent = room.Description || '';
@@ -1906,7 +2103,6 @@ class RoomItem {
         this.IsCurrentRoom = room.Name == ChatRoomData?.Name;
 
         this.pinButton.textContent = isPinned ? '★' : '☆';
-        this.pinButton.title = isPinned ? '取消标星' : '标星房间';
         this.pinButton.style.background = isPinned ? '#e6f4ff' : '#f5f5f5';
         this.pinButton.style.color = isPinned ? '#2196f3' : '#888';
         this.pinButton.style.width = '30px';
@@ -2220,7 +2416,7 @@ class RoomItemPool {
             const searchInput = document.createElement('input');
             searchInput.id = 'LC-Message-SenderSearchInput'; // 添加唯一ID
             searchInput.type = 'text';
-            searchInput.placeholder = '搜索消息成员';
+            searchInput.placeholder = I18nModule.getText('search_members');
             searchInput.style.width = '100%';
             searchInput.style.padding = '6px';
             searchInput.style.border = '1px solid #ddd';
@@ -2346,7 +2542,7 @@ class RoomItemPool {
             
             // 输入框
             const inputField = document.createElement('textarea'); // 使用 textarea 替代 input
-            inputField.placeholder = '输入消息...';
+            inputField.placeholder = I18nModule.getText('input_placeholder');
             inputField.style.width = '100%'; // 宽度占满
             inputField.style.padding = '8px';
             inputField.style.border = '1px solid #ddd';
@@ -2433,7 +2629,7 @@ class RoomItemPool {
             whisperRadio.style.marginRight = '5px';
             whisperRadio.checked = true; // 默认选中悄悄话
 
-            const whisperText = document.createTextNode('悄悄话');
+            const whisperText = document.createTextNode(I18nModule.getText('whisper'));
             whisperLabel.appendChild(whisperRadio);
             whisperLabel.appendChild(whisperText);
 
@@ -2448,7 +2644,7 @@ class RoomItemPool {
             beepRadio.value = 'Beep';
             beepRadio.style.marginRight = '5px';
 
-            const beepText = document.createTextNode('私聊');
+            const beepText = document.createTextNode(I18nModule.getText('beep'));
             beepLabel.appendChild(beepRadio);
             beepLabel.appendChild(beepText);
 
@@ -2457,7 +2653,7 @@ class RoomItemPool {
 
             // 发送按钮
             const sendButton = document.createElement('button');
-            sendButton.textContent = '发送';
+            sendButton.textContent = I18nModule.getText('send');
             sendButton.style.padding = '8px 16px';
             sendButton.style.backgroundColor = '#4CAF50';
             sendButton.style.color = 'white';
@@ -2579,7 +2775,7 @@ class RoomItemPool {
                 
                 if (Object.keys(messageHistory).length === 0) {
                     const noSenders = document.createElement('div');
-                    noSenders.textContent = '暂无消息记录';
+                    noSenders.textContent = I18nModule.getText('no_message_history');
                     noSenders.style.color = '#888';
                     noSenders.style.padding = '10px 0';
                     scrollableContainer.appendChild(noSenders);
@@ -2708,7 +2904,7 @@ class RoomItemPool {
                     const tipElement = document.createElement('div');
                     tipElement.className = 'message-tip';
                     tipElement.style.cssText = 'text-align: center; color: #666; font-size: 12px; padding: 5px;';
-                    tipElement.textContent = '超出显示范围的消息请下载后查看';
+                    tipElement.textContent = I18nModule.getText('message_limit_tip');
                     messageContent.appendChild(tipElement);
                 }
                 
@@ -2725,7 +2921,7 @@ class RoomItemPool {
             // 显示"无选择"消息
             function showNoSelectionMessage() {
                 const noSelection = document.createElement('div');
-                noSelection.textContent = '请选择一个发送者查看消息';
+                noSelection.textContent = I18nModule.getText('select_sender_prompt');
                 noSelection.style.color = '#888';
                 noSelection.style.textAlign = 'center';
                 noSelection.style.marginTop = '50px';
@@ -2742,7 +2938,7 @@ class RoomItemPool {
             // 显示"无消息"提示
             function showNoMessagesMessage() {
                 const noMessages = document.createElement('div');
-                noMessages.textContent = '暂无消息';
+                noMessages.textContent = I18nModule.getText('no_messages');
                 noMessages.style.color = '#888';
                 messageContent.appendChild(noMessages);
             }
@@ -2828,7 +3024,7 @@ class RoomItemPool {
                 // 添加搜索框
                 const addSenderSearchInput = document.createElement('input');
                 addSenderSearchInput.type = 'text';
-                addSenderSearchInput.placeholder = '搜索...';
+                addSenderSearchInput.placeholder = I18nModule.getText('search...');
                 addSenderSearchInput.style.width = '100%';
                 addSenderSearchInput.style.padding = '8px';
                 addSenderSearchInput.style.border = '1px solid #ddd';
@@ -2857,9 +3053,9 @@ class RoomItemPool {
 
                 // 按钮配置数组
                 const modeButtons = [
-                    { mode: 'friend', text: '好友' },
-                    { mode: 'room', text: '房间' },
-                    { mode: 'lobby', text: '大厅' }
+                    { mode: 'friend', text: I18nModule.getText('friends') },
+                    { mode: 'room', text: I18nModule.getText('room') },
+                    { mode: 'lobby', text: I18nModule.getText('lobby') }
                 ];
 
                 const buttonElements = {};
@@ -3226,7 +3422,7 @@ class RoomItemPool {
 
                 // 显示当前签名（所有玩家都显示）
                 const currentSignature = document.createElement('div');
-                currentSignature.textContent = getCharacterInfo(memberNumber).Signature || '暂无签名';
+                currentSignature.textContent = getCharacterInfo(memberNumber).Signature || I18nModule.getText('no_signature');
                 currentSignature.style.color = '#666';
                 currentSignature.style.fontSize = '14px';
                 currentSignature.style.padding = '8px';
@@ -3251,7 +3447,7 @@ class RoomItemPool {
                     // 签名输入框
                     const signatureInput = document.createElement('textarea');
                     signatureInput.value = getCharacterInfo(memberNumber).Signature || ''; // 设置当前签名
-                    signatureInput.placeholder = '输入新的签名...（最多50字）';
+                    signatureInput.placeholder = I18nModule.getText('signature_placeholder');
                     signatureInput.maxLength = 50; // 限制最大字数
                     signatureInput.style.width = '100%';
                     signatureInput.style.height = '60px';
@@ -3266,7 +3462,7 @@ class RoomItemPool {
                     const avatarUrlInput = document.createElement('input');
                     avatarUrlInput.type = 'text';
                     avatarUrlInput.value = getCharacterInfo(memberNumber).Avatar || ''; // 设置当前头像URL
-                    avatarUrlInput.placeholder = '输入头像地址...';
+                    avatarUrlInput.placeholder = I18nModule.getText('avatar_url_placeholder');
                     signatureInput.maxLength = 100; // 限制最大字数
                     avatarUrlInput.style.width = '100%';
                     avatarUrlInput.style.padding = '8px';
@@ -3277,7 +3473,7 @@ class RoomItemPool {
 
                     // 添加可用网站提示
                     const websiteTip = document.createElement('div');
-                    websiteTip.textContent = '此处查看目前头像可用网站';
+                    websiteTip.textContent = I18nModule.getText('avatar_sites_tip');
                     websiteTip.style.color = '#666';
                     websiteTip.style.fontSize = '12px';
                     websiteTip.style.marginBottom = '10px';
@@ -3287,7 +3483,7 @@ class RoomItemPool {
                     
                     // 保存按钮
                     const saveButton = document.createElement('button');
-                    saveButton.textContent = '保存';
+                    saveButton.textContent = I18nModule.getText('save');
                     saveButton.style.padding = '6px 12px';
                     saveButton.style.backgroundColor = '#4CAF50';
                     saveButton.style.color = 'white';
@@ -3303,7 +3499,7 @@ class RoomItemPool {
                         
                         // 检查头像URL是否有效
                         if (newAvatarUrl && !isValidImageUrl(newAvatarUrl)) {
-                            alert(`不可用的图片URL，请使用以下网站：\n${config.allowedImageHosts.join('\n')}`);
+                            alert(I18nModule.getText('invalid_image_url', config.allowedImageHosts.join('\n')));
                             return;
                         }   
 
@@ -3568,14 +3764,13 @@ class RoomItemPool {
                         const entered = message.status && message.status.entered === true;
                         // 添加进入房间的操作按钮
                         result.actions.push({
-                            text: '进入 ' + roomName + '',
+                            text: I18nModule.getText('enter') +" " +  roomName,
                             roomName: roomName,
                             enabled : entered,
                             callback: function() {
                                 createConfirmDialog({
-                                    content: `是否传送至房间 "${roomName}" ？`,
-                                    confirmText: '进入',
-                                    cancelText: '取消',
+                                    content: I18nModule.getText('confirm_teleport_room', roomName),
+                                    confirmText: I18nModule.getText('enter'),
                                     onConfirm: () => {
                                         if (!message.status) message.status = {};
                                         message.status.entered = true;
@@ -3593,12 +3788,12 @@ class RoomItemPool {
                     }
 
                     // 检查是否包含好友邀请
-                    if (processedContent.includes('邀请你成为好友')) {
+                    if (processedContent.includes('邀请你成为好友') || processedContent.includes('invites you to be friends')) {
                         // 判断status和status.addedFriend
                         const addedFriend = message.status && message.status.addedFriend === true;
                         if (!isFriend(selectedSenderNum) && !addedFriend) {
                             result.actions.push({
-                                text: '添加好友',
+                                text: I18nModule.getText('add_friend'),
                                 enabled : addedFriend,
                                 callback: function() {
                                     if (!message.status) message.status = {};
@@ -3607,11 +3802,11 @@ class RoomItemPool {
                                     ChatRoomListManipulation(Player.FriendList, true, selectedSenderNum.toString()),
                                     updateMessageContent();
                                     createConfirmDialog({
-                                        content: `已成功加${getCharacterName(selectedSenderNum)}为好友，是否立即发送回执消息？`,
-                                        confirmText: '发送',
-                                        cancelText: '取消',
+                                        content: I18nModule.getText('friend_added_confirm', getCharacterName(selectedSenderNum)),
+                                        confirmText: I18nModule.getText('send'),
+                                        cancelText: I18nModule.getText('cancel'),
                                         onConfirm: () => {
-                                            sendMessage(`(${getCharacterName(Player.MemberNumber)} 已经成为了你的好友，让我们一起开始愉快的聊天吧)`);
+                                            sendMessage(I18nModule.getText('friend_added_message', getCharacterName(Player.MemberNumber)));
                                         },
                                         onCancel: () => {
                                         }
@@ -3748,26 +3943,26 @@ class RoomItemPool {
                     
                     const options = [
                         {
-                            text: '邀请进入当前房间',
+                            text: I18nModule.getText('invite_to_current_room'),
                             action: function() {
                                 const currentRoom = getCurrentRoomName();
                                 const playerName = getCharacterName(Player.MemberNumber);
                                 if (currentRoom) {
-                                    sendMessage(`(${playerName} 邀请你进入房间 |${currentRoom}|)`);
+                                    sendMessage(I18nModule.getText('invite_room_message', playerName, currentRoom));
                                 } else {
-                                    alert('无法获取当前房间信息');
+                                    alert(I18nModule.getText('cannot_get_room_info'));
                                 }
                             }
                         },
                         {
-                            text: '发送成员状态列表',
+                            text: I18nModule.getText('send_member_status'),
                             action: function() {
                                 if (CurrentScreen !== "ChatRoom" || !ChatRoomData) {
-                                    alert('您当前不在聊天室中');
+                                    alert(I18nModule.getText('not_in_chatroom'));
                                     return;
                                 }
                                 
-                                let statusMsg = `👥 房间内${ChatRoomCharacter.length}人:\n`;
+                                let statusMsg = I18nModule.getText('room_members_count', ChatRoomCharacter.length);
                                 
                                 ChatRoomCharacter.forEach((char, index) => {
                                     const charName = getCharacterName(char.MemberNumber);
@@ -3792,10 +3987,10 @@ class RoomItemPool {
                     // 如果不是好友，添加邀请成为好友选项
                     if (isWhisperAvailable(selectedSenderNum) && !isBeepAvailable(selectedSenderNum)) {
                         options.push({
-                            text: '邀请成为好友',
+                            text: I18nModule.getText('invite_friend'),
                             action: function() {
                                 const playerName = getCharacterName(Player.MemberNumber);
-                                sendMessage(`(${playerName} 邀请你成为好友)`);
+                                sendMessage(I18nModule.getText('invite_friend_message', playerName));
                                 if (!Player.FriendList.includes(selectedSenderNum)) { 
                                     ChatRoomListManipulation(Player.FriendList, true, selectedSenderNum.toString());
                                 }
@@ -3804,11 +3999,12 @@ class RoomItemPool {
                     }
 
                     options.push({
-                        text: '发送LianChat安装链接',
+                        text: I18nModule.getText('send_lianchat_link'),
                         action: function() {
-                            sendMessage(`[涟信] (https://xinlian132243.github.io/BCMod/BC_LianChat.user.js)`);
+                            sendMessage(I18nModule.getText('lianchat_link_message'));
                         }
-                    });     
+                    });
+
                     const buttonRect = quickMessageButton.getBoundingClientRect();
                     createContextMenu(options, buttonRect.left, buttonRect.bottom);
                 });
@@ -3849,7 +4045,6 @@ class RoomItemPool {
             function downloadChatHistory() {
                 // 确保有选中的发送者
                 if (!selectedSenderNum) {
-                    alert('请先选择一个聊天对象');
                     return;
                 }
                 
@@ -3860,7 +4055,6 @@ class RoomItemPool {
             LCDataStorage.getPlayerMessages(selectedSenderNum, -1).then(function(messages) 
             {
                 if (!messages || messages.length === 0) {
-                    alert('没有可下载的聊天记录');
                     return;
                 }
 
@@ -3868,7 +4062,7 @@ class RoomItemPool {
                 const senderName = getCharacterName(selectedSenderNum) || selectedSenderNum;
                 
                 // 生成聊天记录文本
-                let chatText = `===== 与 ${senderName} 的聊天记录 =====\n\n`;
+                let chatText = `=====  ${senderName} =====\n\n`;
                 
                 // 使用正确的messages数组
                 messages.forEach(msg => {
@@ -3898,7 +4092,7 @@ class RoomItemPool {
                 
                 // 生成文件名：聊天记录_对象_日期时间.txt
                 const now = new Date();
-                const fileName = `聊天记录_${senderName}_${now.getFullYear()}${padZero(now.getMonth()+1)}${padZero(now.getDate())}_${padZero(now.getHours())}${padZero(now.getMinutes())}.txt`;
+                const fileName = I18nModule.getText('chat_record_file_name', senderName, now.getFullYear(), padZero(now.getMonth()+1), padZero(now.getDate()), padZero(now.getHours()), padZero(now.getMinutes()));
                 
                 downloadLink.download = fileName;
                 
@@ -4234,7 +4428,7 @@ class RoomItemPool {
 
             // 标题
             const title = document.createElement('div');
-            title.textContent = 'LianChat 设置';
+            title.textContent = I18nModule.getText('lianchat_settings');
             title.style.fontSize = '1.2em';
             title.style.fontWeight = 'bold';
             title.style.marginBottom = '18px';
@@ -4242,14 +4436,14 @@ class RoomItemPool {
 
             // 公屏隐藏悄悄话和私聊（单选）
             const hideLabel = document.createElement('div');
-            hideLabel.textContent = '公屏隐藏收到的悄悄话和私聊：';
+            hideLabel.textContent = I18nModule.getText('hide_private_messages');
             hideLabel.style.marginBottom = '8px';
             dialog.appendChild(hideLabel);
 
             const hideOptions = [
-                { label: '不隐藏', value: 0 },
-                { label: '打开时隐藏', value: 1 },
-                { label: '一直隐藏', value: 2 }
+                { label: I18nModule.getText('no_hide'), value: 0 },
+                { label: I18nModule.getText('hide_when_open'), value: 1 },
+                { label: I18nModule.getText('always_hide'), value: 2 }
             ];
 
             const hideGroup = document.createElement('div');
@@ -4289,12 +4483,12 @@ class RoomItemPool {
             notifyCheckbox.checked = !!(Player.OnlineSettings?.LCData?.MessageSetting?.NotifyWhenBackground);
 
             notifyLabel.appendChild(notifyCheckbox);
-            notifyLabel.appendChild(document.createTextNode('网页后台时消息通知'));
+            notifyLabel.appendChild(document.createTextNode(I18nModule.getText('background_notification')));
             dialog.appendChild(notifyLabel);
 
             // 确定按钮
             const okBtn = document.createElement('button');
-            okBtn.textContent = '确定';
+            okBtn.textContent = I18nModule.getText('confirm');
             okBtn.style.marginTop = '8px';
             okBtn.style.alignSelf = 'center';
             okBtn.style.padding = '6px 24px';
@@ -4681,7 +4875,7 @@ class RoomItemPool {
                 typingSpan.style.fontSize = '0.85em';
                 typingSpan.style.display = 'inline';
                 typingSpan.style.marginLeft = '10px'; // 添加左边距
-                typingSpan.textContent = '(正在输入...)';
+                typingSpan.textContent = I18nModule.getText('typing');
                 titleContainer.appendChild(typingSpan);
             }
 
@@ -4765,7 +4959,7 @@ class RoomItemPool {
                             <span>(${room.MemberCount}/${room.MemberLimit})</span>
                         </div>
                         <div style="color:#666;margin-bottom:6px;">${room.Description || ''}</div>
-                        <div>好友：${friendsNames}</div>
+                        <div>${I18nModule.getText('friends')}：${friendsNames}</div>
                         `;
 
                         // 点击外部关闭
@@ -4837,15 +5031,15 @@ class RoomItemPool {
             
             // 如果发送按钮被禁用，添加提示信息
             if (sendButton.disabled) {
-                sendButton.textContent = "无法发送";
+                sendButton.textContent = I18nModule.getText('cannot_send');
                 // 可选：添加视觉提示
                 sendButton.style.opacity = "0.5";
 
             } else {
-                sendButton.textContent = "发送";
+                sendButton.textContent = I18nModule.getText('send');
                 sendButton.style.opacity = "1";
 
-                inputField.placeholder = "输入消息...";
+                inputField.placeholder = I18nModule.getText('input_placeholder');
                 inputField.autocomplete = "off"; // 禁用自动补全
                 inputField.disabled = false;
             }
@@ -5196,6 +5390,7 @@ class RoomItemPool {
                     }
                 }
             } catch (e) {
+                console.error("发送通知时出错:", e);
                 // 忽略通知异常
             }
         }
@@ -5205,11 +5400,11 @@ class RoomItemPool {
         {
             switch(type) {
                 case 'Whisper':
-                    return '悄悄话';
+                    return I18nModule.getText('whisper');
                 case 'Beep':
-                    return '私聊';
+                    return I18nModule.getText('beep');
                 default:
-                    return type || '消息';
+                    return type || '';
             }
         }
 
@@ -5392,8 +5587,8 @@ function createConfirmDialog(options) {
     const defaultOptions = {
         title: 'LianChat',
         content: '',
-        confirmText: '确定',
-        cancelText: '取消',
+        confirmText: I18nModule.getText('confirm'),
+        cancelText: I18nModule.getText('cancel'),
         onConfirm: () => {},
         onCancel: () => {},
         width: '300px'
@@ -5537,8 +5732,8 @@ function createMouseConfirmDialog(options, mouseEvent) {
     // 默认配置
     const defaultOptions = {
         content: '',
-        confirmText: '确定',
-        cancelText: '取消',
+        confirmText: I18nModule.getText('confirm'),
+        cancelText: I18nModule.getText('cancel'),
         onConfirm: () => {},
         onCancel: () => {},
     };
