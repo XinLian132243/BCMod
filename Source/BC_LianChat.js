@@ -1598,7 +1598,7 @@ class SenderItem {
         }
     }
 
-    update(memberNumber, chatHistory, selectedSenderNum) {
+    update(memberNumber, chatHistory, selectedSenderNum, showPlayerNumber = false) {
         // 更新成员编号
         this.memberNumber = memberNumber;
         
@@ -1617,6 +1617,20 @@ class SenderItem {
         // 清空并重新组装名称容器
         this.nameContainer.innerHTML = '';
         this.nameContainer.appendChild(this.nameSpan);
+
+        // 新增：显示PlayerNumber（仅当showPlayerNumber为true）
+        if (showPlayerNumber) {
+            if (!this.playerNumberSpan) {
+                this.playerNumberSpan = document.createElement('span');
+                this.playerNumberSpan.style.color = '#aaa';
+                this.playerNumberSpan.style.fontSize = '0.9em';
+                this.playerNumberSpan.style.marginLeft = '2px';
+            }
+            this.playerNumberSpan.textContent = "("+ memberNumber+")";
+            this.nameContainer.appendChild(this.playerNumberSpan);
+        } else if (this.playerNumberSpan) {
+            this.playerNumberSpan.remove();
+        }
 
         // 更新互动状态样式
         const canInteract = isBeepAvailable(memberNumber) || 
@@ -2808,55 +2822,80 @@ class RoomItemPool {
                     return b.orderTimeStamp - a.orderTimeStamp;
                 });
                 
-                // 创建排序后的发送者列表
-                let hasVisibleSenders = false;
+                // 统计名字出现次数，找出重名
+                const nameCount = {};
+                const memberNumbers = [];
                 for (const sender of senders) {
                     const memberNumber = parseInt(sender.memberNumber);
-                    // 搜索匹配逻辑
+                    // 搜索匹配逻辑（与下方一致）
                     let isMatch = false;
-                    
-                    // 如果没有搜索关键词，则默认匹配
                     if (!searchKeyword) {
                         isMatch = true;
                     } else {
-                        // 匹配会员编号
                         if (memberNumber.toString().includes(searchKeyword)) {
                             isMatch = true;
                         } else {
-                            // 获取角色名称和昵称
                             const senderName = getCharacterName(memberNumber).toLowerCase();
                             if (senderName.includes(searchKeyword)) {
                                 isMatch = true;
                             } else {
-                                // 检查playerCache中的所有可能匹配项
                                 const cachedInfo = getAndUpdateCharacterCache(memberNumber).cache;
                                 if (cachedInfo) {
-                                    // 检查Name
                                     if (cachedInfo.Name && cachedInfo.Name.toLowerCase().includes(searchKeyword)) {
                                         isMatch = true;
-                                    }
-                                    // 检查Nickname
-                                    else if (cachedInfo.Nickname && cachedInfo.Nickname.toLowerCase().includes(searchKeyword)) {
+                                    } else if (cachedInfo.Nickname && cachedInfo.Nickname.toLowerCase().includes(searchKeyword)) {
                                         isMatch = true;
                                     }
                                 }
                             }
                         }
                     }
-                    
-                    // 如果不匹配，跳过此发送者
+                    if (!isMatch) continue;
+                    const name = getCharacterName(memberNumber);
+                    nameCount[name] = (nameCount[name] || 0) + 1;
+                    memberNumbers.push(memberNumber);
+                }
+                const duplicatedNames = new Set();
+                for (const [name, count] of Object.entries(nameCount)) {
+                    if (count > 1) duplicatedNames.add(name);
+                }
+                // 创建排序后的发送者列表
+                let hasVisibleSenders = false;
+                for (const sender of senders) {
+                    const memberNumber = parseInt(sender.memberNumber);
+                    // 搜索匹配逻辑
+                    let isMatch = false;
+                    if (!searchKeyword) {
+                        isMatch = true;
+                    } else {
+                        if (memberNumber.toString().includes(searchKeyword)) {
+                            isMatch = true;
+                        } else {
+                            const senderName = getCharacterName(memberNumber).toLowerCase();
+                            if (senderName.includes(searchKeyword)) {
+                                isMatch = true;
+                            } else {
+                                const cachedInfo = getAndUpdateCharacterCache(memberNumber).cache;
+                                if (cachedInfo) {
+                                    if (cachedInfo.Name && cachedInfo.Name.toLowerCase().includes(searchKeyword)) {
+                                        isMatch = true;
+                                    } else if (cachedInfo.Nickname && cachedInfo.Nickname.toLowerCase().includes(searchKeyword)) {
+                                        isMatch = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (!isMatch) {
                         continue;
                     }
-                    
                     hasVisibleSenders = true;
                     const chatHistory = messageHistory[memberNumber] || { messages: [], isHidden: false };
-        
-                    if (!chatHistory.isHidden) {
-                        const senderItem = senderItemPool.getItem(memberNumber);
-                        senderItem.update(memberNumber, chatHistory, selectedSenderNum);
-                        scrollableContainer.appendChild(senderItem.element);
-                    }
+                    const name = getCharacterName(memberNumber);
+                    const showPlayerNumber = duplicatedNames.has(name);
+                    const senderItem = senderItemPool.getItem(memberNumber);
+                    senderItem.update(memberNumber, chatHistory, selectedSenderNum, showPlayerNumber);
+                    scrollableContainer.appendChild(senderItem.element);
                 }
                 
                 // 如果没有匹配的发送者，显示提示信息
