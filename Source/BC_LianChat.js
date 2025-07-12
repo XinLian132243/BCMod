@@ -4208,6 +4208,10 @@ class RoomItemPool {
             });
             
             document.addEventListener('mouseup', function() {
+                if (isDragging && messageDialog) {
+                    // 拖拽结束时检查边界
+                    constrainDialogToWindow(messageDialog);
+                }
                 isDragging = false;
                 isResizing = false;
                 resizeDirection = '';
@@ -4226,6 +4230,17 @@ class RoomItemPool {
                         
             // 添加到文档
             document.body.appendChild(messageDialog);
+
+            // 添加窗口大小变化监听器，确保对话框在窗口范围内
+            const resizeHandler = function() {
+                if (messageDialog && messageDialog.style.display !== 'none') {
+                    constrainDialogToWindow(messageDialog);
+                }
+            };
+            window.addEventListener('resize', resizeHandler);
+            
+            // 保存监听器引用，以便后续移除
+            messageDialog.resizeHandler = resizeHandler;
 
             // 公开更新方法
             messageDialog.handleKeyDown = handleKeyDown;
@@ -4363,6 +4378,42 @@ class RoomItemPool {
         }
         
 
+        // 约束对话框在窗口范围内
+        function constrainDialogToWindow(dialog) {
+            const rect = dialog.getBoundingClientRect();
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            
+            let newLeft = rect.left;
+            let newTop = rect.top;
+            
+            // 检查右边界
+            if (rect.right > windowWidth) {
+                newLeft = windowWidth - rect.width;
+            }
+            
+            // 检查下边界
+            if (rect.bottom > windowHeight) {
+                newTop = windowHeight - rect.height;
+            }
+            
+            // 检查左边界
+            if (rect.left < 0) {
+                newLeft = 0;
+            }
+            
+            // 检查上边界
+            if (rect.top < 0) {
+                newTop = 0;
+            }
+            
+            // 应用新位置
+            if (newLeft !== rect.left || newTop !== rect.top) {
+                dialog.style.left = newLeft + 'px';
+                dialog.style.top = newTop + 'px';
+            }
+        }
+        
         // 处理缩放
         function handleResize(e) {
             const rect = messageDialog.getBoundingClientRect();
@@ -4401,6 +4452,9 @@ class RoomItemPool {
             messageDialog.style.height = newHeight + 'px';
             messageDialog.style.left = newX + 'px';
             messageDialog.style.top = newY + 'px';
+            
+            // 缩放后检查边界
+            constrainDialogToWindow(messageDialog);
         }
         
         // 显示对话框
@@ -4409,6 +4463,20 @@ class RoomItemPool {
                 createMessageDialog();
             } else {
                 messageDialog.style.display = 'flex';
+                // 显示时检查边界，确保对话框在窗口范围内
+                constrainDialogToWindow(messageDialog);
+                
+                // 重新添加窗口大小变化监听器
+                if (!messageDialog.resizeHandler) {
+                    const resizeHandler = function() {
+                        if (messageDialog && messageDialog.style.display !== 'none') {
+                            constrainDialogToWindow(messageDialog);
+                        }
+                    };
+                    window.addEventListener('resize', resizeHandler);
+                    messageDialog.resizeHandler = resizeHandler;
+                }
+                
                 // 更新内容
                 if (messageDialog.updateSenderList) {
                     // 如果有选中的发送者，清除其未读消息计数
@@ -4437,6 +4505,12 @@ class RoomItemPool {
                 sendTypingStatus(false);
                 // 停止自动刷新
                 stopAutoRefresh();
+                
+                // 移除窗口大小变化监听器
+                if (messageDialog.resizeHandler) {
+                    window.removeEventListener('resize', messageDialog.resizeHandler);
+                    messageDialog.resizeHandler = null;
+                }
             }
         }
        
