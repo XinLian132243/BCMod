@@ -2262,6 +2262,10 @@ class RoomItemPool {
         {
                 sendTypingStatus(false);
                 selectedSenderNum = memberNumber;
+                
+                // 如果在分页模式下，切换到右侧页面
+                MessageModule.switchToRightPage();
+                
                 messageDialog.updateSenderList();
                 messageDialog.updateMessageContent();
                 messageDialog.hideAddSenderInterface();
@@ -2294,7 +2298,7 @@ class RoomItemPool {
             } else {
                 // 移动设备
                 messageDialog.style.width = '80%';
-                messageDialog.style.height = '50%';
+                messageDialog.style.height = '90%';
             }
             
             // 设置初始位置
@@ -2317,6 +2321,160 @@ class RoomItemPool {
             titleBar.style.flexShrink = '0';
             titleBar.style.minHeight = '24px'; // 设置最小高度
             
+            // 切换单双页模式按钮
+            const pageButton = document.createElement('button');
+            pageButton.textContent = '📄'; // 初始状态
+            pageButton.title = '切换单双页模式';
+            pageButton.style.background = '#f0f0f0';
+            pageButton.style.border = '1px solid #ddd';
+            pageButton.style.borderRadius = '4px';
+            pageButton.style.cursor = 'pointer';
+            pageButton.style.fontSize = '16px';
+            pageButton.style.fontWeight = 'bold';
+            pageButton.style.color = '#555';
+            pageButton.style.width = '30px';
+            pageButton.style.height = '30px';
+            pageButton.style.display = 'flex';
+            pageButton.style.alignItems = 'center';
+            pageButton.style.justifyContent = 'center';
+            pageButton.style.padding = '0';
+            pageButton.style.marginLeft = '0';
+            pageButton.style.marginRight = '0';
+            
+            // 返回发送者列表按钮
+            const backToSenderButton = document.createElement('button');
+            backToSenderButton.textContent = '◀️';
+            backToSenderButton.title = '返回发送者列表';
+            backToSenderButton.style.background = '#f0f0f0';
+            backToSenderButton.style.border = '1px solid #ddd';
+            backToSenderButton.style.borderRadius = '4px';
+            backToSenderButton.style.cursor = 'pointer';
+            backToSenderButton.style.fontSize = '16px';
+            backToSenderButton.style.fontWeight = 'bold';
+            backToSenderButton.style.color = '#555';
+            backToSenderButton.style.width = '30px';
+            backToSenderButton.style.height = '30px';
+            backToSenderButton.style.display = 'none'; // 初始隐藏
+            backToSenderButton.style.alignItems = 'center';
+            backToSenderButton.style.justifyContent = 'center';
+            backToSenderButton.style.padding = '0';
+            backToSenderButton.style.marginLeft = '0';
+            backToSenderButton.style.marginRight = '0';
+
+            // 悬停效果
+            pageButton.addEventListener('mouseover', function() {
+                this.style.background = '#e0e0e0';
+                this.style.color = '#1890ff';
+            });
+            pageButton.addEventListener('mouseout', function() {
+                this.style.background = '#f0f0f0';
+                this.style.color = '#555';
+            });
+            
+            backToSenderButton.addEventListener('mouseover', function() {
+                this.style.background = '#e0e0e0';
+                this.style.color = '#1890ff';
+            });
+            backToSenderButton.addEventListener('mouseout', function() {
+                this.style.background = '#f0f0f0';
+                this.style.color = '#555';
+            });
+
+            // 分页状态变量（MessageModule内）
+            MessageModule.isPageMode = CommonIsMobile; // 移动端默认单页模式
+            MessageModule.isRightPageActive = false; // 右侧页面是否激活
+            MessageModule.pageButton = pageButton; // 保存按钮引用
+            MessageModule.backToSenderButton = backToSenderButton; // 保存返回发送者按钮引用
+            
+            // 切换到右侧页面的共用函数
+            function switchToRightPage() {
+                if (MessageModule.isPageMode) {
+                    MessageModule.isRightPageActive = true;
+                    
+                    // 显示返回发送者按钮
+                    MessageModule.backToSenderButton.style.display = 'flex';
+                    
+                    const senderList = document.getElementById('LC-Message-SenderList');
+                    const rightContainer = document.getElementById('LC-Message-RightContainer');
+                    
+                    if (senderList && rightContainer) {
+                        senderList.style.width = '0';
+                        senderList.style.minWidth = '0';
+                        rightContainer.style.width = '100%';
+                        rightContainer.style.display = 'flex';
+                    }
+                }
+            }
+            
+            // 切换到发送者列表页面的共用函数
+            function switchToSenderListPage() {
+                if (MessageModule.isPageMode) {
+                    MessageModule.isRightPageActive = false;
+                    selectedSenderNum = 0;
+                    // 隐藏返回发送者按钮
+                    MessageModule.backToSenderButton.style.display = 'none';
+                    
+                    const senderList = document.getElementById('LC-Message-SenderList');
+                    const rightContainer = document.getElementById('LC-Message-RightContainer');
+                    
+                    if (senderList && rightContainer) {
+                        senderList.style.width = '100%';
+                        senderList.style.minWidth = '100%';
+                        rightContainer.style.width = '0';
+                        rightContainer.style.display = 'none';
+                    }
+                }
+            }
+            
+            // 退出分页模式的共用函数
+            function exitPageMode() {
+                MessageModule.isPageMode = false;
+                MessageModule.isRightPageActive = false;
+                
+                // 隐藏返回发送者按钮
+                MessageModule.backToSenderButton.style.display = 'none';
+                
+                const senderList = document.getElementById('LC-Message-SenderList');
+                const rightContainer = document.getElementById('LC-Message-RightContainer');
+                
+                if (senderList && rightContainer) {
+                    senderList.style.width = '220px';
+                    senderList.style.minWidth = '220px';
+                    rightContainer.style.width = 'auto';
+                    rightContainer.style.display = 'flex';
+                }
+            }
+            
+            // 将函数设为MessageModule可访问
+            MessageModule.switchToRightPage = switchToRightPage;
+            MessageModule.switchToSenderListPage = switchToSenderListPage;
+            MessageModule.exitPageMode = exitPageMode;
+
+            // 切换单双页模式按钮点击事件
+            pageButton.addEventListener('click', function(e) {
+                e.stopPropagation();
+                
+                if (MessageModule.isPageMode) {
+                    // 当前是分页模式，切换到双页模式
+                    MessageModule.exitPageMode();
+                } else {
+                    // 当前是双页模式，切换到分页模式
+                    MessageModule.isPageMode = true;
+                    MessageModule.isRightPageActive = false;
+                    
+                    // 切换到发送者列表页面
+                    MessageModule.switchToSenderListPage();
+                }
+            });
+            
+            // 返回发送者列表按钮点击事件
+            backToSenderButton.addEventListener('click', function(e) {
+                e.stopPropagation();
+                
+                // 从右侧页面返回发送者列表页面
+                MessageModule.switchToSenderListPage();
+            });
+
             // 设置按钮
             const settingsButton = document.createElement('button');
             settingsButton.textContent = '⚙'; // 齿轮符号
@@ -2330,12 +2488,12 @@ class RoomItemPool {
             settingsButton.style.color = '#555';
             settingsButton.style.width = '30px';
             settingsButton.style.height = '30px';
-            settingsButton.style.display = 'flex-end';
+            settingsButton.style.display = 'flex';
             settingsButton.style.alignItems = 'center';
             settingsButton.style.justifyContent = 'center';
             settingsButton.style.padding = '0';
             settingsButton.style.marginLeft = '0';
-            settingsButton.style.marginRight = '10px'; // 与关闭按钮间隔
+            settingsButton.style.marginRight = '0';
 
             // 悬停效果
             settingsButton.addEventListener('mouseover', function() {
@@ -2369,7 +2527,7 @@ class RoomItemPool {
             closeButton.style.alignItems = 'center';
             closeButton.style.justifyContent = 'center';
             closeButton.style.padding = '0';
-            closeButton.style.marginLeft = '10px';
+            closeButton.style.marginLeft = '0';
             
             // 添加悬停效果
             closeButton.addEventListener('mouseover', function() {
@@ -2388,6 +2546,28 @@ class RoomItemPool {
                 hideMessageDialog();
             });
             
+            // 创建左侧容器（放置返回发送者列表按钮）
+            const leftButtons = document.createElement('div');
+            leftButtons.style.display = 'flex';
+            leftButtons.style.alignItems = 'center';
+            leftButtons.style.gap = '5px';
+            
+            // 创建右侧容器（放置切换按钮、设置和关闭按钮）
+            const rightButtons = document.createElement('div');
+            rightButtons.style.display = 'flex';
+            rightButtons.style.alignItems = 'center';
+            rightButtons.style.gap = '10px';
+            
+            // 将按钮添加到对应容器
+            leftButtons.appendChild(backToSenderButton);
+            rightButtons.appendChild(pageButton);
+            rightButtons.appendChild(settingsButton);
+            rightButtons.appendChild(closeButton);
+            
+            // 将容器添加到标题栏
+            titleBar.appendChild(leftButtons);
+            titleBar.appendChild(rightButtons);
+            
             // 内容区域容器
             const contentContainer = document.createElement('div');
             contentContainer.style.display = 'flex';
@@ -2396,6 +2576,7 @@ class RoomItemPool {
             
             // 左侧发送者列表
             const senderList = document.createElement('div');
+            senderList.id = 'LC-Message-SenderList';
             senderList.style.width = '220px';
             senderList.style.minWidth = '220px'; // 添加最小宽度
             senderList.style.flexShrink = '0'; // 防止被挤压
@@ -2479,6 +2660,7 @@ class RoomItemPool {
 
             // 添加点击事件
             friendButton.addEventListener('click', function() {
+                MessageModule.switchToRightPage();
                 showAddSenderInterface();
             });
 
@@ -2495,6 +2677,7 @@ class RoomItemPool {
 
             // 右侧消息内容和输入框容器
             const rightContainer = document.createElement('div');
+            rightContainer.id = 'LC-Message-RightContainer';
             rightContainer.style.position = 'relative';
             rightContainer.style.flex = '1 1 0%';
             rightContainer.style.display = 'flex';
@@ -4165,18 +4348,14 @@ class RoomItemPool {
             updateMessageContent();
             
             // 组装对话框
+            // 创建标题文本
             const leftTitle = document.createElement('div');
             leftTitle.textContent = 'LianChat';
             leftTitle.style.fontWeight = 'bold';
+            leftTitle.style.flexGrow = '1'; // 让标题占据剩余空间
             
-            const rightBtns = document.createElement('div');
-            rightBtns.style.display = 'flex';
-            rightBtns.style.alignItems = 'center';
-            rightBtns.appendChild(settingsButton);
-            rightBtns.appendChild(closeButton);
-            
-            titleBar.appendChild(leftTitle);
-            titleBar.appendChild(rightBtns);
+            // 将标题添加到左侧容器
+            leftButtons.appendChild(leftTitle);
 
             contentContainer.appendChild(senderList);
             contentContainer.appendChild(rightContainer);
