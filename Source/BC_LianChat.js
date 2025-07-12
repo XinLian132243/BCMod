@@ -4565,15 +4565,31 @@ class RoomItemPool {
             
             let newLeft = rect.left;
             let newTop = rect.top;
+            let newWidth = rect.width;
+            let newHeight = rect.height;
+            
+            // 最小尺寸限制
+            const minWidth = 300;
+            const minHeight = 200;
+            
+            // 检查并修正宽度
+            if (rect.width > windowWidth) {
+                newWidth = Math.max(minWidth, windowWidth - 20); // 留20px边距
+            }
+            
+            // 检查并修正高度
+            if (rect.height > windowHeight) {
+                newHeight = Math.max(minHeight, windowHeight - 20); // 留20px边距
+            }
             
             // 检查右边界
             if (rect.right > windowWidth) {
-                newLeft = windowWidth - rect.width;
+                newLeft = windowWidth - newWidth;
             }
             
             // 检查下边界
             if (rect.bottom > windowHeight) {
-                newTop = windowHeight - rect.height;
+                newTop = windowHeight - newHeight;
             }
             
             // 检查左边界
@@ -4586,10 +4602,15 @@ class RoomItemPool {
                 newTop = 0;
             }
             
-            // 应用新位置
+            // 应用新位置和尺寸
             if (newLeft !== rect.left || newTop !== rect.top) {
                 dialog.style.left = newLeft + 'px';
                 dialog.style.top = newTop + 'px';
+            }
+            
+            if (newWidth !== rect.width || newHeight !== rect.height) {
+                dialog.style.width = newWidth + 'px';
+                dialog.style.height = newHeight + 'px';
             }
         }
         
