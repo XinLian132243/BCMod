@@ -2423,6 +2423,7 @@ class RoomItemPool {
                         rightContainer.style.width = '0';
                         rightContainer.style.display = 'none';
                     }
+                    messageDialog.updateSenderList();
                 }
             }
             
@@ -2430,7 +2431,7 @@ class RoomItemPool {
             function exitPageMode() {
                 MessageModule.isPageMode = false;
                 MessageModule.isRightPageActive = false;
-                
+                messageDialog.updateMessageContent();
                 // 隐藏返回发送者按钮
                 MessageModule.backToSenderButton.style.display = 'none';
                 
