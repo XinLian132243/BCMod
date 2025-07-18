@@ -6541,10 +6541,8 @@ function CheckOnlineLCSetting()
      'X' : Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace;
 }
 
-// 在游戏退出时清理定时器
-mod.hookFunction("LoginResponse", 0, (args, next) => {
-    next(args);
-    
+function InitAll()
+{    
     // 清理旧的定时器
     cleanupFloatingButtonInterval();    
     CheckOnlineLCSetting();
@@ -6557,7 +6555,22 @@ mod.hookFunction("LoginResponse", 0, (args, next) => {
             setTimeout(initFloatingMessageButton, 1000);
         });
     }).catch(console.error);
-});
+}
+
+// 游戏已经初始化
+if(Player != null)
+{
+    InitAll();
+}
+else
+{
+    // 在游戏退出时清理定时器
+    mod.hookFunction("LoginResponse", 0, (args, next) => {
+        next(args);
+        InitAll();
+    });
+}
+
 
 console.log("[LianChat] Load Success");
     
