@@ -6558,7 +6558,8 @@ function InitAll()
 }
 
 // 游戏已经初始化
-if(Player != null)
+if(CurrentScreen != null
+     && CurrentScreen !== 'Login')
 {
     InitAll();
 }
