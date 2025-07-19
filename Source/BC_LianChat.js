@@ -3962,7 +3962,7 @@ class RoomItemPool {
                 let processedContent = content.replace(/\n/g, '<br>');
                 
                 // 处理URL链接，使其可点击
-                const urlRegex = /(https?:\/\/[^\s]+)/g;
+                const urlRegex = /(https?):\/\/[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]/g;
                 processedContent = processedContent.replace(urlRegex, function(url) {
                     if (isValidImageUrl(url)) {
                         return `<a href="${url}" target="_blank" style="text-decoration: none;"><img src="${url}" style="max-width: 100%; max-height: 300px; border-radius: 4px; margin: 4px 0;" alt="图片" /></a>`;
