@@ -7,8 +7,8 @@
 // @match https://*.bondageprojects.elementfx.com/R*/*
 // @match https://*.bondage-europe.com/R*/*
 // @match https://*.bondageprojects.com/R*/*
+// @match https://*.bondage-asia.com/Club/R*
 // @connect      github.com
-// @grant        GM_xmlhttpRequest
 // @license      MIT
 // @run-at       document-end
 // ==/UserScript==

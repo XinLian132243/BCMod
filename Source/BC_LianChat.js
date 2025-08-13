@@ -7,6 +7,7 @@
 // @match https://*.bondageprojects.elementfx.com/R*/*
 // @match https://*.bondage-europe.com/R*/*
 // @match https://*.bondageprojects.com/R*/*
+// @match https://*.bondage-asia.com/Club/R*
 // @grant        none
 // @license      MIT
 // ==/UserScript==
