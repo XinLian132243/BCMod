@@ -593,7 +593,17 @@ keyDownFunctions.forEach(funcName => {
                             return;
                         }
                         const item = values[i++];
-                        store.put(item).onsuccess = putNext;
+                        try {
+                            const putReq = store.put(item);
+                            putReq.onsuccess = putNext;
+                            putReq.onerror = () => {
+                                console.warn('[LianChat] IndexedDB write failed, skipping problematic data item:', item);
+                                putNext();
+                            };
+                        } catch (error) {
+                            console.warn('[LianChat] Data validation failed, skipping problematic data item:', item, 'Error:', error);
+                            putNext();                           
+                        }
                     }
                     putNext();
                 };
