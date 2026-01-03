@@ -6423,11 +6423,6 @@ function updateFloatingButtonState() {
         button.appendChild(badge);
                 // 添加亮红色描边
         button.style.boxShadow = '0 0 0 3px #ff4d4f, 0 2px 10px rgba(0, 0, 0, 0.3)';
-
-        // 添加轻微的动画效果
-        button.style.transform = 'scale(1.05)';
-    } else {
-        button.style.transform = 'scale(1)';
     }
 }
 
