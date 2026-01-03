@@ -1181,8 +1181,8 @@ keyDownFunctions.forEach(funcName => {
                 dialog.style.top = '20%';
             } else {
                 // 移动设备
-                dialog.style.left = '10%';
-                dialog.style.top = '5%';
+                dialog.style.left = '1%';
+                dialog.style.top = '1%';
             }
         }
 
@@ -2308,8 +2308,8 @@ class RoomItemPool {
                 messageDialog.style.height = '60%';
             } else {
                 // 移动设备
-                messageDialog.style.width = '80%';
-                messageDialog.style.height = '90%';
+                messageDialog.style.width = '98%';
+                messageDialog.style.height = '98%';
             }
             
             // 设置初始位置
