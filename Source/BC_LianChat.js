@@ -6260,8 +6260,20 @@ function createFloatingMessageButton() {
     let isDraggingButton = false;
     let dragStartX, dragStartY;
     let hasMoved = false; // 确保在函数作用域内定义
+    let isTouchEvent = false; // 标记是否为触摸事件
     
+    // 获取坐标的辅助函数（支持鼠标和触摸事件）
+    function getClientX(e) {
+        return e.touches ? e.touches[0].clientX : e.clientX;
+    }
+    
+    function getClientY(e) {
+        return e.touches ? e.touches[0].clientY : e.clientY;
+    }
+    
+    // 鼠标事件
     buttonContainer.addEventListener('mousedown', function(e) {
+        isTouchEvent = false;
         isDraggingButton = true;
         hasMoved = false; // 重置移动标记
         dragStartX = e.clientX;
@@ -6275,12 +6287,33 @@ function createFloatingMessageButton() {
         e.preventDefault(); // 防止文本选择
     });
     
+    // 触摸事件
+    buttonContainer.addEventListener('touchstart', function(e) {
+        isTouchEvent = true;
+        isDraggingButton = true;
+        hasMoved = false; // 重置移动标记
+        const touch = e.touches[0];
+        dragStartX = touch.clientX;
+        dragStartY = touch.clientY;
+        this.style.transition = 'none'; // 拖动时禁用过渡效果
+        
+        // 添加触摸移动和释放事件
+        document.addEventListener('touchmove', handleButtonDrag, { passive: false });
+        document.addEventListener('touchend', stopButtonDrag);
+        document.addEventListener('touchcancel', stopButtonDrag);
+        
+        e.preventDefault(); // 防止页面滚动
+    });
+    
     function handleButtonDrag(e) {
         if (!isDraggingButton) return;
         
+        const clientX = getClientX(e);
+        const clientY = getClientY(e);
+        
         // 计算移动距离
-        const moveX = Math.abs(e.clientX - dragStartX);
-        const moveY = Math.abs(e.clientY - dragStartY);
+        const moveX = Math.abs(clientX - dragStartX);
+        const moveY = Math.abs(clientY - dragStartY);
         
         // 如果移动超过阈值，标记为已移动
         if (moveX > 3 || moveY > 3) {
@@ -6293,9 +6326,9 @@ function createFloatingMessageButton() {
         // 获取按钮当前位置
         const rect = button.getBoundingClientRect();
         
-        // 计算鼠标移动的距离
-        const deltaX = e.clientX - dragStartX;
-        const deltaY = e.clientY - dragStartY;
+        // 计算移动的距离
+        const deltaX = clientX - dragStartX;
+        const deltaY = clientY - dragStartY;
         
         // 计算新位置（左上角坐标）
         const newLeft = rect.left + deltaX;
@@ -6313,8 +6346,13 @@ function createFloatingMessageButton() {
         button.style.bottom = `${window.innerHeight - boundedTop - rect.height}px`;
         
         // 更新拖动起点
-        dragStartX = e.clientX;
-        dragStartY = e.clientY;
+        dragStartX = clientX;
+        dragStartY = clientY;
+        
+        // 触摸事件时防止页面滚动
+        if (isTouchEvent) {
+            e.preventDefault();
+        }
     }
     
     function stopButtonDrag(e) {
@@ -6334,8 +6372,13 @@ function createFloatingMessageButton() {
                 if (!hasMoved) {
                     // 检查点击是否在按钮或其子元素上
                     let targetElement = e.target;
-                    let isButtonOrChild = false;
+                    if (isTouchEvent && e.changedTouches && e.changedTouches[0]) {
+                        // 触摸事件使用 changedTouches
+                        const touch = e.changedTouches[0];
+                        targetElement = document.elementFromPoint(touch.clientX, touch.clientY);
+                    }
                     
+                    let isButtonOrChild = false;
                     // 检查点击的元素是否是按钮或其子元素
                     while (targetElement) {
                         if (targetElement === button) {
@@ -6353,8 +6396,14 @@ function createFloatingMessageButton() {
             }
             
             // 移除事件监听器
-            document.removeEventListener('mousemove', handleButtonDrag);
-            document.removeEventListener('mouseup', stopButtonDrag);
+            if (isTouchEvent) {
+                document.removeEventListener('touchmove', handleButtonDrag);
+                document.removeEventListener('touchend', stopButtonDrag);
+                document.removeEventListener('touchcancel', stopButtonDrag);
+            } else {
+                document.removeEventListener('mousemove', handleButtonDrag);
+                document.removeEventListener('mouseup', stopButtonDrag);
+            }
         }
     }
     
