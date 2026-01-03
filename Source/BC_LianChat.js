@@ -6259,6 +6259,7 @@ function createFloatingMessageButton() {
     // 添加拖动功能
     let isDraggingButton = false;
     let dragStartX, dragStartY;
+    let buttonStartLeft, buttonStartTop; // 拖拽开始时按钮的位置
     let hasMoved = false; // 确保在函数作用域内定义
     let isTouchEvent = false; // 标记是否为触摸事件
     
@@ -6278,6 +6279,17 @@ function createFloatingMessageButton() {
         hasMoved = false; // 重置移动标记
         dragStartX = e.clientX;
         dragStartY = e.clientY;
+        
+        // 记录拖拽开始时按钮的位置
+        const button = document.getElementById('floatingMessageButton');
+        if (button) {
+            const rect = button.getBoundingClientRect();
+            const currentRight = parseFloat(button.style.right) || 0;
+            const currentBottom = parseFloat(button.style.bottom) || 0;
+            buttonStartLeft = window.innerWidth - currentRight - rect.width;
+            buttonStartTop = window.innerHeight - currentBottom - rect.height;
+        }
+        
         this.style.transition = 'none'; // 拖动时禁用过渡效果
         
         // 添加鼠标移动和释放事件
@@ -6295,6 +6307,17 @@ function createFloatingMessageButton() {
         const touch = e.touches[0];
         dragStartX = touch.clientX;
         dragStartY = touch.clientY;
+        
+        // 记录拖拽开始时按钮的位置
+        const button = document.getElementById('floatingMessageButton');
+        if (button) {
+            const rect = button.getBoundingClientRect();
+            const currentRight = parseFloat(button.style.right) || 0;
+            const currentBottom = parseFloat(button.style.bottom) || 0;
+            buttonStartLeft = window.innerWidth - currentRight - rect.width;
+            buttonStartTop = window.innerHeight - currentBottom - rect.height;
+        }
+        
         this.style.transition = 'none'; // 拖动时禁用过渡效果
         
         // 添加触摸移动和释放事件
@@ -6323,31 +6346,30 @@ function createFloatingMessageButton() {
         const button = document.getElementById('floatingMessageButton');
         if (!button) return;
         
-        // 获取按钮当前位置
+        // 获取按钮尺寸
         const rect = button.getBoundingClientRect();
+        const buttonWidth = rect.width;
+        const buttonHeight = rect.height;
         
-        // 计算移动的距离
+        // 基于初始按钮位置和初始触摸点计算新位置（绝对位置计算，避免累加误差）
         const deltaX = clientX - dragStartX;
         const deltaY = clientY - dragStartY;
         
-        // 计算新位置（左上角坐标）
-        const newLeft = rect.left + deltaX;
-        const newTop = rect.top + deltaY;
+        // 计算新位置（基于初始位置）
+        const newLeft = buttonStartLeft + deltaX;
+        const newTop = buttonStartTop + deltaY;
         
         // 确保按钮不会超出视口
-        const maxX = window.innerWidth - rect.width;
-        const maxY = window.innerHeight - rect.height;
+        const maxX = window.innerWidth - buttonWidth;
+        const maxY = window.innerHeight - buttonHeight;
         
+        // 约束到边界内
         const boundedLeft = Math.max(0, Math.min(newLeft, maxX));
         const boundedTop = Math.max(0, Math.min(newTop, maxY));
         
         // 更新位置（转换为right和bottom值）
-        button.style.right = `${window.innerWidth - boundedLeft - rect.width}px`;
-        button.style.bottom = `${window.innerHeight - boundedTop - rect.height}px`;
-        
-        // 更新拖动起点
-        dragStartX = clientX;
-        dragStartY = clientY;
+        button.style.right = `${window.innerWidth - boundedLeft - buttonWidth}px`;
+        button.style.bottom = `${window.innerHeight - boundedTop - buttonHeight}px`;
         
         // 触摸事件时防止页面滚动
         if (isTouchEvent) {
@@ -6412,6 +6434,14 @@ function createFloatingMessageButton() {
     
     // 添加窗口大小变化监听器，保持相对位置不变
     window.addEventListener('resize', updateButtonPosition);
+    
+    // 添加横竖屏切换监听器（移动端）
+    window.addEventListener('orientationchange', function() {
+        // 延迟执行，等待屏幕方向变化完成
+        setTimeout(function() {
+            updateButtonPosition();
+        }, 100);
+    });
 }
 
 // 更新按钮状态（颜色、图标、未读数）
@@ -6475,6 +6505,40 @@ function updateFloatingButtonState() {
     }
 }
 
+// 约束按钮位置到可视区域内
+function constrainButtonToViewport(button) {
+    if (!button) return;
+    
+    const rect = button.getBoundingClientRect();
+    const buttonWidth = rect.width;
+    const buttonHeight = rect.height;
+    
+    // 获取当前按钮位置
+    const currentRight = parseFloat(button.style.right) || 0;
+    const currentBottom = parseFloat(button.style.bottom) || 0;
+    const currentLeft = window.innerWidth - currentRight - buttonWidth;
+    const currentTop = window.innerHeight - currentBottom - buttonHeight;
+    
+    // 计算边界
+    const maxX = window.innerWidth - buttonWidth;
+    const maxY = window.innerHeight - buttonHeight;
+    
+    // 约束位置
+    const boundedLeft = Math.max(0, Math.min(currentLeft, maxX));
+    const boundedTop = Math.max(0, Math.min(currentTop, maxY));
+    
+    // 如果位置需要调整，更新按钮位置
+    if (boundedLeft !== currentLeft || boundedTop !== currentTop) {
+        button.style.right = `${window.innerWidth - boundedLeft - buttonWidth}px`;
+        button.style.bottom = `${window.innerHeight - boundedTop - buttonHeight}px`;
+        // 重新存储调整后的位置
+        storeButtonPosition({
+            right: button.style.right,
+            bottom: button.style.bottom
+        });
+    }
+}
+
 // 更新按钮位置（窗口大小变化时）
 function updateButtonPosition() {
     const button = document.getElementById('floatingMessageButton');
@@ -6482,7 +6546,11 @@ function updateButtonPosition() {
     
     // 获取MainCanvas的位置和尺寸
     const canvas = document.getElementById('MainCanvas');
-    if (!canvas) return;
+    if (!canvas) {
+        // 如果没有MainCanvas，直接约束到视口
+        constrainButtonToViewport(button);
+        return;
+    }
     
     const canvasRect = canvas.getBoundingClientRect();
     const storedPosition = getStoredButtonPosition();
@@ -6499,6 +6567,9 @@ function updateButtonPosition() {
     // 设置按钮位置，确保不超出MainCanvas
     button.style.right = `${window.innerWidth - (canvasRect.right - rightPx)}px`;
     button.style.bottom = `${window.innerHeight - (canvasRect.bottom - bottomPx)}px`;
+    
+    // 确保按钮在可视区域内（防止横竖屏切换时转出屏幕）
+    constrainButtonToViewport(button);
 }
 
 // 存储按钮位置
