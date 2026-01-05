@@ -802,5 +802,1516 @@
         }
     };
 
+    // =======================================================================================
+    // 可复用的颜色选择器类
+    // =======================================================================================
+
+    /**
+     * 可复用的颜色选择器类
+     * 包含颜色选择器面板、HEX输入框、剪贴板颜色按钮和复制按钮
+     */
+    class ColorPickerPanel {
+        constructor() {
+            this.panelElement = null;
+            this.currentColor = '#FFFFFF';
+            this.onColorChange = null; // 颜色改变回调函数
+            this.clipboardColors = []; // 剪贴板颜色队列（FIFO，最多10个）
+            this.maxClipboardSize = 10;
+            this.iroInstance = null; // iro.js 实例
+            this.iroLoaded = false; // iro.js 是否已加载
+            this.rgbInputs = null; // RGB输入框引用
+            this.onReset = null; // 重置回调函数
+        }
+        
+        /**
+         * 将HEX颜色转换为RGB
+         */
+        hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 255, g: 255, b: 255 };
+        }
+
+        /**
+         * 显示颜色选择器面板
+         * @param {HTMLElement} triggerElement - 触发按钮元素
+         * @param {string} initialColor - 初始颜色
+         * @param {Function} onColorChange - 颜色改变回调函数
+         * @param {Function} onReset - 重置回调函数（可选）
+         */
+        show(triggerElement, initialColor, onColorChange, onReset) {
+            // 如果已有面板打开，先关闭
+            if (this.panelElement) {
+                this.hide();
+            }
+
+            this.currentColor = initialColor || '#FFFFFF';
+            this.onColorChange = onColorChange;
+            this.onReset = onReset; // 保存重置回调
+
+            // 确保颜色格式正确
+            if (!this.currentColor.startsWith('#')) {
+                this.currentColor = '#' + this.currentColor;
+            }
+            if (this.currentColor.length === 4) {
+                this.currentColor = '#' + this.currentColor[1] + this.currentColor[1] + 
+                                   this.currentColor[2] + this.currentColor[2] + 
+                                   this.currentColor[3] + this.currentColor[3];
+            }
+
+            // 计算面板位置（在按钮下方）
+            const buttonRect = triggerElement.getBoundingClientRect();
+            const panelPadding = 15; // 面板内边距
+            const panelWidth = 280 + panelPadding * 2; // 面板宽度固定为 280 + 内边距
+            const panelHeight = 400; // 估算面板高度
+            const margin = 10; // 边距
+            let panelX = buttonRect.left;
+            let panelY = buttonRect.bottom + 5;
+            
+            // 检查是否会超出窗口右侧，如果超出则调整位置
+            if (panelX + panelWidth + margin > window.innerWidth) {
+                // 如果超出右侧，将面板放在按钮左侧
+                panelX = buttonRect.left - panelWidth;
+                // 如果左侧也超出，则紧贴窗口右边缘
+                if (panelX < margin) {
+                    panelX = window.innerWidth - panelWidth - margin;
+                }
+            }
+            
+            // 检查是否会超出窗口下侧，如果超出则调整位置
+            if (panelY + panelHeight + margin > window.innerHeight) {
+                // 如果超出下侧，将面板放在按钮上方
+                panelY = buttonRect.top - panelHeight - 5;
+                // 如果上方也超出，则紧贴窗口下边缘
+                if (panelY < margin) {
+                    panelY = window.innerHeight - panelHeight - margin;
+                }
+            }
+            
+            // 确保不会超出左侧和上侧
+            if (panelX < margin) {
+                panelX = margin;
+            }
+            if (panelY < margin) {
+                panelY = margin;
+            }
+            
+            const finalPanelX = panelX;
+            const finalPanelY = panelY;
+
+            // 创建面板容器（弹出窗口）
+            this.panelElement = document.createElement('div');
+            this.panelElement.className = 'lian-color-picker-panel';
+            this.panelElement.style.cssText = `
+                position: fixed;
+                left: ${finalPanelX}px;
+                top: ${finalPanelY}px;
+                width: ${panelWidth}px;
+                background: #fff;
+                border: 2px solid #000;
+                border-radius: 5px;
+                padding: 15px;
+                z-index: 10001;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+                display: flex;
+                flex-direction: column;
+            `;
+
+            // 创建 iro.js 颜色选择器容器（宽度固定为 280）
+            const iroContainer = document.createElement('div');
+            iroContainer.id = 'lian-iro-color-picker-container';
+            iroContainer.style.cssText = 'width: 280px; margin-bottom: 10px; min-height: 200px;';
+            this.panelElement.appendChild(iroContainer);
+
+            // 动态加载 iro.js 库
+            const self = this; // 保存 this 引用
+            if (!this.iroLoaded && typeof window.iro === 'undefined') {
+                const scriptElement = document.createElement('script');
+                scriptElement.src = 'https://cdn.jsdelivr.net/npm/@jaames/iro@5.5.2/dist/iro.min.js';
+                document.head.appendChild(scriptElement);
+
+                // 当 script 元素加载完成后，初始化 iro.js 颜色选择器
+                scriptElement.onload = function() {
+                    self.iroLoaded = true;
+                    self.initIroColorPicker(iroContainer);
+                };
+            } else {
+                // 如果已经加载，直接初始化
+                this.iroLoaded = true;
+                this.initIroColorPicker(iroContainer);
+            }
+
+            // 创建HEX输入框（宽度固定为 280）
+            const hexInputContainer = document.createElement('div');
+            hexInputContainer.style.cssText = 'display: flex; align-items: center; margin-bottom: 10px; width: 280px;';
+
+            const hexLabel = document.createElement('label');
+            hexLabel.textContent = 'HEX: ';
+            hexLabel.style.cssText = 'margin-right: 5px; font-size: 12px;';
+            hexInputContainer.appendChild(hexLabel);
+
+            this.hexInput = document.createElement('input');
+            this.hexInput.type = 'text';
+            this.hexInput.value = this.currentColor.toUpperCase();
+            this.hexInput.style.cssText = 'flex: 1; padding: 5px; border: 1px solid #000; font-size: 12px;';
+            this.hexInput.addEventListener('input', (e) => {
+                let newColor = e.target.value.trim();
+                if (!newColor.startsWith('#')) {
+                    newColor = '#' + newColor;
+                }
+                if (/^#[0-9A-Fa-f]{3}$/.test(newColor)) {
+                    newColor = '#' + newColor[1] + newColor[1] + newColor[2] + newColor[2] + newColor[3] + newColor[3];
+                }
+                if (/^#[0-9A-Fa-f]{6}$/.test(newColor)) {
+                    this.currentColor = newColor;
+                    // 更新 iro.js 颜色选择器
+                    if (this.iroInstance) {
+                        this.iroInstance.color.hexString = newColor;
+                    }
+                    // 更新后备 color input
+                    const colorInput = this.panelElement.querySelector('input[type="color"]');
+                    if (colorInput) {
+                        colorInput.value = newColor;
+                    }
+                    // 更新RGB输入框
+                    if (this.rgbInputs) {
+                        const rgb = this.hexToRgb(newColor);
+                        if (this.rgbInputs.r) this.rgbInputs.r.value = rgb.r;
+                        if (this.rgbInputs.g) this.rgbInputs.g.value = rgb.g;
+                        if (this.rgbInputs.b) this.rgbInputs.b.value = rgb.b;
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(newColor);
+                    }
+                }
+            });
+            hexInputContainer.appendChild(this.hexInput);
+            this.panelElement.appendChild(hexInputContainer);
+
+            // 创建RGB输入框容器（宽度固定为 280）
+            const rgbInputContainer = document.createElement('div');
+            rgbInputContainer.style.cssText = 'display: flex; align-items: center; gap: 5px; margin-bottom: 10px; width: 280px;';
+            
+            const rgbLabel = document.createElement('label');
+            rgbLabel.textContent = 'RGB: ';
+            rgbLabel.style.cssText = 'margin-right: 5px; font-size: 12px; flex-shrink: 0;';
+            rgbInputContainer.appendChild(rgbLabel);
+            
+            // 将RGB转换为HEX
+            const rgbToHex = (r, g, b) => {
+                return '#' + [r, g, b].map(x => {
+                    const hex = Math.max(0, Math.min(255, x)).toString(16);
+                    return hex.length === 1 ? '0' + hex : hex;
+                }).join('');
+            };
+            
+            const rgbInputs = { r: null, g: null, b: null };
+            ['R', 'G', 'B'].forEach((label) => {
+                const labelSpan = document.createElement('span');
+                labelSpan.textContent = label + ': ';
+                labelSpan.style.cssText = 'font-size: 12px; flex-shrink: 0;';
+                rgbInputContainer.appendChild(labelSpan);
+                
+                const rgbInput = document.createElement('input');
+                rgbInput.type = 'number';
+                rgbInput.min = '0';
+                rgbInput.max = '255';
+                const key = label.toLowerCase();
+                rgbInputs[key] = rgbInput;
+                
+                const rgb = this.hexToRgb(this.currentColor);
+                rgbInput.value = rgb[key];
+                rgbInput.style.cssText = 'width: 60px; padding: 3px; border: 1px solid #000; font-size: 12px; text-align: center;';
+                rgbInput.addEventListener('input', (e) => {
+                    const r = parseInt(rgbInputs.r.value) || 0;
+                    const g = parseInt(rgbInputs.g.value) || 0;
+                    const b = parseInt(rgbInputs.b.value) || 0;
+                    const newColor = rgbToHex(r, g, b);
+                    this.currentColor = newColor;
+                    
+                    // 更新 iro.js 颜色选择器
+                    if (this.iroInstance) {
+                        this.iroInstance.color.hexString = newColor;
+                    }
+                    // 更新后备 color input
+                    const colorInput = this.panelElement.querySelector('input[type="color"]');
+                    if (colorInput) {
+                        colorInput.value = newColor;
+                    }
+                    // 更新HEX输入框
+                    if (this.hexInput) {
+                        this.hexInput.value = newColor.toUpperCase();
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(newColor);
+                    }
+                });
+                rgbInputContainer.appendChild(rgbInput);
+            });
+            
+            // 保存RGB输入框引用，以便在颜色变化时更新
+            this.rgbInputs = rgbInputs;
+            this.panelElement.appendChild(rgbInputContainer);
+
+            // 创建剪贴板颜色按钮容器（宽度固定为 280）
+            const clipboardContainer = document.createElement('div');
+            clipboardContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; width: 280px;';
+            this.clipboardButtonsContainer = clipboardContainer;
+            this.updateClipboardButtons();
+            this.panelElement.appendChild(clipboardContainer);
+
+            // 创建复制按钮（宽度固定为 280）
+            const copyButton = document.createElement('button');
+            copyButton.textContent = '复制';
+            copyButton.style.cssText = `
+                width: 280px;
+                padding: 8px;
+                background: #4CAF50;
+                color: white;
+                border: 1px solid #000;
+                border-radius: 3px;
+                cursor: pointer;
+                font-size: 14px;
+            `;
+            copyButton.onclick = () => {
+                this.copyToClipboard();
+            };
+            this.panelElement.appendChild(copyButton);
+            
+            // 如果有重置回调，创建重置按钮（宽度固定为 280）
+            if (this.onReset) {
+                const resetButton = document.createElement('button');
+                resetButton.textContent = '重置到默认颜色';
+                resetButton.style.cssText = `
+                    width: 280px;
+                    padding: 8px;
+                    background: #FF9800;
+                    color: white;
+                    border: 1px solid #000;
+                    border-radius: 3px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    margin-top: 5px;
+                `;
+                resetButton.onclick = () => {
+                    if (this.onReset) {
+                        this.onReset();
+                    }
+                };
+                this.panelElement.appendChild(resetButton);
+            }
+
+            // 点击外部关闭
+            const clickOutsideHandler = (e) => {
+                // 检查元素是否存在，避免null引用错误
+                if (!this.panelElement || !triggerElement) {
+                    document.removeEventListener('click', clickOutsideHandler);
+                    return;
+                }
+                
+                if (!this.panelElement.contains(e.target) && 
+                    e.target !== triggerElement && 
+                    !triggerElement.contains(e.target)) {
+                    this.hide();
+                    document.removeEventListener('click', clickOutsideHandler);
+                }
+            };
+            setTimeout(() => {
+                document.addEventListener('click', clickOutsideHandler);
+            }, 100);
+
+            document.body.appendChild(this.panelElement);
+        }
+
+        /**
+         * 初始化 iro.js 颜色选择器
+         * @param {HTMLElement} container - 容器元素
+         */
+        initIroColorPicker(container) {
+            // 检查 iro 是否可用
+            const iro = window.iro;
+            if (!iro || !iro.ColorPicker) {
+                console.warn('iro.js not available, using fallback color input');
+                // 后备方案：使用简单的color input
+                const colorInput = document.createElement('input');
+                colorInput.type = 'color';
+                colorInput.value = this.currentColor;
+                colorInput.style.cssText = 'width: 100%; height: 40px; margin-bottom: 10px; cursor: pointer;';
+                colorInput.addEventListener('input', (e) => {
+                    this.currentColor = e.target.value;
+                    if (this.hexInput) {
+                        this.hexInput.value = this.currentColor.toUpperCase();
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(this.currentColor);
+                    }
+                });
+                container.appendChild(colorInput);
+                return;
+            }
+
+            try {
+                // 初始化 iro.js 颜色选择器，使用 Box & hue slider 布局
+                this.iroInstance = new iro.ColorPicker(container, {
+                    width: 280,
+                    color: this.currentColor,
+                    borderWidth: 1,
+                    borderColor: '#000',
+                    layout: [
+                        {
+                            component: iro.ui.Box
+                        },
+                        {
+                            component: iro.ui.Slider,
+                            options: {
+                                id: 'hue-slider',
+                                sliderType: 'hue'
+                            }
+                        }
+                    ]
+                });
+
+                // 监听颜色变化事件
+                this.iroInstance.on('color:change', (color) => {
+                    this.currentColor = color.hexString;
+                    if (this.hexInput) {
+                        this.hexInput.value = this.currentColor.toUpperCase();
+                    }
+                    // 更新RGB输入框
+                    if (this.rgbInputs) {
+                        const rgb = this.hexToRgb(this.currentColor);
+                        if (this.rgbInputs.r) this.rgbInputs.r.value = rgb.r;
+                        if (this.rgbInputs.g) this.rgbInputs.g.value = rgb.g;
+                        if (this.rgbInputs.b) this.rgbInputs.b.value = rgb.b;
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(this.currentColor);
+                    }
+                });
+            } catch (error) {
+                console.warn('Failed to initialize iro.js color picker:', error);
+                // 后备方案：使用简单的color input
+                const colorInput = document.createElement('input');
+                colorInput.type = 'color';
+                colorInput.value = this.currentColor;
+                colorInput.style.cssText = 'width: 100%; height: 40px; margin-bottom: 10px; cursor: pointer;';
+                colorInput.addEventListener('input', (e) => {
+                    this.currentColor = e.target.value;
+                    if (this.hexInput) {
+                        this.hexInput.value = this.currentColor.toUpperCase();
+                    }
+                    // 更新RGB输入框
+                    if (this.rgbInputs) {
+                        const rgb = this.hexToRgb(this.currentColor);
+                        if (this.rgbInputs.r) this.rgbInputs.r.value = rgb.r;
+                        if (this.rgbInputs.g) this.rgbInputs.g.value = rgb.g;
+                        if (this.rgbInputs.b) this.rgbInputs.b.value = rgb.b;
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(this.currentColor);
+                    }
+                });
+                container.appendChild(colorInput);
+            }
+        }
+
+        /**
+         * 更新剪贴板颜色按钮
+         */
+        updateClipboardButtons() {
+            if (!this.clipboardButtonsContainer) return;
+
+            // 清空现有按钮
+            this.clipboardButtonsContainer.innerHTML = '';
+
+            // 创建剪贴板颜色按钮
+            this.clipboardColors.forEach((color, index) => {
+                const colorBtn = document.createElement('button');
+                colorBtn.style.cssText = `
+                    width: 30px;
+                    height: 30px;
+                    background: ${color};
+                    border: 1px solid #000;
+                    border-radius: 3px;
+                    cursor: pointer;
+                    flex-shrink: 0;
+                `;
+                colorBtn.title = color;
+                colorBtn.onclick = () => {
+                    this.currentColor = color;
+                    // 更新 iro.js 颜色选择器
+                    if (this.iroInstance) {
+                        this.iroInstance.color.hexString = color;
+                    }
+                    // 更新后备 color input
+                    const colorInput = this.panelElement.querySelector('input[type="color"]');
+                    if (colorInput) {
+                        colorInput.value = color;
+                    }
+                    if (this.hexInput) {
+                        this.hexInput.value = color.toUpperCase();
+                    }
+                    // 更新RGB输入框
+                    if (this.rgbInputs) {
+                        const rgb = this.hexToRgb(color);
+                        if (this.rgbInputs.r) this.rgbInputs.r.value = rgb.r;
+                        if (this.rgbInputs.g) this.rgbInputs.g.value = rgb.g;
+                        if (this.rgbInputs.b) this.rgbInputs.b.value = rgb.b;
+                    }
+                    if (this.onColorChange) {
+                        this.onColorChange(color);
+                    }
+                };
+                this.clipboardButtonsContainer.appendChild(colorBtn);
+            });
+        }
+
+        /**
+         * 复制当前颜色到剪贴板（FIFO）
+         */
+        copyToClipboard() {
+            // 如果颜色已存在，先移除
+            const existingIndex = this.clipboardColors.indexOf(this.currentColor);
+            if (existingIndex !== -1) {
+                this.clipboardColors.splice(existingIndex, 1);
+            }
+
+            // 添加到队列前端
+            this.clipboardColors.unshift(this.currentColor);
+
+            // 如果超过最大数量，移除最旧的（FIFO）
+            if (this.clipboardColors.length > this.maxClipboardSize) {
+                this.clipboardColors.pop();
+            }
+
+            // 更新按钮
+            this.updateClipboardButtons();
+
+            // 复制到系统剪贴板
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(this.currentColor).catch(err => {
+                    console.warn('Failed to copy to clipboard:', err);
+                });
+            }
+        }
+
+        /**
+         * 隐藏颜色选择器面板
+         */
+        hide() {
+            if (this.iroInstance) {
+                // 销毁 iro.js 实例
+                if (this.iroInstance.el && this.iroInstance.el.parentNode) {
+                    this.iroInstance.el.parentNode.removeChild(this.iroInstance.el);
+                }
+                this.iroInstance = null;
+            }
+            if (this.panelElement) {
+                this.panelElement.remove();
+                this.panelElement = null;
+            }
+            this.hexInput = null;
+            this.clipboardButtonsContainer = null;
+        }
+    }
+
+    // =======================================================================================
+    // 衣服调整窗口
+    // =======================================================================================
+
+    /**
+     * 衣服调整窗口类（基于DOM实现）
+     * 在Color模式进入时显示，提供树状结构的颜色和透明度调整界面
+     */
+    class ItemColorAdjustmentWindow {
+        constructor() {
+            this.windowElement = null;
+            this.isVisible = false;
+            this.treeNodes = []; // 树状节点数据
+            this.expandedNodes = new Set(); // 展开的节点ID集合
+            this.selectedNodeId = null; // 当前选中的节点ID
+            this.colorPickerPanel = new ColorPickerPanel(); // 颜色选择器面板实例
+        }
+
+        /**
+         * 计算窗口位置和大小（基于2:1画布）
+         */
+        calculateWindowLayout() {
+            // 获取MainCanvas元素
+            const canvas = document.getElementById('MainCanvas');
+            if (!canvas) {
+                // 如果没有MainCanvas，使用视口尺寸
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                // 假设画布是2:1，居中顶住边缘
+                const canvasHeight = Math.min(viewportWidth / 2, viewportHeight);
+                const canvasWidth = canvasHeight * 2;
+                const canvasLeft = (viewportWidth - canvasWidth) / 2;
+                const canvasTop = 0;
+
+                // 窗口距离画布左侧55%，右侧1%，上12.5%，下1%
+                const windowLeft = canvasLeft + canvasWidth * 0.55;
+                const windowRight = canvasLeft + canvasWidth * (1 - 0.01);
+                const windowTop = canvasTop + canvasHeight * 0.125;
+                const windowBottom = canvasTop + canvasHeight * (1 - 0.01);
+
+                return {
+                    left: windowLeft,
+                    top: windowTop,
+                    width: windowRight - windowLeft,
+                    height: windowBottom - windowTop
+                };
+            } else {
+                const canvasRect = canvas.getBoundingClientRect();
+                // 窗口距离画布左侧55%，右侧1%，上12.5%，下1%
+                const windowLeft = canvasRect.left + canvasRect.width * 0.55;
+                const windowRight = canvasRect.left + canvasRect.width * (1 - 0.01);
+                const windowTop = canvasRect.top + canvasRect.height * 0.125;
+                const windowBottom = canvasRect.top + canvasRect.height * (1 - 0.01);
+
+                return {
+                    left: windowLeft,
+                    top: windowTop,
+                    width: windowRight - windowLeft,
+                    height: windowBottom - windowTop
+                };
+            }
+        }
+
+        /**
+         * 构建树状结构
+         */
+        buildTree() {
+            if (!ItemColorState || !ItemColorItem || !ItemColorCharacter) {
+                return;
+            }
+
+            this.treeNodes = [];
+            const asset = ItemColorItem.Asset;
+            const colorGroups = ItemColorState.colorGroups;
+
+            // 根节点：物品整体
+            const rootNode = {
+                id: 'root',
+                name: '物品整体',
+                type: 'root',
+                colorIndices: [],
+                layerIndices: [],
+                children: [],
+                level: 0
+            };
+
+            // 遍历所有颜色组，构建树
+            colorGroups.forEach((colorGroup, groupIndex) => {
+                if (colorGroup.name === null) {
+                    // WholeItem - 所有图层的颜色索引
+                    const allColorIndices = [];
+                    const allLayerIndices = [];
+                    asset.Layer.forEach((layer, layerIndex) => {
+                        if (layer.ColorIndex !== undefined && layer.ColorIndex !== null) {
+                            allColorIndices.push(layer.ColorIndex);
+                            allLayerIndices.push(layerIndex);
+                        }
+                    });
+                    rootNode.colorIndices = allColorIndices;
+                    rootNode.layerIndices = allLayerIndices;
+                    } else {
+                        // 分组节点
+                        let groupName = colorGroup.name;
+                        if (typeof ItemColorGroupNames !== 'undefined' && ItemColorGroupNames) {
+                            const translatedName = ItemColorGroupNames.get(asset.DynamicGroupName + asset.Name + colorGroup.name);
+                            if (translatedName && !translatedName.startsWith('MISSING TEXT')) {
+                                groupName = translatedName;
+                            }
+                        }
+                        
+                        // 如果只有一个子节点，直接使用子节点，不创建分组节点
+                        if (colorGroup.layers.length === 1) {
+                            const layer = colorGroup.layers[0];
+                            // 查找所有具有相同ColorIndex的图层（可能有多个图层共享同一个ColorIndex）
+                            const allLayerIndices = [];
+                            asset.Layer.forEach((l, idx) => {
+                                if (l.ColorIndex === layer.ColorIndex) {
+                                    allLayerIndices.push(idx);
+                                }
+                            });
+                            
+                            let layerName = layer.Name || groupName || 'Layer 1';
+                            if (typeof ItemColorLayerNames !== 'undefined' && ItemColorLayerNames) {
+                                const translatedName = ItemColorLayerNames.get(asset.DynamicGroupName + asset.Name + (layer.Name || ""));
+                                if (translatedName && !translatedName.startsWith('MISSING TEXT')) {
+                                    layerName = translatedName;
+                                }
+                            }
+                            
+                            // 无论有多少个图层共享同一个ColorIndex，都只创建一个节点
+                            // 修改时通过ColorIndex统一修改，所有图层都会更新
+                            const layerNode = {
+                                id: `layer_${colorGroup.name}_0`,
+                                name: layerName,
+                                type: 'layer',
+                                colorIndex: layer.ColorIndex,
+                                layerIndex: allLayerIndices[0], // 保留第一个作为主要索引
+                                layerIndices: allLayerIndices, // 包含所有共享该ColorIndex的图层索引
+                                level: 1,
+                                parent: rootNode
+                            };
+                            rootNode.children.push(layerNode);
+                        } else {
+                            // 多个子节点，创建分组节点
+                            // 收集所有唯一的ColorIndex（每个ColorIndex可能对应多个图层）
+                            const uniqueColorIndices = [];
+                            const colorIndexMap = new Map(); // ColorIndex -> layerIndices数组
+                            
+                            colorGroup.layers.forEach((layer) => {
+                                if (!colorIndexMap.has(layer.ColorIndex)) {
+                                    uniqueColorIndices.push(layer.ColorIndex);
+                                    // 查找所有具有相同ColorIndex的图层
+                                    const matchingLayerIndices = [];
+                                    asset.Layer.forEach((l, idx) => {
+                                        if (l.ColorIndex === layer.ColorIndex) {
+                                            matchingLayerIndices.push(idx);
+                                        }
+                                    });
+                                    colorIndexMap.set(layer.ColorIndex, matchingLayerIndices);
+                                }
+                            });
+                            
+                            // 收集所有图层的索引
+                            const allLayerIndices = [];
+                            colorIndexMap.forEach((layerIndices) => {
+                                allLayerIndices.push(...layerIndices);
+                            });
+                            
+                            const groupNode = {
+                                id: `group_${colorGroup.name}`,
+                                name: groupName,
+                                type: 'group',
+                                colorIndices: uniqueColorIndices,
+                                layerIndices: allLayerIndices,
+                                children: [],
+                                level: 1,
+                                parent: rootNode
+                            };
+
+                            // 为每个唯一的ColorIndex创建一个图层节点（即使该ColorIndex对应多个图层）
+                            colorGroup.layers.forEach((layer, layerIdx) => {
+                                // 检查是否已经为这个ColorIndex创建过节点
+                                const existingNode = groupNode.children.find(n => n.colorIndex === layer.ColorIndex);
+                                if (existingNode) {
+                                    return; // 已经创建过，跳过
+                                }
+                                
+                                // 获取该ColorIndex对应的所有图层索引
+                                const matchingLayerIndices = colorIndexMap.get(layer.ColorIndex);
+                                
+                                // 获取图层名称
+                                let layerName = layer.Name || `Layer ${layerIdx + 1}`;
+                                if (typeof ItemColorLayerNames !== 'undefined' && ItemColorLayerNames) {
+                                    const translatedName = ItemColorLayerNames.get(asset.DynamicGroupName + asset.Name + (layer.Name || ""));
+                                    if (translatedName && !translatedName.startsWith('MISSING TEXT')) {
+                                        layerName = translatedName;
+                                    }
+                                }
+                                
+                                // 创建一个节点代表这个ColorIndex（即使有多个图层共享）
+                                const layerNode = {
+                                    id: `layer_${colorGroup.name}_${layerIdx}`,
+                                    name: layerName,
+                                    type: 'layer',
+                                    colorIndex: layer.ColorIndex,
+                                    layerIndex: matchingLayerIndices[0], // 保留第一个作为主要索引
+                                    layerIndices: matchingLayerIndices, // 包含所有共享该ColorIndex的图层索引
+                                    level: 2,
+                                    parent: groupNode
+                                };
+                                groupNode.children.push(layerNode);
+                            });
+
+                            rootNode.children.push(groupNode);
+                        }
+                    }
+            });
+
+            this.treeNodes = [rootNode];
+            // 默认展开根节点
+            this.expandedNodes.add('root');
+        }
+
+        /**
+         * 获取节点的颜色值（RGB十六进制）
+         * 返回 {color: string, isMultiple: boolean} 对象
+         */
+        getNodeColor(node) {
+            if (!ItemColorState) return { color: '#FFFFFF', isMultiple: false };
+            
+            if (node.type === 'layer') {
+                const color = ItemColorState.colors[node.colorIndex];
+                return {
+                    color: color && color.startsWith('#') ? color : '#FFFFFF',
+                    isMultiple: false
+                };
+            } else {
+                // 对于分组或根节点，检查所有子节点的颜色是否相同
+                if (node.colorIndices && node.colorIndices.length > 0) {
+                    const colors = node.colorIndices.map(i => ItemColorState.colors[i]);
+                    const firstColor = colors[0];
+                    const allSame = colors.every(c => c === firstColor);
+                    
+                    if (allSame) {
+                        return {
+                            color: firstColor && firstColor.startsWith('#') ? firstColor : '#FFFFFF',
+                            isMultiple: false
+                        };
+                    } else {
+                        return {
+                            color: '#FFFFFF',
+                            isMultiple: true
+                        };
+                    }
+                }
+            }
+            return { color: '#FFFFFF', isMultiple: false };
+        }
+
+        /**
+         * 检查图层是否应该被排除（固定不透明度为1且不显示的图层）
+         * @param {number} layerIndex - 图层索引
+         * @returns {boolean} - 如果应该排除返回true
+         */
+        shouldExcludeLayer(layerIndex) {
+            if (!ItemColorItem || !ItemColorItem.Asset) return false;
+            
+            const layer = ItemColorItem.Asset.Layer[layerIndex];
+            if (!layer) return false;
+            
+            // 检查图层是否有Property.Opacity属性，如果没有，说明是固定不透明度为1的图层
+            if (ItemColorItem.Property && ItemColorItem.Property.Opacity) {
+                // 如果Property.Opacity数组中该索引不存在或为undefined，说明是固定图层
+                if (ItemColorItem.Property.Opacity[layerIndex] === undefined) {
+                    return true;
+                }
+            } else {
+                // 如果Property.Opacity不存在，检查ItemColorState.opacity
+                // 如果ItemColorState.opacity中该索引不存在或为undefined，且默认值为1，说明是固定图层
+                if (ItemColorState && ItemColorState.opacity) {
+                    if (ItemColorState.opacity[layerIndex] === undefined) {
+                        return true;
+                    }
+                }
+            }
+            
+            // 检查图层是否隐藏
+            if (layer.Hide === true) {
+                return true;
+            }
+            
+            return false;
+        }
+
+        /**
+         * 获取节点的透明度值
+         * 返回 {opacity: number, isMultiple: boolean} 对象
+         */
+        getNodeOpacity(node) {
+            if (!ItemColorState) return { opacity: 1.0, isMultiple: false };
+            
+            if (node.type === 'layer') {
+                // 检查是否应该排除
+                if (this.shouldExcludeLayer(node.layerIndex)) {
+                    return { opacity: 1.0, isMultiple: false, excluded: true };
+                }
+                // 使用 ?? 而不是 ||，因为 0 是有效的透明度值
+                const opacityValue = ItemColorState.opacity[node.layerIndex];
+                return {
+                    opacity: opacityValue !== undefined ? opacityValue : 1.0,
+                    isMultiple: false
+                };
+            } else {
+                // 对于分组或根节点，检查所有子节点的透明度是否相同
+                // 排除固定不透明度为1的图层
+                if (node.layerIndices && node.layerIndices.length > 0) {
+                    // 过滤掉应该排除的图层
+                    const validLayerIndices = node.layerIndices.filter(i => !this.shouldExcludeLayer(i));
+                    
+                    if (validLayerIndices.length === 0) {
+                        // 所有图层都被排除，返回默认值
+                        return { opacity: 1.0, isMultiple: false, excluded: true };
+                    }
+                    
+                    // 使用显式检查而不是 ||，因为 0 是有效的透明度值
+                    const opacities = validLayerIndices.map(i => {
+                        const val = ItemColorState.opacity[i];
+                        return val !== undefined ? val : 1.0;
+                    });
+                    const firstOpacity = opacities[0];
+                    const allSame = opacities.every(o => Math.abs(o - firstOpacity) < 0.001);
+                    
+                    if (allSame) {
+                        return {
+                            opacity: firstOpacity,
+                            isMultiple: false
+                        };
+                    } else {
+                        return {
+                            opacity: firstOpacity,
+                            isMultiple: true
+                        };
+                    }
+                }
+            }
+            return { opacity: 1.0, isMultiple: false };
+        }
+
+        /**
+         * 设置节点颜色
+         */
+        setNodeColor(node, color) {
+            if (!ItemColorState || !ItemColorItem) return;
+
+            if (node.type === 'layer') {
+                // 单个图层节点：设置该ColorIndex对应的所有图层的颜色
+                // 如果节点有layerIndices数组，说明可能有多个图层共享同一个ColorIndex
+                if (node.layerIndices && node.layerIndices.length > 0) {
+                    // 设置所有共享该ColorIndex的图层的颜色
+                    const colorIndex = node.colorIndex;
+                    ItemColorState.colors[colorIndex] = color;
+                    if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                        ItemColorItem.Color[colorIndex] = color;
+                    }
+                } else {
+                    // 兼容旧代码：只设置单个图层
+                    ItemColorState.colors[node.colorIndex] = color;
+                    if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                        ItemColorItem.Color[node.colorIndex] = color;
+                    }
+                }
+            } else {
+                // 分组或根节点：设置所有子节点的颜色
+                const setColorRecursive = (n) => {
+                    if (n.type === 'layer') {
+                        // 设置该ColorIndex对应的所有图层的颜色
+                        const colorIndex = n.colorIndex;
+                        ItemColorState.colors[colorIndex] = color;
+                        if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                            ItemColorItem.Color[colorIndex] = color;
+                        }
+                    } else if (n.children) {
+                        n.children.forEach(setColorRecursive);
+                    } else if (n.colorIndices && n.colorIndices.length > 0) {
+                        // 如果是分组节点但没有children，直接设置所有colorIndices
+                        n.colorIndices.forEach(colorIndex => {
+                            ItemColorState.colors[colorIndex] = color;
+                            if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                                ItemColorItem.Color[colorIndex] = color;
+                            }
+                        });
+                    }
+                };
+                setColorRecursive(node);
+            }
+
+            // 更新角色渲染
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+
+            // 更新UI
+            this.updateWindow();
+        }
+
+        /**
+         * 设置节点透明度
+         */
+        setNodeOpacity(node, opacityValue) {
+            if (!ItemColorState || !ItemColorItem) return;
+
+
+            if (node.type === 'layer') {
+                // 单个图层
+                ItemColorState.opacity[node.layerIndex] = opacityValue;
+                if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
+                    ItemColorItem.Property.Opacity[node.layerIndex] = opacityValue;
+                }
+            } else {
+                // 分组或根节点：设置所有子节点的透明度（排除固定图层）
+                const setOpacityRecursive = (n) => {
+                    if (n.type === 'layer') {
+                        // 检查是否应该排除
+                        if (this.shouldExcludeLayer(n.layerIndex)) {
+                            return; // 跳过固定图层
+                        }
+                        ItemColorState.opacity[n.layerIndex] = opacityValue;
+                        if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
+                            ItemColorItem.Property.Opacity[n.layerIndex] = opacityValue;
+                        }
+                    } else if (n.children) {
+                        n.children.forEach(setOpacityRecursive);
+                    }
+                };
+                setOpacityRecursive(node);
+            }
+
+
+            // 更新角色渲染
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+
+            // 更新UI
+            this.updateWindow();
+        }
+
+        /**
+         * 查找节点
+         */
+        findNodeById(nodeId) {
+            const find = (nodes) => {
+                for (const node of nodes) {
+                    if (node.id === nodeId) return node;
+                    if (node.children) {
+                        const found = find(node.children);
+                        if (found) return found;
+                    }
+                }
+                return null;
+            };
+            return find(this.treeNodes);
+        }
+
+        /**
+         * 创建窗口DOM元素
+         */
+        createWindow() {
+            if (this.windowElement) {
+                return;
+            }
+
+            // 计算窗口位置和大小
+            const layout = this.calculateWindowLayout();
+
+            // 创建窗口容器
+            this.windowElement = document.createElement('div');
+            this.windowElement.id = 'lian-item-color-adjustment-window';
+            this.windowElement.style.cssText = `
+                position: fixed;
+                left: ${layout.left}px;
+                top: ${layout.top}px;
+                width: ${layout.width}px;
+                height: ${layout.height}px;
+                background: #F5F5F5;
+                border: 2px solid #000;
+                border-radius: 5px;
+                z-index: 10000;
+                display: none;
+                flex-direction: column;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            `;
+
+            // 创建标题栏（不可拖动）
+            const header = document.createElement('div');
+            header.className = 'lian-window-header';
+            header.style.cssText = `
+                padding: 10px 20px;
+                background: #E0E0E0;
+                border-bottom: 1px solid #000;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                user-select: none;
+            `;
+            const title = document.createElement('span');
+            title.textContent = '衣服调整';
+            title.style.cssText = 'font-weight: bold; font-size: 16px; flex: 1;';
+            header.appendChild(title);
+
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = '关闭';
+            closeBtn.style.cssText = `
+                padding: 5px 15px;
+                background: #fff;
+                border: 1px solid #000;
+                cursor: pointer;
+                margin-left: 10px;
+            `;
+            closeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.hide();
+            };
+            header.appendChild(closeBtn);
+
+            this.windowElement.appendChild(header);
+
+            // 创建内容区域
+            const content = document.createElement('div');
+            content.id = 'lian-item-color-adjustment-content';
+            content.style.cssText = `
+                flex: 1;
+                overflow-y: auto;
+                padding: 10px;
+                background: #fff;
+                min-height: 0;
+            `;
+            this.windowElement.appendChild(content);
+
+            // 监听窗口大小变化，自动调整窗口位置和大小
+            const resizeHandler = () => {
+                const newLayout = this.calculateWindowLayout();
+                if (this.windowElement) {
+                    this.windowElement.style.left = `${newLayout.left}px`;
+                    this.windowElement.style.top = `${newLayout.top}px`;
+                    this.windowElement.style.width = `${newLayout.width}px`;
+                    this.windowElement.style.height = `${newLayout.height}px`;
+                }
+            };
+            window.addEventListener('resize', resizeHandler);
+            this.windowElement._resizeHandler = resizeHandler;
+
+            // 添加到body
+            document.body.appendChild(this.windowElement);
+        }
+
+
+        /**
+         * 更新窗口内容
+         */
+        updateWindow() {
+            if (!this.windowElement || !this.isVisible) return;
+
+            const content = document.getElementById('lian-item-color-adjustment-content');
+            if (!content) return;
+
+            content.innerHTML = '';
+
+            // 递归渲染节点
+            const renderNode = (node) => {
+                const nodeRow = document.createElement('div');
+                nodeRow.className = 'lian-tree-node-row';
+                nodeRow.dataset.nodeId = node.id;
+                nodeRow.style.cssText = `
+                    display: flex;
+                    align-items: center;
+                    padding: 5px;
+                    margin-left: ${node.level * 20}px;
+                    cursor: pointer;
+                    border-bottom: 1px solid #E0E0E0;
+                    background: ${this.selectedNodeId === node.id ? '#E3F2FD' : 'transparent'};
+                    justify-content: space-between;
+                `;
+
+                // 展开/折叠图标
+                let expandIcon = null;
+                if (node.children && node.children.length > 0) {
+                    expandIcon = document.createElement('span');
+                    expandIcon.textContent = this.expandedNodes.has(node.id) ? '▼' : '▶';
+                    expandIcon.style.cssText = 'margin-right: 5px; width: 15px; display: inline-block;';
+                    expandIcon.onclick = (e) => {
+                        e.stopPropagation();
+                        this.toggleNode(node.id);
+                    };
+                    nodeRow.appendChild(expandIcon);
+                } else {
+                    const spacer = document.createElement('span');
+                    spacer.style.cssText = 'width: 20px; display: inline-block;';
+                    nodeRow.appendChild(spacer);
+                }
+
+                // 左侧容器（名称）
+                const leftContainer = document.createElement('div');
+                leftContainer.style.cssText = 'flex: 1; min-width: 0; display: flex; align-items: center;';
+                
+                // 节点名称
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = node.name;
+                nameSpan.style.cssText = `
+                    flex: 0 1 auto;
+                    min-width: 0;
+                    max-width: 150px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                `;
+                leftContainer.appendChild(nameSpan);
+                nodeRow.appendChild(leftContainer);
+
+                // 右侧容器（颜色按钮和透明度控件）
+                const rightContainer = document.createElement('div');
+                rightContainer.style.cssText = 'display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-right: 20px;';
+                
+                // 颜色按钮 - 点击后弹出Pickr颜色选择器
+                const colorBtn = document.createElement('button');
+                const nodeColorInfo = this.getNodeColor(node);
+                const displayColor = nodeColorInfo.isMultiple ? '#FFFFFF' : nodeColorInfo.color;
+                const displayText = nodeColorInfo.isMultiple ? '复数' : nodeColorInfo.color.toUpperCase();
+                colorBtn.textContent = displayText;
+                colorBtn.style.cssText = `
+                    width: 100px;
+                    height: 30px;
+                    background: ${displayColor};
+                    color: ${this.getContrastColor(displayColor)};
+                    border: 1px solid #000;
+                    cursor: pointer;
+                    font-size: 12px;
+                `;
+                colorBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    // 获取当前颜色
+                    const nodeColorInfo = this.getNodeColor(node);
+                    const currentColor = nodeColorInfo.isMultiple ? '#FFFFFF' : nodeColorInfo.color;
+                    
+                    // 获取默认颜色（用于重置）
+                    // 参考 ItemColor.js 中的 ItemColorNextColor 函数
+                    const canResetToDefault = () => {
+                        if (!ItemColorState || !ItemColorItem) return false;
+                        if (node.type === 'layer') {
+                            // 单个图层节点：检查是否有默认颜色
+                            return node.colorIndex !== undefined && 
+                                   ItemColorState.defaultColors && 
+                                   ItemColorState.defaultColors[node.colorIndex] !== undefined;
+                        } else {
+                            // 分组或根节点：检查所有子节点是否都有默认颜色
+                            if (node.colorIndices && node.colorIndices.length > 0) {
+                                return node.colorIndices.every(i => 
+                                    ItemColorState.defaultColors && 
+                                    ItemColorState.defaultColors[i] !== undefined
+                                );
+                            }
+                        }
+                        return false;
+                    };
+                    
+                    const hasDefaultColor = canResetToDefault();
+                    
+                    // 重置回调函数（参考 ItemColor.js 中的重置逻辑）
+                    const onReset = hasDefaultColor ? () => {
+                        if (!ItemColorState || !ItemColorItem) return;
+                        
+                        if (node.type === 'layer') {
+                            // 单个图层节点：重置该ColorIndex的默认颜色
+                            const colorIndex = node.colorIndex;
+                            ItemColorState.colors[colorIndex] = ItemColorState.defaultColors[colorIndex];
+                            if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                                ItemColorItem.Color[colorIndex] = ItemColorState.defaultColors[colorIndex];
+                            }
+                        } else {
+                            // 分组或根节点：重置所有子节点的默认颜色
+                            const resetColorRecursive = (n) => {
+                                if (n.type === 'layer') {
+                                    const colorIndex = n.colorIndex;
+                                    ItemColorState.colors[colorIndex] = ItemColorState.defaultColors[colorIndex];
+                                    if (ItemColorItem.Color && Array.isArray(ItemColorItem.Color)) {
+                                        ItemColorItem.Color[colorIndex] = ItemColorState.defaultColors[colorIndex];
+                                    }
+                                } else if (n.children) {
+                                    n.children.forEach(child => resetColorRecursive(child));
+                                }
+                            };
+                            resetColorRecursive(node);
+                        }
+                        
+                        // 刷新角色显示（参考 ItemColor.js）
+                        if (typeof CharacterLoadCanvas === 'function' && ItemColorCharacter) {
+                            CharacterLoadCanvas(ItemColorCharacter);
+                        }
+                        
+                        // 更新按钮显示
+                        const updatedColorInfo = this.getNodeColor(node);
+                        colorBtn.textContent = updatedColorInfo.isMultiple ? '复数' : updatedColorInfo.color.toUpperCase();
+                        colorBtn.style.background = updatedColorInfo.isMultiple ? '#FFFFFF' : updatedColorInfo.color;
+                        colorBtn.style.color = this.getContrastColor(updatedColorInfo.isMultiple ? '#FFFFFF' : updatedColorInfo.color);
+                        // 关闭颜色选择器面板
+                        this.colorPickerPanel.hide();
+                    } : null;
+                    
+                    // 显示颜色选择器面板（弹出窗口，color input 默认展开显示）
+                    this.colorPickerPanel.show(colorBtn, currentColor, (newColor) => {
+                        this.setNodeColor(node, newColor);
+                        // 更新按钮显示
+                        const updatedColorInfo = this.getNodeColor(node);
+                        colorBtn.textContent = updatedColorInfo.isMultiple ? '复数' : updatedColorInfo.color.toUpperCase();
+                        colorBtn.style.background = updatedColorInfo.isMultiple ? '#FFFFFF' : updatedColorInfo.color;
+                        colorBtn.style.color = this.getContrastColor(updatedColorInfo.isMultiple ? '#FFFFFF' : updatedColorInfo.color);
+                    }, onReset);
+                };
+                rightContainer.appendChild(colorBtn);
+
+                // 透明度控件容器
+                const opacityContainer = document.createElement('div');
+                opacityContainer.style.cssText = 'display: flex; align-items: center; width: 150px;';
+                
+                const opacityInfo = this.getNodeOpacity(node);
+                
+                // 如果子节点透明度不同，显示Reset按钮
+                if (opacityInfo.isMultiple) {
+                    const resetButton = document.createElement('button');
+                    resetButton.textContent = '重置不透明度';
+                    resetButton.style.cssText = `
+                        width: 100%;
+                        height: 30px;
+                        background: #4CAF50;
+                        color: white;
+                        border: 1px solid #000;
+                        cursor: pointer;
+                        font-size: 12px;
+                    `;
+                    resetButton.onclick = (e) => {
+                        e.stopPropagation();
+                        
+                        // 统一设置为100%透明度
+                        this.setNodeOpacity(node, 1.0);
+                        
+                        // 更新窗口以显示控件
+                        this.updateWindow();
+                    };
+                    opacityContainer.appendChild(resetButton);
+                } else {
+                    // 子节点透明度相同，显示滑条和输入框
+                    const opacitySlider = document.createElement('input');
+                    opacitySlider.type = 'range';
+                    opacitySlider.min = '0';
+                    opacitySlider.max = '100';
+                    const sliderOpacityPercentValue = Math.round(opacityInfo.opacity * 100);
+                    opacitySlider.value = String(sliderOpacityPercentValue);
+                    opacitySlider.style.cssText = 'flex: 1; margin-right: 5px;';
+                    
+                    // 鼠标按下时开始拖动
+                    let isDraggingOpacity = false;
+                    let sliderStartX = 0;
+                    let sliderStartValue = 0;
+                    let sliderWidth = 0;
+                    
+                    opacitySlider.addEventListener('mousedown', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        isDraggingOpacity = true;
+                        const rect = opacitySlider.getBoundingClientRect();
+                        sliderStartX = e.clientX;
+                        sliderStartValue = parseFloat(opacitySlider.value) || 0;
+                        sliderWidth = rect.width;
+                    });
+                    
+                    // 鼠标移动时持续更新
+                    const opacityMouseMoveHandler = (e) => {
+                        if (isDraggingOpacity) {
+                            const deltaX = e.clientX - sliderStartX;
+                            const deltaPercent = (deltaX / sliderWidth) * 100;
+                            let newPercent = sliderStartValue + deltaPercent;
+                            
+                            if (newPercent < 0) {
+                                newPercent = 0;
+                            } else if (newPercent > 100) {
+                                newPercent = 100;
+                            }
+                            
+                            const opacityValue = newPercent / 100;
+                            const roundedValue = Math.round(newPercent);
+                            const valueString = String(roundedValue);
+                            
+                            opacitySlider.setAttribute('value', valueString);
+                            opacitySlider.value = valueString;
+                            this.setNodeOpacity(node, opacityValue);
+                            
+                            if (opacityInput) {
+                                opacityInput.value = valueString;
+                            }
+                            
+                            if (roundedValue === 0) {
+                                opacitySlider.value = '0';
+                                opacitySlider.setAttribute('value', '0');
+                            }
+                        }
+                    };
+                    
+                    const opacityMouseUpHandler = () => {
+                        isDraggingOpacity = false;
+                    };
+                    
+                    document.addEventListener('mousemove', opacityMouseMoveHandler);
+                    document.addEventListener('mouseup', opacityMouseUpHandler);
+                    
+                    opacitySlider.addEventListener('input', (e) => {
+                        if (!isDraggingOpacity) {
+                            const value = e.target.value;
+                            if (value === '' || isNaN(value)) {
+                                return;
+                            }
+                            const intValue = Math.max(0, Math.min(100, parseInt(value)));
+                            const opacityValue = intValue / 100;
+                            this.setNodeOpacity(node, opacityValue);
+                            opacityInput.value = String(intValue);
+                            opacitySlider.value = String(intValue);
+                            opacitySlider.setAttribute('value', String(intValue));
+                        }
+                    });
+                    
+                    opacityContainer.appendChild(opacitySlider);
+
+                    // 透明度输入框
+                    const opacityInput = document.createElement('input');
+                    opacityInput.type = 'number';
+                    opacityInput.min = '0';
+                    opacityInput.max = '100';
+                    opacityInput.value = String(sliderOpacityPercentValue);
+                    opacityInput.style.cssText = 'width: 50px; padding: 2px; margin-right: 3px; font-size: 12px; text-align: center;';
+                    
+                    // 实时生效：使用 input 事件而不是 change 事件
+                    opacityInput.addEventListener('input', (e) => {
+                        const value = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                        opacityInput.value = value;
+                        opacitySlider.value = value;
+                        opacitySlider.setAttribute('value', String(value));
+                        this.setNodeOpacity(node, value / 100);
+                    });
+                    
+                    // 支持滚轮调整
+                    opacityInput.addEventListener('wheel', (e) => {
+                        e.preventDefault();
+                        const currentValue = parseInt(opacityInput.value) || 0;
+                        const delta = e.deltaY > 0 ? -1 : 1;
+                        const newValue = Math.max(0, Math.min(100, currentValue + delta));
+                        opacityInput.value = String(newValue);
+                        opacitySlider.value = String(newValue);
+                        opacitySlider.setAttribute('value', String(newValue));
+                        this.setNodeOpacity(node, newValue / 100);
+                    });
+                    
+                    opacityContainer.appendChild(opacityInput);
+
+                    const opacityPercent = document.createElement('span');
+                    opacityPercent.textContent = '%';
+                    opacityPercent.style.cssText = 'font-size: 12px;';
+                    opacityContainer.appendChild(opacityPercent);
+                }
+
+                rightContainer.appendChild(opacityContainer);
+                nodeRow.appendChild(rightContainer);
+
+                // 点击选中
+                nodeRow.onclick = (e) => {
+                    // 检查点击的目标是否是交互元素
+                    const opacitySlider = opacityContainer.querySelector('input[type="range"]');
+                    const opacityInput = opacityContainer.querySelector('input[type="number"]');
+                    const opacityPercent = opacityContainer.querySelector('span');
+                    const resetButton = opacityContainer.querySelector('button');
+                    
+                    const isInteractiveElement = 
+                        (expandIcon && (e.target === expandIcon || expandIcon.contains(e.target))) ||
+                        e.target === colorBtn ||
+                        colorBtn.contains(e.target) ||
+                        (opacitySlider && (e.target === opacitySlider || opacitySlider.contains(e.target))) ||
+                        (opacityInput && (e.target === opacityInput || opacityInput.contains(e.target))) ||
+                        (opacityPercent && (e.target === opacityPercent || opacityPercent.contains(e.target))) ||
+                        (resetButton && (e.target === resetButton || resetButton.contains(e.target)));
+                    
+                    if (!isInteractiveElement) {
+                        this.selectedNodeId = node.id;
+                        this.updateWindow();
+                    }
+                };
+
+                content.appendChild(nodeRow);
+
+                // 渲染子节点
+                if (node.children && this.expandedNodes.has(node.id)) {
+                    node.children.forEach(child => renderNode(child));
+                }
+            };
+
+            this.treeNodes.forEach(node => renderNode(node));
+        }
+
+        /**
+         * 获取对比色（用于文字颜色）
+         */
+        getContrastColor(hexColor) {
+            const r = parseInt(hexColor.substr(1, 2), 16);
+            const g = parseInt(hexColor.substr(3, 2), 16);
+            const b = parseInt(hexColor.substr(5, 2), 16);
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+            return brightness > 128 ? '#000' : '#FFF';
+        }
+
+        /**
+         * 切换节点展开/折叠
+         */
+        toggleNode(nodeId) {
+            if (this.expandedNodes.has(nodeId)) {
+                this.expandedNodes.delete(nodeId);
+            } else {
+                this.expandedNodes.add(nodeId);
+            }
+            this.updateWindow();
+        }
+
+
+        /**
+         * 显示窗口
+         */
+        show() {
+            if (!ItemColorState || !ItemColorItem) {
+                return;
+            }
+            this.createWindow();
+            this.buildTree();
+            this.isVisible = true;
+            if (this.windowElement) {
+                this.windowElement.style.display = 'flex';
+                this.updateWindow();
+            }
+        }
+
+        /**
+         * 隐藏窗口
+         */
+        hide() {
+            this.isVisible = false;
+            if (this.windowElement) {
+                this.windowElement.style.display = 'none';
+            }
+            this.colorPickerPanel.hide();
+        }
+
+        /**
+         * 销毁窗口
+         */
+        destroy() {
+            if (this.windowElement) {
+                this.windowElement.remove();
+                this.windowElement = null;
+            }
+        }
+    }
+
+    // 创建全局实例
+    const itemColorAdjustmentWindow = new ItemColorAdjustmentWindow();
+
+    // Hook ItemColorLoad 函数，在进入Color模式时显示窗口
+    mod.hookFunction("ItemColorLoad", 1, (args, next) => {
+        const result = next(args);
+        // 延迟显示窗口，确保ItemColorState已初始化
+        setTimeout(() => {
+            itemColorAdjustmentWindow.show();
+        }, 100);
+        return result;
+    });
+
+    // Hook ItemColorFireExit 函数，关闭调整窗口
+    mod.hookFunction("ItemColorFireExit", 1, (args, next) => {
+        itemColorAdjustmentWindow.hide();
+        return next(args);
+    });
+
+    // 在屏幕切换时也隐藏窗口
+    mod.hookFunction("CommonSetScreen", 1, (args, next) => {
+        const result = next(args);
+        if (typeof CurrentScreen !== 'undefined' && CurrentScreen !== 'Appearance') {
+            itemColorAdjustmentWindow.hide();
+        }
+        return result;
+    });
+
     console.log("[LianDressOptimization] 加载成功");
 })();
