@@ -1332,6 +1332,7 @@
             this.isVisible = false;
             this.treeNodes = []; // 树状节点数据
             this.expandedNodes = new Set(); // 展开的节点ID集合
+            this.expandedLayeringNodes = new Set(); // 展开层级设置的节点ID集合
             this.selectedNodeId = null; // 当前选中的节点ID
             this.colorPickerPanel = new ColorPickerPanel(); // 颜色选择器面板实例
         }
@@ -1766,6 +1767,144 @@
         }
 
         /**
+         * 设置图层优先级
+         * @param {Object} node - 节点对象
+         * @param {number} layerIndex - 图层索引
+         * @param {Object} layer - 图层对象
+         * @param {number} priority - 优先级值
+         */
+        setLayerPriority(node, layerIndex, layer, priority) {
+            if (!ItemColorItem || !ItemColorItem.Property) return;
+            
+            const asset = ItemColorItem.Asset;
+            const layerName = layer.Name ?? asset.Name;
+            
+            // 初始化 OverridePriority 对象（如果不存在或不是对象）
+            if (typeof ItemColorItem.Property.OverridePriority !== 'object' || ItemColorItem.Property.OverridePriority === null) {
+                ItemColorItem.Property.OverridePriority = {};
+            }
+            
+            const defaultPriority = layer.Priority ?? 0;
+            
+            // 如果优先级等于默认值，删除覆盖
+            if (priority === defaultPriority) {
+                delete ItemColorItem.Property.OverridePriority[layerName];
+                // 如果对象为空，设置为 undefined
+                if (Object.keys(ItemColorItem.Property.OverridePriority).length === 0) {
+                    ItemColorItem.Property.OverridePriority = undefined;
+                }
+            } else {
+                // 设置覆盖优先级
+                ItemColorItem.Property.OverridePriority[layerName] = Math.max(-99, Math.min(99, Math.round(priority)));
+            }
+            
+            // 刷新角色显示
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 获取单个图层的透明度
+         * @param {number} layerIndex - 图层索引
+         * @returns {number} 透明度值 (0-1)
+         */
+        getLayerOpacity(layerIndex) {
+            if (!ItemColorState) return 1.0;
+            // 使用 ?? 而不是 ||，因为 0 是有效的透明度值
+            const opacityValue = ItemColorState.opacity[layerIndex];
+            return opacityValue !== undefined ? opacityValue : 1.0;
+        }
+
+        /**
+         * 设置单个图层的透明度
+         * @param {number} layerIndex - 图层索引
+         * @param {number} opacityValue - 透明度值 (0-1)
+         */
+        setLayerOpacity(layerIndex, opacityValue) {
+            if (!ItemColorState || !ItemColorItem) return;
+            
+            ItemColorState.opacity[layerIndex] = opacityValue;
+            if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
+                ItemColorItem.Property.Opacity[layerIndex] = opacityValue;
+            }
+            
+            // 刷新角色显示
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 重置图层优先级
+         * @param {Object} node - 节点对象
+         * @param {number} layerIndex - 图层索引
+         * @param {Object} layer - 图层对象
+         */
+        resetLayerPriority(node, layerIndex, layer) {
+            if (!ItemColorItem || !ItemColorItem.Property) return;
+            
+            const asset = ItemColorItem.Asset;
+            const layerName = layer.Name ?? asset.Name;
+            
+            // 如果 OverridePriority 是对象，删除该图层的覆盖
+            if (typeof ItemColorItem.Property.OverridePriority === 'object' && ItemColorItem.Property.OverridePriority !== null) {
+                delete ItemColorItem.Property.OverridePriority[layerName];
+                // 如果对象为空，设置为 undefined
+                if (Object.keys(ItemColorItem.Property.OverridePriority).length === 0) {
+                    ItemColorItem.Property.OverridePriority = undefined;
+                }
+            }
+            
+            // 刷新角色显示
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 设置物品整体优先级
+         * @param {number} priority - 优先级值
+         */
+        setAssetPriority(priority) {
+            if (!ItemColorItem || !ItemColorItem.Property) return;
+            
+            const asset = ItemColorItem.Asset;
+            const assetPriority = asset.DrawingPriority ?? asset.Group.DrawingPriority ?? 0;
+            
+            // 如果优先级等于默认值，设置为 undefined
+            if (priority === assetPriority) {
+                ItemColorItem.Property.OverridePriority = undefined;
+            } else {
+                // 如果当前是对象，先转换为整数
+                if (typeof ItemColorItem.Property.OverridePriority === 'object' && ItemColorItem.Property.OverridePriority !== null) {
+                    ItemColorItem.Property.OverridePriority = undefined;
+                }
+                // 设置整体优先级
+                ItemColorItem.Property.OverridePriority = Math.max(-99, Math.min(99, Math.round(priority)));
+            }
+            
+            // 刷新角色显示
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 重置物品整体优先级
+         */
+        resetAssetPriority() {
+            if (!ItemColorItem || !ItemColorItem.Property) return;
+            
+            ItemColorItem.Property.OverridePriority = undefined;
+            
+            // 刷新角色显示
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
          * 查找节点
          */
         findNodeById(nodeId) {
@@ -1815,7 +1954,7 @@
             const header = document.createElement('div');
             header.className = 'lian-window-header';
             header.style.cssText = `
-                padding: 10px 20px;
+                padding: 15px 30px;
                 background: #E0E0E0;
                 border-bottom: 1px solid #000;
                 display: flex;
@@ -1825,17 +1964,18 @@
             `;
             const title = document.createElement('span');
             title.textContent = '衣服调整';
-            title.style.cssText = 'font-weight: bold; font-size: 16px; flex: 1;';
+            title.style.cssText = 'font-weight: bold; font-size: 24px; flex: 1;';
             header.appendChild(title);
 
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '关闭';
             closeBtn.style.cssText = `
-                padding: 5px 15px;
+                padding: 7.5px 22.5px;
                 background: #fff;
                 border: 1px solid #000;
                 cursor: pointer;
-                margin-left: 10px;
+                margin-left: 15px;
+                font-size: 18px;
             `;
             closeBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -1851,7 +1991,7 @@
             content.style.cssText = `
                 flex: 1;
                 overflow-y: auto;
-                padding: 10px;
+                padding: 15px;
                 background: #fff;
                 min-height: 0;
             `;
@@ -1884,6 +2024,50 @@
             const content = document.getElementById('lian-item-color-adjustment-content');
             if (!content) return;
 
+            // 保存当前焦点元素
+            const activeElement = document.activeElement;
+            let focusRestoreInfo = null;
+            if (activeElement && content.contains(activeElement)) {
+                // 尝试保存焦点信息
+                if (activeElement.type === 'number') {
+                    const nodeRow = activeElement.closest('[data-node-id]');
+                    const nodeId = nodeRow?.dataset?.nodeId;
+                    const isOpacity = activeElement.min === '0' && activeElement.max === '100';
+                    const isLayering = activeElement.min === '-99' && activeElement.max === '99';
+                    const selectionStart = activeElement.selectionStart;
+                    const selectionEnd = activeElement.selectionEnd;
+                    
+                    // 检查是否是层级节点的透明度输入框（层级节点没有data-node-id）
+                    const isLayeringOpacity = !nodeId && isOpacity && 
+                                             activeElement.closest('div[style*="background: #f9f9f9"]');
+                    
+                    if (nodeId && (isOpacity || isLayering)) {
+                        focusRestoreInfo = {
+                            nodeId: nodeId,
+                            inputType: isOpacity ? 'opacity' : 'layering',
+                            selectionStart: selectionStart,
+                            selectionEnd: selectionEnd,
+                            value: activeElement.value
+                        };
+                    } else if (isLayeringOpacity) {
+                        // 层级节点的透明度输入框，通过层级节点名称来定位
+                        const layeringNodeRow = activeElement.closest('div[style*="background: #f9f9f9"]');
+                        if (layeringNodeRow) {
+                            const layeringNameSpan = layeringNodeRow.querySelector('span');
+                            if (layeringNameSpan) {
+                                focusRestoreInfo = {
+                                    layeringName: layeringNameSpan.textContent,
+                                    inputType: 'layeringOpacity',
+                                    selectionStart: selectionStart,
+                                    selectionEnd: selectionEnd,
+                                    value: activeElement.value
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
             content.innerHTML = '';
 
             // 递归渲染节点
@@ -1894,8 +2078,8 @@
                 nodeRow.style.cssText = `
                     display: flex;
                     align-items: center;
-                    padding: 5px;
-                    margin-left: ${node.level * 20}px;
+                    padding: 7.5px;
+                    margin-left: ${node.level * 30}px;
                     cursor: pointer;
                     border-bottom: 1px solid #E0E0E0;
                     background: ${this.selectedNodeId === node.id ? '#E3F2FD' : 'transparent'};
@@ -1907,7 +2091,7 @@
                 if (node.children && node.children.length > 0) {
                     expandIcon = document.createElement('span');
                     expandIcon.textContent = this.expandedNodes.has(node.id) ? '▼' : '▶';
-                    expandIcon.style.cssText = 'margin-right: 5px; width: 15px; display: inline-block;';
+                    expandIcon.style.cssText = 'margin-right: 7.5px; width: 22.5px; display: inline-block; font-size: 18px;';
                     expandIcon.onclick = (e) => {
                         e.stopPropagation();
                         this.toggleNode(node.id);
@@ -1915,7 +2099,7 @@
                     nodeRow.appendChild(expandIcon);
                 } else {
                     const spacer = document.createElement('span');
-                    spacer.style.cssText = 'width: 20px; display: inline-block;';
+                    spacer.style.cssText = 'width: 30px; display: inline-block;';
                     nodeRow.appendChild(spacer);
                 }
 
@@ -1929,17 +2113,18 @@
                 nameSpan.style.cssText = `
                     flex: 0 1 auto;
                     min-width: 0;
-                    max-width: 150px;
+                    max-width: 225px;
                     overflow: hidden;
                     text-overflow: ellipsis;
                     white-space: nowrap;
+                    font-size: 18px;
                 `;
                 leftContainer.appendChild(nameSpan);
                 nodeRow.appendChild(leftContainer);
 
                 // 右侧容器（颜色按钮和透明度控件）
                 const rightContainer = document.createElement('div');
-                rightContainer.style.cssText = 'display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-right: 20px;';
+                rightContainer.style.cssText = 'display: flex; align-items: center; gap: 15px; flex-shrink: 0; margin-right: 30px;';
                 
                 // 颜色按钮 - 点击后弹出Pickr颜色选择器
                 const colorBtn = document.createElement('button');
@@ -1948,13 +2133,13 @@
                 const displayText = nodeColorInfo.isMultiple ? '复数' : nodeColorInfo.color.toUpperCase();
                 colorBtn.textContent = displayText;
                 colorBtn.style.cssText = `
-                    width: 100px;
-                    height: 30px;
+                    width: 150px;
+                    height: 45px;
                     background: ${displayColor};
                     color: ${this.getContrastColor(displayColor)};
                     border: 1px solid #000;
                     cursor: pointer;
-                    font-size: 12px;
+                    font-size: 18px;
                 `;
                 colorBtn.onclick = (e) => {
                     e.stopPropagation();
@@ -2040,7 +2225,7 @@
 
                 // 透明度控件容器
                 const opacityContainer = document.createElement('div');
-                opacityContainer.style.cssText = 'display: flex; align-items: center; width: 150px;';
+                opacityContainer.style.cssText = 'display: flex; align-items: center; width: 225px;';
                 
                 const opacityInfo = this.getNodeOpacity(node);
                 
@@ -2050,12 +2235,12 @@
                     resetButton.textContent = '重置不透明度';
                     resetButton.style.cssText = `
                         width: 100%;
-                        height: 30px;
+                        height: 45px;
                         background: #4CAF50;
                         color: white;
                         border: 1px solid #000;
                         cursor: pointer;
-                        font-size: 12px;
+                        font-size: 18px;
                     `;
                     resetButton.onclick = (e) => {
                         e.stopPropagation();
@@ -2075,7 +2260,7 @@
                     opacitySlider.max = '100';
                     const sliderOpacityPercentValue = Math.round(opacityInfo.opacity * 100);
                     opacitySlider.value = String(sliderOpacityPercentValue);
-                    opacitySlider.style.cssText = 'flex: 1; margin-right: 5px;';
+                    opacitySlider.style.cssText = 'flex: 1; margin-right: 7.5px;';
                     
                     // 鼠标按下时开始拖动
                     let isDraggingOpacity = false;
@@ -2155,7 +2340,7 @@
                     opacityInput.min = '0';
                     opacityInput.max = '100';
                     opacityInput.value = String(sliderOpacityPercentValue);
-                    opacityInput.style.cssText = 'width: 50px; padding: 2px; margin-right: 3px; font-size: 12px; text-align: center;';
+                    opacityInput.style.cssText = 'width: 75px; padding: 3px; margin-right: 4.5px; font-size: 18px; text-align: center;';
                     
                     // 实时生效：使用 input 事件而不是 change 事件
                     opacityInput.addEventListener('input', (e) => {
@@ -2164,6 +2349,12 @@
                         opacitySlider.value = value;
                         opacitySlider.setAttribute('value', String(value));
                         this.setNodeOpacity(node, value / 100);
+                        // 不立即更新窗口，只在失去焦点时更新
+                    });
+                    
+                    opacityInput.addEventListener('blur', (e) => {
+                        // 失去焦点时更新窗口
+                        this.updateWindow();
                     });
                     
                     // 支持滚轮调整
@@ -2176,17 +2367,68 @@
                         opacitySlider.value = String(newValue);
                         opacitySlider.setAttribute('value', String(newValue));
                         this.setNodeOpacity(node, newValue / 100);
+                        // 滚轮调整时不更新窗口，保持焦点
                     });
                     
                     opacityContainer.appendChild(opacityInput);
 
                     const opacityPercent = document.createElement('span');
                     opacityPercent.textContent = '%';
-                    opacityPercent.style.cssText = 'font-size: 12px;';
+                    opacityPercent.style.cssText = 'font-size: 18px;';
                     opacityContainer.appendChild(opacityPercent);
                 }
 
                 rightContainer.appendChild(opacityContainer);
+                
+                // 层级设置按钮（对 layer 类型节点和 root 节点显示）
+                let layeringBtn = null;
+                if ((node.type === 'layer' || node.type === 'root') && node.layerIndices && node.layerIndices.length > 0) {
+                    const layeringSpacer = document.createElement('div');
+                    layeringSpacer.style.cssText = 'width: 30px;'; // 空一段距离
+                    rightContainer.appendChild(layeringSpacer);
+                    
+                    layeringBtn = document.createElement('button');
+                    layeringBtn.className = 'layering-expand-btn'; // 添加类名以便查找
+                    layeringBtn.style.cssText = `
+                        width: 45px;
+                        height: 45px;
+                        background: transparent;
+                        border: 1px solid #000;
+                        cursor: pointer;
+                        padding: 0;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    `;
+                    
+                    // 加载图标
+                    const layeringIcon = document.createElement('img');
+                    layeringIcon.src = 'Icons/Dress.png';
+                    layeringIcon.style.cssText = 'width: 30px; height: 30px; object-fit: contain;';
+                    layeringIcon.onerror = () => {
+                        // 如果图标加载失败，显示文字
+                        layeringIcon.style.display = 'none';
+                        layeringBtn.textContent = '层';
+                        layeringBtn.style.fontSize = '18px';
+                    };
+                    layeringBtn.appendChild(layeringIcon);
+                    
+                    const isLayeringExpanded = this.expandedLayeringNodes.has(node.id);
+                    layeringBtn.style.background = isLayeringExpanded ? '#e0e0e0' : 'transparent';
+                    
+                    layeringBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        if (this.expandedLayeringNodes.has(node.id)) {
+                            this.expandedLayeringNodes.delete(node.id);
+                        } else {
+                            this.expandedLayeringNodes.add(node.id);
+                        }
+                        this.updateWindow();
+                    };
+                    
+                    rightContainer.appendChild(layeringBtn);
+                }
+                
                 nodeRow.appendChild(rightContainer);
 
                 // 点击选中
@@ -2204,7 +2446,8 @@
                         (opacitySlider && (e.target === opacitySlider || opacitySlider.contains(e.target))) ||
                         (opacityInput && (e.target === opacityInput || opacityInput.contains(e.target))) ||
                         (opacityPercent && (e.target === opacityPercent || opacityPercent.contains(e.target))) ||
-                        (resetButton && (e.target === resetButton || resetButton.contains(e.target)));
+                        (resetButton && (e.target === resetButton || resetButton.contains(e.target))) ||
+                        (layeringBtn && (e.target === layeringBtn || layeringBtn.contains(e.target)));
                     
                     if (!isInteractiveElement) {
                         this.selectedNodeId = node.id;
@@ -2214,13 +2457,454 @@
 
                 content.appendChild(nodeRow);
 
+                // root节点特殊处理：在子节点之前渲染层级节点
+                if (node.type === 'root' && node.layerIndices && node.layerIndices.length > 0 && this.expandedLayeringNodes.has(node.id)) {
+                    const asset = ItemColorItem?.Asset;
+                    if (asset && asset.Layer) {
+                            // 显示一个整体的层级节点
+                            const overridePriority = ItemColorItem?.Property?.OverridePriority;
+                            const assetPriority = asset.DrawingPriority ?? asset.Group.DrawingPriority ?? 0;
+                            
+                            // 如果OverridePriority是整数，使用它；否则使用默认值
+                            const currentPriority = Number.isInteger(overridePriority) ? overridePriority : assetPriority;
+                            const defaultPriority = assetPriority;
+                            const hasCustomPriority = Number.isInteger(overridePriority) && currentPriority !== defaultPriority;
+                            
+                            const layeringNodeRow = document.createElement('div');
+                            layeringNodeRow.style.cssText = `
+                                display: flex;
+                                align-items: center;
+                                padding: 7.5px 15px 7.5px ${(node.level + 1) * 30 + 15}px;
+                                border-bottom: 1px solid #ddd;
+                                background: #f9f9f9;
+                            `;
+                            
+                            const layeringNameSpan = document.createElement('span');
+                            layeringNameSpan.textContent = '物品整体层级';
+                            layeringNameSpan.style.cssText = `
+                                flex: 0 1 auto;
+                                min-width: 0;
+                                max-width: 225px;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                                white-space: nowrap;
+                                margin-right: 15px;
+                                font-size: 18px;
+                            `;
+                            layeringNodeRow.appendChild(layeringNameSpan);
+                            
+                            const layeringRightContainer = document.createElement('div');
+                            layeringRightContainer.style.cssText = 'margin-left: auto; display: flex; align-items: center; gap: 7.5px;';
+                            
+                            const layeringInputContainer = document.createElement('div');
+                            layeringInputContainer.style.cssText = 'display: flex; align-items: center; gap: 3px;';
+                            
+                            const layeringInput = document.createElement('input');
+                            layeringInput.type = 'number';
+                            layeringInput.min = '-99';
+                            layeringInput.max = '99';
+                            layeringInput.value = String(currentPriority);
+                            layeringInput.defaultValue = String(defaultPriority);
+                            layeringInput.style.cssText = `
+                                width: 90px;
+                                padding: 6px;
+                                border: 1px solid #000;
+                                font-size: 18px;
+                                text-align: center;
+                            `;
+                            
+                            layeringInput.addEventListener('input', (e) => {
+                                const value = e.target.valueAsNumber;
+                                if (!isNaN(value)) {
+                                    const clampedValue = Math.max(-99, Math.min(99, Math.round(value)));
+                                    this.setAssetPriority(clampedValue);
+                                    // 不立即更新窗口，只在失去焦点时更新
+                                }
+                            });
+                            
+                            layeringInput.addEventListener('blur', (e) => {
+                                // 失去焦点时更新窗口
+                                this.updateWindow();
+                            });
+                            
+                            layeringInput.addEventListener('focus', (e) => {
+                                e.target.select();
+                            });
+                            
+                            layeringInput.addEventListener('wheel', (e) => {
+                                e.preventDefault();
+                                const currentValue = parseInt(layeringInput.value) || 0;
+                                const delta = e.deltaY > 0 ? -1 : 1;
+                                const newValue = Math.max(-99, Math.min(99, currentValue + delta));
+                                layeringInput.value = String(newValue);
+                                this.setAssetPriority(newValue);
+                                // 滚轮调整时不更新窗口，保持焦点
+                            });
+                            
+                            layeringInputContainer.appendChild(layeringInput);
+                            layeringRightContainer.appendChild(layeringInputContainer);
+                            
+                            const resetLayeringButton = document.createElement('button');
+                            resetLayeringButton.textContent = '重置层级';
+                            resetLayeringButton.style.cssText = `
+                                padding: 6px 12px;
+                                background: #FF9800;
+                                color: white;
+                                border: 1px solid #000;
+                                cursor: pointer;
+                                font-size: 16.5px;
+                                margin-left: 7.5px;
+                                visibility: ${hasCustomPriority ? 'visible' : 'hidden'};
+                            `;
+                            resetLayeringButton.onclick = (e) => {
+                                e.stopPropagation();
+                                this.resetAssetPriority();
+                                this.updateWindow();
+                            };
+                            layeringRightContainer.appendChild(resetLayeringButton);
+                            
+                            layeringNodeRow.appendChild(layeringRightContainer);
+                            
+                            layeringNodeRow.onclick = (e) => {
+                                const isInteractiveElement = 
+                                    e.target === layeringInput ||
+                                    layeringInput.contains(e.target) ||
+                                    (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
+                                
+                                if (!isInteractiveElement) {
+                                    this.selectedNodeId = `${node.id}_layering_asset`;
+                                    this.updateWindow();
+                                }
+                            };
+                            
+                            content.appendChild(layeringNodeRow);
+                    }
+                }
+
                 // 渲染子节点
                 if (node.children && this.expandedNodes.has(node.id)) {
                     node.children.forEach(child => renderNode(child));
                 }
+                
+                // 渲染层级子节点（对 layer 类型节点）
+                if (node.type === 'layer' && node.layerIndices && node.layerIndices.length > 0 && this.expandedLayeringNodes.has(node.id)) {
+                    const asset = ItemColorItem?.Asset;
+                    if (asset && asset.Layer) {
+                        // 为每个物理图层创建一个层级节点（即使它们共享 ColorIndex）
+                        node.layerIndices.forEach((layerIndex) => {
+                            const layer = asset.Layer[layerIndex];
+                            if (!layer) return;
+                            
+                            const layerName = layer.Name || `Layer ${layerIndex + 1}`;
+                            const layeringNodeId = `${node.id}_layering_${layerIndex}`;
+                            
+                            // 创建层级节点行
+                            const layeringNodeRow = document.createElement('div');
+                            layeringNodeRow.style.cssText = `
+                                display: flex;
+                                align-items: center;
+                                padding: 7.5px 15px 7.5px ${(node.level + 1) * 30 + 15}px;
+                                border-bottom: 1px solid #ddd;
+                                background: #f9f9f9;
+                            `;
+                            
+                            // 节点名称
+                            const layeringNameSpan = document.createElement('span');
+                            layeringNameSpan.textContent = layerName;
+                            layeringNameSpan.style.cssText = `
+                                flex: 0 1 auto;
+                                min-width: 0;
+                                max-width: 225px;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                                white-space: nowrap;
+                                margin-right: 15px;
+                                font-size: 18px;
+                            `;
+                            layeringNodeRow.appendChild(layeringNameSpan);
+                            
+                            // 右侧控件容器
+                            const layeringRightContainer = document.createElement('div');
+                            layeringRightContainer.style.cssText = 'margin-left: auto; display: flex; align-items: center; gap: 7.5px;';
+                            
+                            // 层级值输入框和上下按钮
+                            const layeringInputContainer = document.createElement('div');
+                            layeringInputContainer.style.cssText = 'display: flex; align-items: center; gap: 3px;';
+                            
+                            // 获取当前层级值
+                            const getLayerPriority = () => {
+                                if (!ItemColorItem || !ItemColorItem.Property) return layer.Priority ?? 0;
+                                const overridePriority = ItemColorItem.Property.OverridePriority;
+                                if (typeof overridePriority === 'object' && overridePriority !== null) {
+                                    const layerName = layer.Name ?? asset.Name;
+                                    return overridePriority[layerName] ?? layer.Priority ?? 0;
+                                }
+                                return layer.Priority ?? 0;
+                            };
+                            
+                            const defaultPriority = layer.Priority ?? 0;
+                            const currentPriority = getLayerPriority();
+                            const hasCustomPriority = currentPriority !== defaultPriority;
+                            
+                            // 层级值输入框
+                            const layeringInput = document.createElement('input');
+                            layeringInput.type = 'number';
+                            layeringInput.min = '-99';
+                            layeringInput.max = '99';
+                            layeringInput.value = String(currentPriority);
+                            layeringInput.defaultValue = String(defaultPriority);
+                            layeringInput.style.cssText = `
+                                width: 90px;
+                                padding: 6px;
+                                border: 1px solid #000;
+                                font-size: 18px;
+                                text-align: center;
+                            `;
+                            
+                            // 输入框事件
+                            layeringInput.addEventListener('input', (e) => {
+                                const value = e.target.valueAsNumber;
+                                if (!isNaN(value)) {
+                                    const clampedValue = Math.max(-99, Math.min(99, Math.round(value)));
+                                    this.setLayerPriority(node, layerIndex, layer, clampedValue);
+                                    // 不立即更新窗口，只在失去焦点时更新
+                                }
+                            });
+                            
+                            layeringInput.addEventListener('blur', (e) => {
+                                // 失去焦点时更新窗口
+                                this.updateWindow();
+                            });
+                            
+                            layeringInput.addEventListener('focus', (e) => {
+                                e.target.select();
+                            });
+                            
+                            layeringInput.addEventListener('wheel', (e) => {
+                                e.preventDefault();
+                                const currentValue = parseInt(layeringInput.value) || 0;
+                                const delta = e.deltaY > 0 ? -1 : 1;
+                                const newValue = Math.max(-99, Math.min(99, currentValue + delta));
+                                layeringInput.value = String(newValue);
+                                this.setLayerPriority(node, layerIndex, layer, newValue);
+                                // 滚轮调整时不更新窗口，保持焦点
+                            });
+                            
+                            layeringInputContainer.appendChild(layeringInput);
+                            
+                            layeringRightContainer.appendChild(layeringInputContainer);
+                            
+                            // 透明度控件容器
+                            const layeringOpacityContainer = document.createElement('div');
+                            layeringOpacityContainer.style.cssText = 'display: flex; align-items: center; width: 225px; margin-left: 15px;';
+                            
+                            // 获取当前图层的透明度
+                            const currentLayerOpacity = this.getLayerOpacity(layerIndex);
+                            const opacityPercentValue = Math.round(currentLayerOpacity * 100);
+                            
+                            // 透明度滑条
+                            const layeringOpacitySlider = document.createElement('input');
+                            layeringOpacitySlider.type = 'range';
+                            layeringOpacitySlider.min = '0';
+                            layeringOpacitySlider.max = '100';
+                            layeringOpacitySlider.value = String(opacityPercentValue);
+                            layeringOpacitySlider.style.cssText = 'flex: 1; margin-right: 7.5px;';
+                            
+                            // 鼠标按下时开始拖动
+                            let isDraggingLayeringOpacity = false;
+                            let layeringSliderStartX = 0;
+                            let layeringSliderStartValue = 0;
+                            let layeringSliderWidth = 0;
+                            
+                            layeringOpacitySlider.addEventListener('mousedown', (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                isDraggingLayeringOpacity = true;
+                                const rect = layeringOpacitySlider.getBoundingClientRect();
+                                layeringSliderStartX = e.clientX;
+                                layeringSliderStartValue = parseFloat(layeringOpacitySlider.value) || 0;
+                                layeringSliderWidth = rect.width;
+                            });
+                            
+                            // 鼠标移动时持续更新
+                            const layeringOpacityMouseMoveHandler = (e) => {
+                                if (isDraggingLayeringOpacity) {
+                                    const deltaX = e.clientX - layeringSliderStartX;
+                                    const deltaPercent = (deltaX / layeringSliderWidth) * 100;
+                                    let newPercent = layeringSliderStartValue + deltaPercent;
+                                    
+                                    if (newPercent < 0) {
+                                        newPercent = 0;
+                                    } else if (newPercent > 100) {
+                                        newPercent = 100;
+                                    }
+                                    
+                                    const opacityValue = newPercent / 100;
+                                    const roundedValue = Math.round(newPercent);
+                                    const valueString = String(roundedValue);
+                                    
+                                    layeringOpacitySlider.setAttribute('value', valueString);
+                                    layeringOpacitySlider.value = valueString;
+                                    this.setLayerOpacity(layerIndex, opacityValue);
+                                    
+                                    if (layeringOpacityInput) {
+                                        layeringOpacityInput.value = valueString;
+                                    }
+                                    
+                                    if (roundedValue === 0) {
+                                        layeringOpacitySlider.value = '0';
+                                        layeringOpacitySlider.setAttribute('value', '0');
+                                    }
+                                }
+                            };
+                            
+                            const layeringOpacityMouseUpHandler = () => {
+                                isDraggingLayeringOpacity = false;
+                            };
+                            
+                            document.addEventListener('mousemove', layeringOpacityMouseMoveHandler);
+                            document.addEventListener('mouseup', layeringOpacityMouseUpHandler);
+                            
+                            layeringOpacitySlider.addEventListener('input', (e) => {
+                                if (!isDraggingLayeringOpacity) {
+                                    const value = e.target.value;
+                                    if (value === '' || isNaN(value)) {
+                                        return;
+                                    }
+                                    const intValue = Math.max(0, Math.min(100, parseInt(value)));
+                                    const opacityValue = intValue / 100;
+                                    this.setLayerOpacity(layerIndex, opacityValue);
+                                    layeringOpacityInput.value = String(intValue);
+                                    layeringOpacitySlider.value = String(intValue);
+                                    layeringOpacitySlider.setAttribute('value', String(intValue));
+                                }
+                            });
+                            
+                            layeringOpacityContainer.appendChild(layeringOpacitySlider);
+                            
+                            // 透明度输入框
+                            const layeringOpacityInput = document.createElement('input');
+                            layeringOpacityInput.type = 'number';
+                            layeringOpacityInput.min = '0';
+                            layeringOpacityInput.max = '100';
+                            layeringOpacityInput.value = String(opacityPercentValue);
+                            layeringOpacityInput.style.cssText = 'width: 75px; padding: 3px; margin-right: 4.5px; font-size: 18px; text-align: center;';
+                            
+                            // 实时生效：使用 input 事件而不是 change 事件
+                            layeringOpacityInput.addEventListener('input', (e) => {
+                                const value = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                                layeringOpacityInput.value = value;
+                                layeringOpacitySlider.value = value;
+                                layeringOpacitySlider.setAttribute('value', String(value));
+                                this.setLayerOpacity(layerIndex, value / 100);
+                                // 不立即更新窗口，只在失去焦点时更新
+                            });
+                            
+                            layeringOpacityInput.addEventListener('blur', (e) => {
+                                // 失去焦点时更新窗口
+                                this.updateWindow();
+                            });
+                            
+                            // 支持滚轮调整
+                            layeringOpacityInput.addEventListener('wheel', (e) => {
+                                e.preventDefault();
+                                const currentValue = parseInt(layeringOpacityInput.value) || 0;
+                                const delta = e.deltaY > 0 ? -1 : 1;
+                                const newValue = Math.max(0, Math.min(100, currentValue + delta));
+                                layeringOpacityInput.value = String(newValue);
+                                layeringOpacitySlider.value = String(newValue);
+                                layeringOpacitySlider.setAttribute('value', String(newValue));
+                                this.setLayerOpacity(layerIndex, newValue / 100);
+                                // 滚轮调整时不更新窗口，保持焦点
+                            });
+                            
+                            layeringOpacityContainer.appendChild(layeringOpacityInput);
+                            
+                            const layeringOpacityPercent = document.createElement('span');
+                            layeringOpacityPercent.textContent = '%';
+                            layeringOpacityPercent.style.cssText = 'font-size: 18px;';
+                            layeringOpacityContainer.appendChild(layeringOpacityPercent);
+                            
+                            layeringRightContainer.appendChild(layeringOpacityContainer);
+                            
+                            // 重置按钮（始终占位，通过visibility控制显示/隐藏）
+                            const resetLayeringButton = document.createElement('button');
+                            resetLayeringButton.textContent = '重置层级';
+                            resetLayeringButton.style.cssText = `
+                                padding: 6px 12px;
+                                background: #FF9800;
+                                color: white;
+                                border: 1px solid #000;
+                                cursor: pointer;
+                                font-size: 16.5px;
+                                margin-left: 7.5px;
+                                visibility: ${hasCustomPriority ? 'visible' : 'hidden'};
+                            `;
+                            resetLayeringButton.onclick = (e) => {
+                                e.stopPropagation();
+                                this.resetLayerPriority(node, layerIndex, layer);
+                                this.updateWindow();
+                            };
+                            layeringRightContainer.appendChild(resetLayeringButton);
+                            
+                            layeringNodeRow.appendChild(layeringRightContainer);
+                            
+                            // 点击事件
+                            layeringNodeRow.onclick = (e) => {
+                                const isInteractiveElement = 
+                                    e.target === layeringInput ||
+                                    layeringInput.contains(e.target) ||
+                                    (layeringOpacitySlider && (e.target === layeringOpacitySlider || layeringOpacitySlider.contains(e.target))) ||
+                                    (layeringOpacityInput && (e.target === layeringOpacityInput || layeringOpacityInput.contains(e.target))) ||
+                                    (layeringOpacityPercent && (e.target === layeringOpacityPercent || layeringOpacityPercent.contains(e.target))) ||
+                                    (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
+                                
+                                if (!isInteractiveElement) {
+                                    this.selectedNodeId = layeringNodeId;
+                                    this.updateWindow();
+                                }
+                            };
+                            
+                            content.appendChild(layeringNodeRow);
+                        });
+                    }
+                }
             };
 
             this.treeNodes.forEach(node => renderNode(node));
+            
+            // 恢复焦点
+            if (focusRestoreInfo) {
+                setTimeout(() => {
+                    let targetElement = null;
+                    if (focusRestoreInfo.nodeId) {
+                        const nodeRow = content.querySelector(`[data-node-id="${focusRestoreInfo.nodeId}"]`);
+                        if (nodeRow) {
+                            if (focusRestoreInfo.inputType === 'opacity') {
+                                targetElement = nodeRow.querySelector('input[type="number"][min="0"][max="100"]');
+                            } else if (focusRestoreInfo.inputType === 'layering') {
+                                targetElement = nodeRow.querySelector('input[type="number"][min="-99"][max="99"]');
+                            }
+                        }
+                    } else if (focusRestoreInfo.layeringName) {
+                        // 恢复层级节点的透明度输入框焦点
+                        const allLayeringRows = content.querySelectorAll('div[style*="background: #f9f9f9"]');
+                        for (const row of allLayeringRows) {
+                            const nameSpan = row.querySelector('span');
+                            if (nameSpan && nameSpan.textContent === focusRestoreInfo.layeringName) {
+                                targetElement = row.querySelector('input[type="number"][min="0"][max="100"]');
+                                break;
+                            }
+                        }
+                    }
+                    if (targetElement) {
+                        targetElement.focus();
+                        if (focusRestoreInfo.selectionStart !== null && focusRestoreInfo.selectionEnd !== null) {
+                            targetElement.setSelectionRange(focusRestoreInfo.selectionStart, focusRestoreInfo.selectionEnd);
+                        }
+                    }
+                }, 0);
+            }
         }
 
         /**
