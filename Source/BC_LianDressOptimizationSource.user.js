@@ -30,6 +30,137 @@
     // =======================================================================================
     const w = window;
     // =======================================================================================
+    
+    // =======================================================================================
+    // 增强 OpacityHighlightManager 的 Proxy 实现
+    // 在 BC_LianOptimizationSource 加载后，增强其 Proxy 以支持更好的写入处理
+    // =======================================================================================
+    
+    /**
+     * 增强 OpacityHighlightManager 的 Proxy
+     * 添加对数字索引的支持，以及在写入时自动停止闪烁
+     */
+    function enhanceOpacityHighlightManager() {
+        // 等待 OpacityHighlightManager 加载
+        if (!window.OpacityHighlightManager || !window.ItemColorState) {
+            return;
+        }
+        
+        const manager = window.OpacityHighlightManager;
+        
+        // 如果 Proxy 已经激活，重新创建增强版
+        if (manager.isProxyActive && window.ItemColorState.opacity && window.ItemColorState.opacity._isOpacityProxy) {
+            const originalArray = manager.originalOpacityArray || window.ItemColorState.opacity;
+            
+            // 创建增强版 Proxy
+            const enhancedProxy = new Proxy(originalArray, {
+                get(target, prop) {
+                    // 支持字符串和数字两种类型的索引
+                    let layerIndex = null;
+                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+                        layerIndex = parseInt(prop, 10);
+                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
+                        layerIndex = prop;
+                    }
+                    
+                    if (layerIndex !== null) {
+                        const realValue = target[layerIndex];
+                        // 如果正在闪烁，返回闪烁值；否则返回真实值
+                        const displayValue = manager.getDisplayOpacity(layerIndex, realValue);
+                        return displayValue;
+                    }
+                    
+                    // 特殊属性
+                    if (prop === '_isOpacityProxy') {
+                        return true;
+                    }
+                    
+                    // 其他属性正常返回
+                    const value = Reflect.get(target, prop);
+                    // 如果是函数，需要绑定正确的 this
+                    if (typeof value === 'function') {
+                        return value.bind(target);
+                    }
+                    return value;
+                },
+                set(target, prop, value) {
+                    // 写入时，如果正在闪烁，停止闪烁并立即应用新值
+                    // 支持字符串和数字两种类型的索引
+                    let layerIndex = null;
+                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+                        layerIndex = parseInt(prop, 10);
+                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
+                        layerIndex = prop;
+                    }
+                    
+                    if (layerIndex !== null) {
+                        const highlight = manager.highlightedLayers.get(layerIndex);
+                        
+                        if (highlight) {
+                            // 如果正在闪烁，停止闪烁并立即应用新值
+                            // 这样用户写入的值能立即看到，而不是被闪烁值覆盖
+                            manager.stopHighlight(layerIndex);
+                        }
+                        // 无论是否在闪烁，都直接写入底层数组
+                        // 这样可以确保所有写入都能被正确保存
+                        target[layerIndex] = value;
+                        return true;
+                    }
+                    
+                    // 正常设置（非数字索引的属性）
+                    return Reflect.set(target, prop, value);
+                },
+                has(target, prop) {
+                    return Reflect.has(target, prop);
+                },
+                ownKeys(target) {
+                    return Reflect.ownKeys(target);
+                },
+                getOwnPropertyDescriptor(target, prop) {
+                    return Reflect.getOwnPropertyDescriptor(target, prop);
+                },
+                defineProperty(target, prop, descriptor) {
+                    // 如果定义了数字索引属性，也需要检查是否正在闪烁
+                    let layerIndex = null;
+                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+                        layerIndex = parseInt(prop, 10);
+                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
+                        layerIndex = prop;
+                    }
+                    
+                    if (layerIndex !== null && descriptor && 'value' in descriptor) {
+                        const highlight = manager.highlightedLayers.get(layerIndex);
+                        if (highlight) {
+                            // 如果正在闪烁，停止闪烁
+                            manager.stopHighlight(layerIndex);
+                        }
+                    }
+                    
+                    return Reflect.defineProperty(target, prop, descriptor);
+                },
+                deleteProperty(target, prop) {
+                    return Reflect.deleteProperty(target, prop);
+                }
+            });
+            
+            // 替换为增强版 Proxy
+            window.ItemColorState.opacity = enhancedProxy;
+        }
+    }
+    
+    // Hook ItemColorLoad 来增强 Proxy（当进入 ItemColor 界面时）
+    mod.hookFunction("ItemColorLoad", 0, (args, next) => {
+        const result = next(args);
+        
+        // 延迟确保 ItemColorState 和 OpacityHighlightManager 已初始化
+        setTimeout(() => {
+            enhanceOpacityHighlightManager();
+        }, 150);
+        
+        return result;
+    });
+    
+    // =======================================================================================
 
     /**
      * 换装优化管理器
@@ -696,7 +827,8 @@
             this.settings = {
                 WheelScrollEnabled: true, // 滚轮翻页功能
                 ShowThumbnailEnabled: true, // 显示缩略图功能
-                ItemHighlightEnabled: true // 服装提示功能
+                ItemHighlightEnabled: true, // 服装提示功能
+                UseAdjustmentWindow: true // 使用服装修改窗口
             };
             this.hoverText = ""; // 当前悬浮提示文字
             this.originalSettings = null; // 保存原始设置，用于检测修改
@@ -744,36 +876,47 @@
             MainCanvas.textAlign = "left";
             DrawText("- BC换装优化设置 -", 500, 125, "Black", "Gray");
             
-            // 滚轮翻页开关
+            // 服装修改窗口开关（最前面）
             DrawCheckbox(500, 200, 64, 64, 
+                "新 服装修改窗口", 
+                this.settings.UseAdjustmentWindow
+            );
+            
+            // 检测鼠标悬停 - 服装修改窗口
+            if (MouseIn(500, 200, 450, 64)) {
+                this.setHoverText("在Color模式中显示树状结构的颜色和透明度调整界面");
+            }
+            
+            // 滚轮翻页开关
+            DrawCheckbox(500, 300, 64, 64, 
                 "滚轮翻页", 
                 this.settings.WheelScrollEnabled
             );
             
             // 检测鼠标悬停 - 滚轮翻页
-            if (MouseIn(500, 200, 450, 64)) {
+            if (MouseIn(500, 300, 450, 64)) {
                 this.setHoverText("在换装界面中，使用鼠标滚轮可以快速翻页");
             }
             
             // 显示缩略图开关
-            DrawCheckbox(500, 300, 64, 64, 
+            DrawCheckbox(500, 400, 64, 64, 
                 "显示服装缩略图", 
                 this.settings.ShowThumbnailEnabled
             );
             
             // 检测鼠标悬停 - 显示缩略图
-            if (MouseIn(500, 300, 450, 64)) {
+            if (MouseIn(500, 400, 450, 64)) {
                 this.setHoverText("在换装界面的分层按钮位置显示所选衣服的缩略图");
             }
             
             // 服装提示开关
-            DrawCheckbox(500, 400, 64, 64, 
+            DrawCheckbox(500, 500, 64, 64, 
                 "服装提示", 
                 this.settings.ItemHighlightEnabled
             );
             
             // 检测鼠标悬停 - 服装提示
-            if (MouseIn(500, 400, 450, 64)) {
+            if (MouseIn(500, 500, 450, 64)) {
                 this.setHoverText("鼠标悬浮在部件栏上时，左侧角色身上该部件闪烁提示");
             }
             
@@ -788,8 +931,20 @@
          * 处理点击事件
          */
         Click() {
-            // 滚轮翻页开关
+            // 服装修改窗口开关（最前面）
             if (MouseXIn(500, 64) && MouseYIn(200, 64)) {
+                this.settings.UseAdjustmentWindow = !this.settings.UseAdjustmentWindow;
+                
+                // 如果禁用，立即隐藏窗口
+                if (!this.settings.UseAdjustmentWindow) {
+                    if (typeof itemColorAdjustmentWindow !== 'undefined') {
+                        itemColorAdjustmentWindow.hide();
+                    }
+                }
+            }
+            
+            // 滚轮翻页开关
+            if (MouseXIn(500, 64) && MouseYIn(300, 64)) {
                 this.settings.WheelScrollEnabled = !this.settings.WheelScrollEnabled;
                 
                 // 立即应用设置
@@ -797,7 +952,7 @@
             }
             
             // 显示缩略图开关
-            if (MouseXIn(500, 64) && MouseYIn(300, 64)) {
+            if (MouseXIn(500, 64) && MouseYIn(400, 64)) {
                 this.settings.ShowThumbnailEnabled = !this.settings.ShowThumbnailEnabled;
                 
                 // 立即应用设置
@@ -810,7 +965,7 @@
             }
             
             // 服装提示开关
-            if (MouseXIn(500, 64) && MouseYIn(400, 64)) {
+            if (MouseXIn(500, 64) && MouseYIn(500, 64)) {
                 this.settings.ItemHighlightEnabled = !this.settings.ItemHighlightEnabled;
                 
                 // 立即应用设置
@@ -839,7 +994,8 @@
             Player.OnlineSettings.LianDressOpt = {
                 WheelScrollEnabled: this.settings.WheelScrollEnabled,
                 ShowThumbnailEnabled: this.settings.ShowThumbnailEnabled,
-                ItemHighlightEnabled: this.settings.ItemHighlightEnabled
+                ItemHighlightEnabled: this.settings.ItemHighlightEnabled,
+                UseAdjustmentWindow: this.settings.UseAdjustmentWindow
             };
             ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
             
@@ -869,14 +1025,16 @@
                 screen.settings = {
                     WheelScrollEnabled: Player.OnlineSettings.LianDressOpt.WheelScrollEnabled !== false, // 默认启用
                     ShowThumbnailEnabled: Player.OnlineSettings.LianDressOpt.ShowThumbnailEnabled !== false, // 默认启用
-                    ItemHighlightEnabled: Player.OnlineSettings.LianDressOpt.ItemHighlightEnabled !== false // 默认启用
+                    ItemHighlightEnabled: Player.OnlineSettings.LianDressOpt.ItemHighlightEnabled !== false, // 默认启用
+                    UseAdjustmentWindow: Player.OnlineSettings.LianDressOpt.UseAdjustmentWindow !== false // 默认启用
                 };
                 
                 // 保存原始设置
                 screen.originalSettings = {
                     WheelScrollEnabled: screen.settings.WheelScrollEnabled,
                     ShowThumbnailEnabled: screen.settings.ShowThumbnailEnabled,
-                    ItemHighlightEnabled: screen.settings.ItemHighlightEnabled
+                    ItemHighlightEnabled: screen.settings.ItemHighlightEnabled,
+                    UseAdjustmentWindow: screen.settings.UseAdjustmentWindow
                 };
                 
                 // 应用设置
@@ -888,12 +1046,14 @@
                 screen.settings = {
                     WheelScrollEnabled: true,
                     ShowThumbnailEnabled: true,
-                    ItemHighlightEnabled: true
+                    ItemHighlightEnabled: true,
+                    UseAdjustmentWindow: true
                 };
                 screen.originalSettings = {
                     WheelScrollEnabled: true,
                     ShowThumbnailEnabled: true,
-                    ItemHighlightEnabled: true
+                    ItemHighlightEnabled: true,
+                    UseAdjustmentWindow: true
                 };
                 dressOptimizationManager.setWheelScrollEnabled(true);
                 dressOptimizationManager.setShowThumbnailEnabled(true);
@@ -1469,6 +1629,7 @@
             this.highlightedNode = null; // 当前闪烁的节点
             this.highlightedLayerIndex = null; // 当前闪烁的图层索引
             this.originalOpacities = new Map(); // 存储原始透明度值（layerIndex -> opacity）
+            this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
         }
 
         /**
@@ -1989,6 +2150,10 @@
          */
         getLayerOpacity(layerIndex) {
             if (!ItemColorState) return 1.0;
+            // 如果新组件存在，使用它获取真实透明度值
+            if (window.OpacityHighlightManager) {
+                return window.OpacityHighlightManager.getRealOpacity(layerIndex);
+            }
             // 使用 ?? 而不是 ||，因为 0 是有效的透明度值
             const opacityValue = ItemColorState.opacity[layerIndex];
             return opacityValue !== undefined ? opacityValue : 1.0;
@@ -2468,6 +2633,12 @@
                     opacitySlider.addEventListener('mousedown', (e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        // 设置交互标志，禁止闪烁
+                        this.isInteracting = true;
+                        // 如果正在闪烁，先停止闪烁并恢复原始值
+                        if (this.highlightTimer !== null || this.highlightedNode !== null) {
+                            this.stopNodeHighlight();
+                        }
                         isDraggingOpacity = true;
                         const rect = opacitySlider.getBoundingClientRect();
                         sliderStartX = e.clientX;
@@ -2509,6 +2680,10 @@
                     
                     const opacityMouseUpHandler = () => {
                         isDraggingOpacity = false;
+                        // 延迟清除交互标志，防止 mouseup 后立即触发 mouseenter
+                        setTimeout(() => {
+                            this.isInteracting = false;
+                        }, 100);
                     };
                     
                     document.addEventListener('mousemove', opacityMouseMoveHandler);
@@ -2516,6 +2691,10 @@
                     
                     opacitySlider.addEventListener('input', (e) => {
                         if (!isDraggingOpacity) {
+                            // 如果正在闪烁，先停止闪烁并恢复原始值
+                            if (this.highlightTimer !== null || this.highlightedNode !== null) {
+                                this.stopNodeHighlight();
+                            }
                             const value = e.target.value;
                             if (value === '' || isNaN(value)) {
                                 return;
@@ -2541,6 +2720,10 @@
                     
                     // 实时生效：使用 input 事件而不是 change 事件
                     opacityInput.addEventListener('input', (e) => {
+                        // 如果正在闪烁，先停止闪烁并恢复原始值
+                        if (this.highlightTimer !== null || this.highlightedNode !== null) {
+                            this.stopNodeHighlight();
+                        }
                         const value = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
                         opacityInput.value = value;
                         opacitySlider.value = value;
@@ -2642,17 +2825,40 @@
                 });
 
                 // 鼠标悬浮闪烁（使用透明度闪烁）
+                // 使用标志防止点击时触发重复闪烁
+                let isMouseInside = false;
                 nodeRow.addEventListener('mouseenter', (e) => {
+                    // 如果正在交互（点击/拖动），不触发闪烁
+                    if (this.isInteracting) return;
+                    // 如果鼠标已经在内部（比如点击后鼠标还在元素上），不触发新的闪烁
+                    if (isMouseInside) return;
+                    isMouseInside = true;
                     this.hoveredNodeId = node.id;
                     this.startNodeHighlight(node);
                 });
                 
                 nodeRow.addEventListener('mouseleave', (e) => {
+                    isMouseInside = false;
                     if (this.hoveredNodeId === node.id) {
                         this.hoveredNodeId = null;
                     }
                     this.stopNodeHighlight();
                 });
+                
+                // 在点击/拖动期间禁止闪烁
+                nodeRow.addEventListener('mousedown', (e) => {
+                    this.isInteracting = true;
+                    // 停止当前闪烁
+                    this.stopNodeHighlight();
+                });
+                
+                nodeRow.addEventListener('mouseup', (e) => {
+                    // 延迟清除交互标志，防止 mouseup 后立即触发 mouseenter
+                    setTimeout(() => {
+                        this.isInteracting = false;
+                    }, 100);
+                });
+                
 
                 // 点击选中
                 nodeRow.onclick = (e) => {
@@ -3035,6 +3241,12 @@
                             layeringOpacitySlider.addEventListener('mousedown', (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                // 设置交互标志，禁止闪烁
+                                this.isInteracting = true;
+                                // 如果正在闪烁，先停止闪烁并恢复原始值
+                                if (this.highlightTimer !== null || this.highlightedLayerIndex !== null) {
+                                    this.stopLayerHighlight();
+                                }
                                 isDraggingLayeringOpacity = true;
                                 const rect = layeringOpacitySlider.getBoundingClientRect();
                                 layeringSliderStartX = e.clientX;
@@ -3076,6 +3288,10 @@
                             
                             const layeringOpacityMouseUpHandler = () => {
                                 isDraggingLayeringOpacity = false;
+                                // 延迟清除交互标志，防止 mouseup 后立即触发 mouseenter
+                                setTimeout(() => {
+                                    this.isInteracting = false;
+                                }, 100);
                             };
                             
                             document.addEventListener('mousemove', layeringOpacityMouseMoveHandler);
@@ -3083,6 +3299,10 @@
                             
                             layeringOpacitySlider.addEventListener('input', (e) => {
                                 if (!isDraggingLayeringOpacity) {
+                                    // 如果正在闪烁，先停止闪烁并恢复原始值
+                                    if (this.highlightTimer !== null || this.highlightedLayerIndex !== null) {
+                                        this.stopLayerHighlight();
+                                    }
                                     const value = e.target.value;
                                     if (value === '' || isNaN(value)) {
                                         return;
@@ -3124,6 +3344,10 @@
                             // 支持滚轮调整
                             layeringOpacityInput.addEventListener('wheel', (e) => {
                                 e.preventDefault();
+                                // 如果正在闪烁，先停止闪烁并恢复原始值
+                                if (this.highlightTimer !== null || this.highlightedLayerIndex !== null) {
+                                    this.stopLayerHighlight();
+                                }
                                 const currentValue = parseInt(layeringOpacityInput.value) || 0;
                                 const delta = e.deltaY > 0 ? -1 : 1;
                                 const newValue = Math.max(0, Math.min(100, currentValue + delta));
@@ -3175,7 +3399,13 @@
                             });
                             
                             // 鼠标悬浮闪烁（层级节点，使用透明度闪烁）
+                            let isLayerMouseInside = false;
                             layeringNodeRow.addEventListener('mouseenter', (e) => {
+                                // 如果正在交互（点击/拖动），不触发闪烁
+                                if (this.isInteracting) return;
+                                // 如果鼠标已经在内部（比如点击后），不触发新的闪烁
+                                if (isLayerMouseInside) return;
+                                isLayerMouseInside = true;
                                 // 背景色变化
                                 layeringNodeRow.style.background = '#D8D8D8';
                                 // 透明度闪烁
@@ -3184,6 +3414,7 @@
                             });
                             
                             layeringNodeRow.addEventListener('mouseleave', (e) => {
+                                isLayerMouseInside = false;
                                 // 背景色恢复
                                 layeringNodeRow.style.background = '#e8e8e8';
                                 // 停止透明度闪烁
@@ -3191,6 +3422,20 @@
                                     this.hoveredLayerIndex = null;
                                 }
                                 this.stopLayerHighlight();
+                            });
+                            
+                            // 在点击/拖动期间禁止闪烁
+                            layeringNodeRow.addEventListener('mousedown', (e) => {
+                                this.isInteracting = true;
+                                // 停止当前闪烁
+                                this.stopLayerHighlight();
+                            });
+                            
+                            layeringNodeRow.addEventListener('mouseup', (e) => {
+                                // 延迟清除交互标志，防止 mouseup 后立即触发 mouseenter
+                                setTimeout(() => {
+                                    this.isInteracting = false;
+                                }, 100);
                             });
                             
                             // 点击事件
@@ -3317,6 +3562,15 @@
          * @param {Object} node - 要闪烁的节点
          */
         startNodeHighlight(node) {
+            // 如果正在交互（点击/拖动），不触发闪烁
+            if (this.isInteracting) {
+                return;
+            }
+            // 如果已经在闪烁同一个节点，不重复闪烁
+            if (this.highlightedNode && this.highlightedNode.id === node.id && this.highlightTimer !== null) {
+                return;
+            }
+
             // 停止之前的闪烁
             this.stopNodeHighlight();
 
@@ -3364,13 +3618,21 @@
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            // 保存原始透明度并设置闪烁透明度（只修改ItemColorState，不影响Property）
-            layerIndices.forEach(layerIndex => {
-                const originalOpacity = this.getLayerOpacity(layerIndex);
-                this.originalOpacities.set(layerIndex, originalOpacity);
-                // 只修改ItemColorState.opacity，不修改ItemColorItem.Property.Opacity（避免影响序列化）
-                ItemColorState.opacity[layerIndex] = targetOpacity;
-            });
+            // 使用新的闪烁组件（如果存在）
+            if (window.OpacityHighlightManager) {
+                layerIndices.forEach(layerIndex => {
+                    const originalOpacity = this.getLayerOpacity(layerIndex);
+                    this.originalOpacities.set(layerIndex, originalOpacity);
+                    window.OpacityHighlightManager.startHighlight(layerIndex, targetOpacity, originalOpacity);
+                });
+            } else {
+                // 旧版方式：直接修改ItemColorState.opacity
+                layerIndices.forEach(layerIndex => {
+                    const originalOpacity = this.getLayerOpacity(layerIndex);
+                    this.originalOpacities.set(layerIndex, originalOpacity);
+                    ItemColorState.opacity[layerIndex] = targetOpacity;
+                });
+            }
 
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
@@ -3389,6 +3651,15 @@
          * @param {number} layerIndex - 要闪烁的图层索引
          */
         startLayerHighlight(layerIndex) {
+            // 如果正在交互（点击/拖动），不触发闪烁
+            if (this.isInteracting) {
+                return;
+            }
+            // 如果已经在闪烁同一个图层，不重复闪烁
+            if (this.highlightedLayerIndex === layerIndex && this.highlightTimer !== null) {
+                return;
+            }
+
             // 停止之前的闪烁
             this.stopLayerHighlight();
 
@@ -3406,9 +3677,15 @@
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            // 保存原始透明度并设置闪烁透明度（只修改ItemColorState，不影响Property）
-            this.originalOpacities.set(layerIndex, currentOpacity);
-            ItemColorState.opacity[layerIndex] = targetOpacity;
+            // 使用新的闪烁组件（如果存在）
+            if (window.OpacityHighlightManager) {
+                this.originalOpacities.set(layerIndex, currentOpacity);
+                window.OpacityHighlightManager.startHighlight(layerIndex, targetOpacity, currentOpacity);
+            } else {
+                // 旧版方式：直接修改ItemColorState.opacity
+                this.originalOpacities.set(layerIndex, currentOpacity);
+                ItemColorState.opacity[layerIndex] = targetOpacity;
+            }
 
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
@@ -3428,10 +3705,17 @@
         restoreNodeHighlight() {
             if (!ItemColorState || this.originalOpacities.size === 0) return;
 
-            // 恢复所有图层的原始透明度
-            this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                ItemColorState.opacity[layerIndex] = originalOpacity;
-            });
+            // 使用新的闪烁组件（如果存在）
+            if (window.OpacityHighlightManager) {
+                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
+                    window.OpacityHighlightManager.stopHighlight(layerIndex);
+                });
+            } else {
+                // 旧版方式：直接恢复ItemColorState.opacity
+                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
+                    ItemColorState.opacity[layerIndex] = originalOpacity;
+                });
+            }
 
             this.originalOpacities.clear();
             this.highlightedNode = null;
@@ -3448,10 +3732,17 @@
         restoreLayerHighlight() {
             if (!ItemColorState || this.originalOpacities.size === 0) return;
 
-            // 恢复图层的原始透明度
-            this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                ItemColorState.opacity[layerIndex] = originalOpacity;
-            });
+            // 使用新的闪烁组件（如果存在）
+            if (window.OpacityHighlightManager) {
+                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
+                    window.OpacityHighlightManager.stopHighlight(layerIndex);
+                });
+            } else {
+                // 旧版方式：直接恢复ItemColorState.opacity
+                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
+                    ItemColorState.opacity[layerIndex] = originalOpacity;
+                });
+            }
 
             this.originalOpacities.clear();
             this.highlightedLayerIndex = null;
@@ -3491,10 +3782,14 @@
     // Hook ItemColorLoad 函数，在进入Color模式时显示窗口
     mod.hookFunction("ItemColorLoad", 1, (args, next) => {
         const result = next(args);
-        // 延迟显示窗口，确保ItemColorState已初始化
-        setTimeout(() => {
-            itemColorAdjustmentWindow.show();
-        }, 100);
+        // 检查设置，决定是否显示窗口
+        const useWindow = Player.OnlineSettings?.LianDressOpt?.UseAdjustmentWindow !== false; // 默认启用
+        if (useWindow) {
+            // 延迟显示窗口，确保ItemColorState已初始化
+            setTimeout(() => {
+                itemColorAdjustmentWindow.show();
+            }, 100);
+        }
         return result;
     });
 
