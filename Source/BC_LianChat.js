@@ -184,34 +184,49 @@
     });
 
 
-    // 需要处理键盘事件的函数列表
-    const keyDownFunctions = [
-        "ChatRoomKeyDown",
-        "ChatSearchKeyDown", 
-        "ChatRoomMapViewKeyDown"
-    ];
-
-    // 为每个函数添加相同的处理逻辑
-// ... existing code ...
-keyDownFunctions.forEach(funcName => {
+    // Hook GameKeyDown - 这是所有键盘事件的统一入口点
+    // GameKeyDown在所有screen特定的KeyDown函数之前被调用，是最可靠的拦截点
     mod.hookFunction(
-        funcName,
-        99,
-        (args, next) => {                
+        "GameKeyDown",
+        99, // 高优先级，确保在BC的其他处理之前执行
+        (args, next) => {
             const event = args[0];
+            
             // 如果消息对话框显示且按下Escape键
             if (MessageModule.isMessageDialogVisible() && event.key === 'Escape') {
                 MessageModule.toggleMessageDialog();
-                return false;
+                // 阻止事件传播
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                // 返回true告诉BC这个事件已被处理
+                return true;
             }
-            // 如果焦点在消息输入框上
+            
+            // 如果焦点在消息输入框上，阻止BC的默认键盘处理
             if (document.activeElement?.id?.startsWith("LC-Message")) {
-                return false;
+                // 对于某些按键（如方向键、Escape等），完全阻止BC的处理
+                // 但允许正常的文本输入
+                const blockKeys = ['Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 
+                                   'PageUp', 'PageDown', 'Home', 'End', 'Tab'];
+                if (blockKeys.includes(event.key)) {
+                    // 只阻止传播，不preventDefault，这样输入框可以正常响应这些按键
+                    event.stopPropagation();
+                    event.stopImmediatePropagation();
+                    // 返回true告诉BC不要继续处理
+                    return true;
+                }
+                // 对于其他按键（如字母、数字、Enter等），也阻止BC的快捷键处理
+                // 但允许在输入框内正常输入
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                return true;
             }
+            
+            // 如果没有特殊情况，继续BC的正常处理流程
             return next(args);
         }
     );
-});
     
 
     /**
