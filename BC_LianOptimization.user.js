@@ -8,6 +8,7 @@
 // @match https://*.bondage-europe.com/R*/*
 // @match https://*.bondageprojects.com/R*/*
 // @match https://*.bondage-asia.com/Club/R*
+// @match https://*.bondage-asia.com/club/R*
 // @connect      github.com
 // @license      MIT
 // @run-at       document-end

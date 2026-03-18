@@ -4,8 +4,11 @@
 // @version      0.1.1
 // @description  聊天室扩展
 // @author       XinLian
-// @include      /^https:\/\/(www\.)?bondageprojects\.elementfx\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
-// @include      /^https:\/\/(www\.)?bondage-europe\.com\/R\d+\/(BondageClub|\d+)(\/((index|\d+)\.html)?)?$/
+// @match https://*.bondageprojects.elementfx.com/R*/*
+// @match https://*.bondage-europe.com/R*/*
+// @match https://*.bondageprojects.com/R*/*
+// @match https://*.bondage-asia.com/Club/R*
+// @match https://*.bondage-asia.com/club/R*
 // @connect      github.com
 // @grant        GM_xmlhttpRequest
 // @license      MIT
