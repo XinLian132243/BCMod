@@ -4315,7 +4315,7 @@ class RoomItemPool {
                 
                 // 使用正确的messages数组
                 messages.forEach(msg => {
-                    const timeStr = msg.time.toLocaleString();
+                    const timeStr = new Date(msg.time).toLocaleString();
                     const isSelf = msg.sender === Player.MemberNumber;
                     const typeStr = getMessageTypeText(msg.type);
                     
@@ -4327,8 +4327,8 @@ class RoomItemPool {
                         senderName = getCharacterName(selectedSenderNum);
                     }
                     
-                    // 新格式：[时间] 发送者名称: 内容
-                    chatText += `${senderName}: ${msg.content}\n\n`;
+                    // 格式：[时间] 发送者名称: 内容
+                    chatText += `[${timeStr}] ${senderName}: ${msg.content}\n\n`;
                 });
                 
                 // 创建下载链接
@@ -6234,7 +6234,6 @@ function enterRoom(roomName) {
     CommonSetScreen("Online", "ChatSearch");    
     ChatSearchLastQueryJoinTime = CommonTime();
     ChatSearchLastQueryJoin = roomName;
-    ChatRoomPlayerCanJoin = true;
     ServerSend("ChatRoomJoin", { Name: roomName });
     ChatRoomPingLeashedPlayers();
 }
