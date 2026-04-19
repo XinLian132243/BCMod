@@ -5177,10 +5177,15 @@ class RoomItemPool {
             });
         }
 
-        function sendQueryOnlineRoomListData(query = "", space = "") {
-            const SearchData = {Query: query.toUpperCase().trim(), Language: "", Space: space, Game: "", FullRooms: true};
+        async function sendQueryOnlineRoomListData(query = "", space = "") {
+            const SearchData = {Language: "", Space: space, Game: "", FullRooms: true};
             isReadyRevRoomList = true;
-			ServerSend("ChatRoomSearch", SearchData);
+            const res = await ServerRoomSearch(query, SearchData);
+            if (!res.err) {
+                updateOnlineRoomListData(res.value ?? []);
+            } else {
+                isReadyRevRoomList = false;
+            }
         }
 
         function updateChatHeader(memberNumber) {
@@ -5818,15 +5823,6 @@ class RoomItemPool {
         next(args);
     });
 
-    
-    mod.hookFunction("ChatSearchResultResponse", 100, (args, next) => {
-        let data = args[0];
-        if (MessageModule.dialogisReadyRevRoomList() || CurrentScreen === 'ChatRoom') {
-            MessageModule.updateOnlineRoomListData(data);
-            return;
-        }
-        next(args);
-    });
 
  // 创建通用菜单函数
  function createContextMenu(options, x, y) {
