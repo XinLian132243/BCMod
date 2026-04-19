@@ -5028,7 +5028,7 @@ class RoomItemPool {
             if (messageHistory[memberNumber]?.unreadCount) {
                 messageHistory[memberNumber].unreadCount = 0;
                 // 保存到本地存储
-                LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
+                if (LCDataStorage) LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
 
                 return true; // 返回true表示有未读消息被清除
             }
@@ -5085,7 +5085,7 @@ class RoomItemPool {
 
             messageHistory[memberNumber].messages.push(msgObj);
 
-            LCDataStorage.addMessage(memberNumber, msgObj);
+            if (LCDataStorage) LCDataStorage.addMessage(memberNumber, msgObj);
 
             messageHistory[memberNumber].orderTimeStamp = Date.now();
             
@@ -5106,7 +5106,7 @@ class RoomItemPool {
             }
              
             // 保存到本地存储
-            LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
+            if (LCDataStorage) LCDataStorage.updateSenderState(memberNumber, messageHistory[memberNumber]);
 
             // 新增：后台消息通知
             if (senderNumber !== Player.MemberNumber) {
