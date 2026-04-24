@@ -96,12 +96,12 @@
              || msg.includes("bce-beep-reply")
              ))) 
         {
-            if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
+            if (Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_WHEN_SHOW_DIALOG
                 && MessageModule.isMessageDialogVisible())
             {
                 return;
             }
-            if (Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_ALL_TIME)
+            if (Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat === HidePrivateChatEnum.HIDE_ALL_TIME)
             {
                 return;
             }
@@ -2106,14 +2106,14 @@ class RoomItem {
         // 只绑定一次 pinButton 事件
         this.pinButton.addEventListener('click', (e) => {
             e.stopPropagation();
-            const pinnedRooms = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+            const pinnedRooms = Player.ExtensionSettings?.LCData?.MessageSetting?.PinnedRooms || {};
             if (pinnedRooms[this.lastRoomName] !== undefined) {
                 delete pinnedRooms[this.lastRoomName];
             } else {
                 pinnedRooms[this.lastRoomName] = Date.now();
             }
             messageDialog.updateAddSenderLists();
-            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+            ServerPlayerExtensionSettingsSync('LCData');
         });
     }
 
@@ -2123,7 +2123,7 @@ class RoomItem {
      */
     update(room) {
         
-        const pinnedRoomsDict = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+        const pinnedRoomsDict = Player.ExtensionSettings?.LCData?.MessageSetting?.PinnedRooms || {};
 
         // 更新内容
         this.memberCountSpan.textContent = `${room.MemberCount}/${room.MemberLimit}`;
@@ -3395,7 +3395,7 @@ class RoomItemPool {
                 };
                 const currentRoomSpaceValue = (Player?.LastChatRoom?.Space !== undefined && Player?.LastChatRoom?.Space !== null)
                 ? Player.LastChatRoom.Space
-                : Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace;
+                : Player.ExtensionSettings.LCData.MessageSetting.SetRoomSpace;
 
                 let roomSpaceIndex = roomSpaceOptions.findIndex(opt => roomSpaceMap[opt] === currentRoomSpaceValue);
                 
@@ -3442,8 +3442,8 @@ class RoomItemPool {
                 function updateroomSpaceDisplay() {
                     roomSpaceDisplay.textContent = roomSpaceOptions[roomSpaceIndex];
                     addSenderContainer.setAttribute('data-roomSpace', roomSpaceMap[roomSpaceOptions[roomSpaceIndex]]);
-                    Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace = roomSpaceMap[roomSpaceOptions[roomSpaceIndex]];
-                    ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+                    Player.ExtensionSettings.LCData.MessageSetting.SetRoomSpace = roomSpaceMap[roomSpaceOptions[roomSpaceIndex]];
+                    ServerPlayerExtensionSettingsSync('LCData');
                     
                 }
                 roomSpaceLeftBtn.addEventListener('click', () => {
@@ -3833,7 +3833,7 @@ class RoomItemPool {
                 // 先释放所有活跃的房间项，准备复用
                 roomItemPool.releaseAll();
 
-                const pinnedRoomsDict = Player.OnlineSettings?.LCData?.MessageSetting?.PinnedRooms || {};
+                const pinnedRoomsDict = Player.ExtensionSettings?.LCData?.MessageSetting?.PinnedRooms || {};
 
                 roomList
                     .slice() // 防止修改原数组
@@ -4792,7 +4792,7 @@ class RoomItemPool {
             hideGroup.style.marginBottom = '18px';
 
             // 当前设置
-            let currentHide = (Player.OnlineSettings?.LCData?.MessageSetting?.HidePrivateChat) ?? 0;
+            let currentHide = (Player.ExtensionSettings?.LCData?.MessageSetting?.HidePrivateChat) ?? 0;
 
             hideOptions.forEach(opt => {
                 const label = document.createElement('label');
@@ -4820,7 +4820,7 @@ class RoomItemPool {
 
             const notifyCheckbox = document.createElement('input');
             notifyCheckbox.type = 'checkbox';
-            notifyCheckbox.checked = !!(Player.OnlineSettings?.LCData?.MessageSetting?.NotifyWhenBackground);
+            notifyCheckbox.checked = !!(Player.ExtensionSettings?.LCData?.MessageSetting?.NotifyWhenBackground);
 
             notifyLabel.appendChild(notifyCheckbox);
             notifyLabel.appendChild(document.createTextNode(I18nModule.getText('background_notification')));
@@ -4847,11 +4847,11 @@ class RoomItemPool {
                 const notifyValue = notifyCheckbox.checked;
 
                 // 保存到设置
-                Player.OnlineSettings.LCData.MessageSetting.HidePrivateChat = hideValue;
-                Player.OnlineSettings.LCData.MessageSetting.NotifyWhenBackground = notifyValue;
+                Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat = hideValue;
+                Player.ExtensionSettings.LCData.MessageSetting.NotifyWhenBackground = notifyValue;
 
                 // 同步到服务器
-                ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+                ServerPlayerExtensionSettingsSync('LCData');
 
                 dialog.remove();
             };
@@ -5713,7 +5713,7 @@ class RoomItemPool {
         function notifyIfBackground(number, type,content) {
             try {
                 if (
-                    Player.OnlineSettings?.LCData?.MessageSetting?.NotifyWhenBackground &&
+                    Player.ExtensionSettings?.LCData?.MessageSetting?.NotifyWhenBackground &&
                     document.hidden &&
                     "Notification" in window
                 ) {
@@ -6660,21 +6660,22 @@ function CheckOnlineLCSetting()
             }
         };
     }
-    if (!Player.OnlineSettings.LCData)
-        {
-            Player.OnlineSettings.LCData = {
-                MessageSetting: {
-                    HidePrivateChat: HidePrivateChatEnum.NONE,
-                    NotifyWhenBackground: false,
-                }
-            };
-        }
 
-     Player.OnlineSettings.LCData.MessageSetting.PinnedRooms 
-     = Player.OnlineSettings.LCData.MessageSetting.PinnedRooms || {};
+    // 从旧位置 OnlineSettings 迁移数据到 ExtensionSettings
+    if (Player.OnlineSettings?.LCData?.MessageSetting && !Player.ExtensionSettings.LCData) {
+        Player.ExtensionSettings.LCData = Player.OnlineSettings.LCData;
+        delete Player.OnlineSettings.LCData;
+        ServerPlayerExtensionSettingsSync('LCData');
+        ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
+    }
 
-     Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace =  Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace == undefined? 
-     'X' : Player.OnlineSettings.LCData.MessageSetting.SetRoomSpace;
+    // 逐字段补全，避免覆盖已有数据
+    Player.ExtensionSettings.LCData ??= {};
+    Player.ExtensionSettings.LCData.MessageSetting ??= {};
+    Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat ??= HidePrivateChatEnum.NONE;
+    Player.ExtensionSettings.LCData.MessageSetting.NotifyWhenBackground ??= false;
+    Player.ExtensionSettings.LCData.MessageSetting.PinnedRooms ??= {};
+    Player.ExtensionSettings.LCData.MessageSetting.SetRoomSpace ??= 'X';
 }
 
 function InitAll()
