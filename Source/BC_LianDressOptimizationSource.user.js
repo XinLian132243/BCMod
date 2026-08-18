@@ -30,135 +30,51 @@
     // =======================================================================================
     const w = window;
     // =======================================================================================
-    
-    // =======================================================================================
-    // 增强 OpacityHighlightManager 的 Proxy 实现
-    // 在 BC_LianOptimizationSource 加载后，增强其 Proxy 以支持更好的写入处理
-    // =======================================================================================
-    
+
+    const SETTINGS_KEY = "LianDressOpt";
+
+    const DEFAULT_SETTINGS = {
+        WheelScrollEnabled: true,
+        ShowThumbnailEnabled: true,
+        ItemHighlightEnabled: true,
+        UseAdjustmentWindow: true
+    };
+
     /**
-     * 增强 OpacityHighlightManager 的 Proxy
-     * 添加对数字索引的支持，以及在写入时自动停止闪烁
+     * 读取设置。优先 ExtensionSettings，回退到旧的 OnlineSettings 并顺带迁移。
+     * @returns {typeof DEFAULT_SETTINGS}
      */
-    function enhanceOpacityHighlightManager() {
-        // 等待 OpacityHighlightManager 加载
-        if (!window.OpacityHighlightManager || !window.ItemColorState) {
-            return;
+    function loadSettings() {
+        const stored = Player?.ExtensionSettings?.[SETTINGS_KEY]
+            ?? Player?.OnlineSettings?.[SETTINGS_KEY];
+        const result = Object.assign({}, DEFAULT_SETTINGS);
+        if (stored && typeof stored === "object") {
+            for (const key of Object.keys(DEFAULT_SETTINGS)) {
+                if (typeof stored[key] === "boolean") result[key] = stored[key];
+            }
         }
-        
-        const manager = window.OpacityHighlightManager;
-        
-        // 如果 Proxy 已经激活，重新创建增强版
-        if (manager.isProxyActive && window.ItemColorState.opacity && window.ItemColorState.opacity._isOpacityProxy) {
-            const originalArray = manager.originalOpacityArray || window.ItemColorState.opacity;
-            
-            // 创建增强版 Proxy
-            const enhancedProxy = new Proxy(originalArray, {
-                get(target, prop) {
-                    // 支持字符串和数字两种类型的索引
-                    let layerIndex = null;
-                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
-                        layerIndex = parseInt(prop, 10);
-                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
-                        layerIndex = prop;
-                    }
-                    
-                    if (layerIndex !== null) {
-                        const realValue = target[layerIndex];
-                        // 如果正在闪烁，返回闪烁值；否则返回真实值
-                        const displayValue = manager.getDisplayOpacity(layerIndex, realValue);
-                        return displayValue;
-                    }
-                    
-                    // 特殊属性
-                    if (prop === '_isOpacityProxy') {
-                        return true;
-                    }
-                    
-                    // 其他属性正常返回
-                    const value = Reflect.get(target, prop);
-                    // 如果是函数，需要绑定正确的 this
-                    if (typeof value === 'function') {
-                        return value.bind(target);
-                    }
-                    return value;
-                },
-                set(target, prop, value) {
-                    // 写入时，如果正在闪烁，停止闪烁并立即应用新值
-                    // 支持字符串和数字两种类型的索引
-                    let layerIndex = null;
-                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
-                        layerIndex = parseInt(prop, 10);
-                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
-                        layerIndex = prop;
-                    }
-                    
-                    if (layerIndex !== null) {
-                        const highlight = manager.highlightedLayers.get(layerIndex);
-                        
-                        if (highlight) {
-                            // 如果正在闪烁，停止闪烁并立即应用新值
-                            // 这样用户写入的值能立即看到，而不是被闪烁值覆盖
-                            manager.stopHighlight(layerIndex);
-                        }
-                        // 无论是否在闪烁，都直接写入底层数组
-                        // 这样可以确保所有写入都能被正确保存
-                        target[layerIndex] = value;
-                        return true;
-                    }
-                    
-                    // 正常设置（非数字索引的属性）
-                    return Reflect.set(target, prop, value);
-                },
-                has(target, prop) {
-                    return Reflect.has(target, prop);
-                },
-                ownKeys(target) {
-                    return Reflect.ownKeys(target);
-                },
-                getOwnPropertyDescriptor(target, prop) {
-                    return Reflect.getOwnPropertyDescriptor(target, prop);
-                },
-                defineProperty(target, prop, descriptor) {
-                    // 如果定义了数字索引属性，也需要检查是否正在闪烁
-                    let layerIndex = null;
-                    if (typeof prop === 'string' && /^\d+$/.test(prop)) {
-                        layerIndex = parseInt(prop, 10);
-                    } else if (typeof prop === 'number' && Number.isInteger(prop) && prop >= 0) {
-                        layerIndex = prop;
-                    }
-                    
-                    if (layerIndex !== null && descriptor && 'value' in descriptor) {
-                        const highlight = manager.highlightedLayers.get(layerIndex);
-                        if (highlight) {
-                            // 如果正在闪烁，停止闪烁
-                            manager.stopHighlight(layerIndex);
-                        }
-                    }
-                    
-                    return Reflect.defineProperty(target, prop, descriptor);
-                },
-                deleteProperty(target, prop) {
-                    return Reflect.deleteProperty(target, prop);
-                }
-            });
-            
-            // 替换为增强版 Proxy
-            window.ItemColorState.opacity = enhancedProxy;
+        return result;
+    }
+
+    /**
+     * 写入设置。只同步自己这一个键，避免覆盖其他插件的数据。
+     * @param {typeof DEFAULT_SETTINGS} settings
+     */
+    function saveSettings(settings) {
+        if (!Player) return;
+        Player.ExtensionSettings ??= {};
+        Player.ExtensionSettings[SETTINGS_KEY] = Object.assign({}, settings);
+        if (typeof ServerPlayerExtensionSettingsSync === "function") {
+            ServerPlayerExtensionSettingsSync(SETTINGS_KEY);
+        }
+        // 清理旧位置，消除 BC 登录时的 "extra keys in OnlineSettings" 警告
+        if (Player.OnlineSettings && SETTINGS_KEY in Player.OnlineSettings) {
+            delete Player.OnlineSettings[SETTINGS_KEY];
+            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
         }
     }
+
     
-    // Hook ItemColorLoad 来增强 Proxy（当进入 ItemColor 界面时）
-    mod.hookFunction("ItemColorLoad", 0, (args, next) => {
-        const result = next(args);
-        
-        // 延迟确保 ItemColorState 和 OpacityHighlightManager 已初始化
-        setTimeout(() => {
-            enhanceOpacityHighlightManager();
-        }, 150);
-        
-        return result;
-    });
     
     // =======================================================================================
 
@@ -302,7 +218,7 @@
          * 开始闪烁效果（部件）
          * @param {string} groupName - 部件组名
          */
-        startHighlight(groupName, singleBlink = false) {
+        startHighlight(groupName) {
             // 如果已经在闪烁同一个部件，不重复开始
             if (this.hoveredGroupName === groupName && this.highlightTimer !== null) {
                 return;
@@ -315,154 +231,50 @@
             this.hoveredGroupName = groupName;
             this.hiddenGroups.clear();
 
-            if (singleBlink) {
-                // 只闪1下：隐藏0.2s，然后显示
-                this.hiddenGroups.add(groupName);
-                
-                // 在ItemColor界面中，使用ItemColorItem.Property.Hide来隐藏整个Item
-                // Property.Hide应该是一个数组，包含要隐藏的GroupName
-                if (typeof ItemColorItem !== 'undefined' && ItemColorItem && ItemColorItem.Property) {
-                    if (!Array.isArray(ItemColorItem.Property.Hide)) {
-                        ItemColorItem.Property.Hide = [];
-                    }
-                    // 如果groupName不在数组中，添加它
-                    if (ItemColorItem.Property.Hide.indexOf(groupName) === -1) {
-                        ItemColorItem.Property.Hide.push(groupName);
-                    }
-                    
-                    // 确保ItemColorItem在ItemColorCharacter.Appearance中，并且Property被正确设置
-                    if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter && ItemColorCharacter.Appearance) {
-                        // 查找ItemColorItem在Appearance数组中的位置
-                        const itemIndex = ItemColorCharacter.Appearance.findIndex(item => 
-                            item === ItemColorItem || 
-                            (item.Asset && item.Asset.Name === ItemColorItem.Asset?.Name && item.Asset.Group?.Name === ItemColorItem.Asset?.Group?.Name)
-                        );
-                        
-                        if (itemIndex !== -1) {
-                            // 确保Appearance数组中的Item也有相同的Property.Hide
-                            const appearanceItem = ItemColorCharacter.Appearance[itemIndex];
-                            if (appearanceItem.Property) {
-                                if (!Array.isArray(appearanceItem.Property.Hide)) {
-                                    appearanceItem.Property.Hide = [];
-                                }
-                                if (appearanceItem.Property.Hide.indexOf(groupName) === -1) {
-                                    appearanceItem.Property.Hide.push(groupName);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // 刷新角色显示（优先使用ItemColorCharacter，因为我们在ItemColor界面）
-                if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
-                    CharacterLoadCanvas(ItemColorCharacter);
-                } else if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection && typeof CharacterLoadCanvas === 'function') {
-                    CharacterLoadCanvas(CharacterAppearanceSelection);
-                }
-                
-                // 强制触发一次重绘，确保闪烁效果立即显示
-                if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter) {
-                    // 使用requestAnimationFrame确保在下一帧重绘
-                    requestAnimationFrame(() => {
-                        if (typeof CharacterLoadCanvas === 'function') {
-                            CharacterLoadCanvas(ItemColorCharacter);
-                        }
-                    });
-                }
-                
-                // 0.2s后恢复显示
-                this.highlightTimer = setTimeout(() => {
+            // 持续闪烁：消失0.2s，显示0.8s，交替进行
+            let isHidden = false; // 当前是否隐藏状态
+
+            const blink = () => {
+                // 检查是否还在悬浮同一个部件（如果部件改变了，停止闪烁）
+                if (this.hoveredGroupName !== groupName) {
                     this.hiddenGroups.clear();
-                    
-                    // 恢复Item显示：从数组中移除groupName
-                    if (typeof ItemColorItem !== 'undefined' && ItemColorItem && ItemColorItem.Property && Array.isArray(ItemColorItem.Property.Hide)) {
-                        const index = ItemColorItem.Property.Hide.indexOf(groupName);
-                        if (index !== -1) {
-                            ItemColorItem.Property.Hide.splice(index, 1);
-                        }
-                        // 如果数组为空，设置为undefined或空数组
-                        if (ItemColorItem.Property.Hide.length === 0) {
-                            ItemColorItem.Property.Hide = undefined;
-                        }
-                    }
-                    
-                    // 同时恢复Appearance数组中的Item
-                    if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter && ItemColorCharacter.Appearance) {
-                        const itemIndex = ItemColorCharacter.Appearance.findIndex(item => 
-                            item === ItemColorItem || 
-                            (item.Asset && item.Asset.Name === ItemColorItem.Asset?.Name && item.Asset.Group?.Name === ItemColorItem.Asset?.Group?.Name)
-                        );
-                        
-                        if (itemIndex !== -1) {
-                            const appearanceItem = ItemColorCharacter.Appearance[itemIndex];
-                            if (appearanceItem.Property && Array.isArray(appearanceItem.Property.Hide)) {
-                                const index = appearanceItem.Property.Hide.indexOf(groupName);
-                                if (index !== -1) {
-                                    appearanceItem.Property.Hide.splice(index, 1);
-                                }
-                                if (appearanceItem.Property.Hide.length === 0) {
-                                    appearanceItem.Property.Hide = undefined;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // 刷新角色显示
-                    if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
-                        CharacterLoadCanvas(ItemColorCharacter);
-                    } else if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection && typeof CharacterLoadCanvas === 'function') {
-                        CharacterLoadCanvas(CharacterAppearanceSelection);
-                    }
-                    
                     this.highlightTimer = null;
-                    // 不重置hoveredGroupName，保持悬浮状态
-                }, 200);
-            } else {
-                // 持续闪烁：消失0.2s，显示0.8s，交替进行
-                let isHidden = false; // 当前是否隐藏状态
+                    return;
+                }
 
-                const blink = () => {
-                    // 检查是否还在悬浮同一个部件（如果部件改变了，停止闪烁）
-                    if (this.hoveredGroupName !== groupName) {
-                        this.hiddenGroups.clear();
-                        this.highlightTimer = null;
-                        return;
-                    }
+                // 切换显示/隐藏状态
+                isHidden = !isHidden;
+                
+                if (isHidden) {
+                    // 隐藏部件
+                    this.hiddenGroups.add(groupName);
+                } else {
+                    // 显示部件
+                    this.hiddenGroups.delete(groupName);
+                }
 
-                    // 切换显示/隐藏状态
-                    isHidden = !isHidden;
-                    
-                    if (isHidden) {
-                        // 隐藏部件
-                        this.hiddenGroups.add(groupName);
-                    } else {
-                        // 显示部件
-                        this.hiddenGroups.delete(groupName);
-                    }
-
-                    // 重新绘制角色预览
-                    if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection) {
-                        if (typeof CharacterLoadCanvas === 'function') {
-                            CharacterLoadCanvas(CharacterAppearanceSelection);
-                        }
-                    }
-
-                    // 根据当前状态设置下一次切换的时间
-                    // 隐藏状态持续0.2s，显示状态持续0.8s
-                    const nextDuration = isHidden ? 200 : 800;
-                    this.highlightTimer = setTimeout(blink, nextDuration);
-                };
-
-                // 开始第一次闪烁（先隐藏）
-                isHidden = true;
-                this.hiddenGroups.add(groupName);
+                // 重新绘制角色预览
                 if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection) {
                     if (typeof CharacterLoadCanvas === 'function') {
                         CharacterLoadCanvas(CharacterAppearanceSelection);
                     }
                 }
-                this.highlightTimer = setTimeout(blink, 200); // 0.2s后切换到显示
+
+                // 根据当前状态设置下一次切换的时间
+                // 隐藏状态持续0.2s，显示状态持续0.8s
+                const nextDuration = isHidden ? 200 : 800;
+                this.highlightTimer = setTimeout(blink, nextDuration);
+            };
+
+            // 开始第一次闪烁（先隐藏）
+            isHidden = true;
+            this.hiddenGroups.add(groupName);
+            if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection) {
+                if (typeof CharacterLoadCanvas === 'function') {
+                    CharacterLoadCanvas(CharacterAppearanceSelection);
+                }
             }
+            this.highlightTimer = setTimeout(blink, 200); // 0.2s后切换到显示
         }
 
         /**
@@ -474,31 +286,14 @@
                 this.highlightTimer = null;
             }
 
-            // 恢复显示
+            // 恢复显示。闪烁只走 hiddenGroups + CharacterAppearanceVisible hook，
+            // 不碰 Property.Hide —— 后者会被 ServerAppearanceBundle 同步到服务器
             this.hiddenGroups.clear();
-            
-            // 恢复Item显示：从Property.Hide数组中移除所有我们添加的groupName
-            if (typeof ItemColorItem !== 'undefined' && ItemColorItem && ItemColorItem.Property && Array.isArray(ItemColorItem.Property.Hide)) {
-                // 移除当前hoveredGroupName（如果存在）
-                if (this.hoveredGroupName) {
-                    const index = ItemColorItem.Property.Hide.indexOf(this.hoveredGroupName);
-                    if (index !== -1) {
-                        ItemColorItem.Property.Hide.splice(index, 1);
-                    }
-                }
-                // 如果数组为空，设置为undefined
-                if (ItemColorItem.Property.Hide.length === 0) {
-                    ItemColorItem.Property.Hide = undefined;
-                }
-            }
-            
+
             // 刷新角色显示
-            if (typeof ItemColorCharacter !== 'undefined' && ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
-                CharacterLoadCanvas(ItemColorCharacter);
-            } else if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection) {
-                if (typeof CharacterLoadCanvas === 'function') {
-                    CharacterLoadCanvas(CharacterAppearanceSelection);
-                }
+            if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection &&
+                typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(CharacterAppearanceSelection);
             }
 
             this.hoveredGroupName = null;
@@ -608,6 +403,16 @@
 
     // 创建换装优化管理器实例
     const dressOptimizationManager = new DressOptimizationManager();
+
+    /**
+     * 把设置应用到管理器
+     * @param {typeof DEFAULT_SETTINGS} settings
+     */
+    function applySettings(settings) {
+        dressOptimizationManager.setWheelScrollEnabled(settings.WheelScrollEnabled);
+        dressOptimizationManager.setShowThumbnailEnabled(settings.ShowThumbnailEnabled);
+        dressOptimizationManager.setItemHighlightEnabled(settings.ItemHighlightEnabled);
+    }
 
     // =======================================================================================
     // Hook 函数
@@ -824,12 +629,7 @@
      */
     class LianDressOptimizationSettingScreen {
         constructor() {
-            this.settings = {
-                WheelScrollEnabled: true, // 滚轮翻页功能
-                ShowThumbnailEnabled: true, // 显示缩略图功能
-                ItemHighlightEnabled: true, // 服装提示功能
-                UseAdjustmentWindow: true // 使用服装修改窗口
-            };
+            this.settings = Object.assign({}, DEFAULT_SETTINGS);
             this.hoverText = ""; // 当前悬浮提示文字
             this.originalSettings = null; // 保存原始设置，用于检测修改
         }
@@ -935,10 +735,10 @@
             if (MouseXIn(500, 64) && MouseYIn(200, 64)) {
                 this.settings.UseAdjustmentWindow = !this.settings.UseAdjustmentWindow;
                 
-                // 如果禁用，立即隐藏窗口
+                // 如果禁用，立即销毁窗口
                 if (!this.settings.UseAdjustmentWindow) {
                     if (typeof itemColorAdjustmentWindow !== 'undefined') {
-                        itemColorAdjustmentWindow.hide();
+                        itemColorAdjustmentWindow.destroy();
                     }
                 }
             }
@@ -983,22 +783,8 @@
          * 退出设置界面
          */
         Exit() {
-            // 保存设置
-            if (!Player.OnlineSettings) {
-                Player.OnlineSettings = {};
-            }
-            if (!Player.OnlineSettings.LianDressOpt) {
-                Player.OnlineSettings.LianDressOpt = {};
-            }
-            
-            Player.OnlineSettings.LianDressOpt = {
-                WheelScrollEnabled: this.settings.WheelScrollEnabled,
-                ShowThumbnailEnabled: this.settings.ShowThumbnailEnabled,
-                ItemHighlightEnabled: this.settings.ItemHighlightEnabled,
-                UseAdjustmentWindow: this.settings.UseAdjustmentWindow
-            };
-            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
-            
+            saveSettings(this.settings);
+
             PreferenceSubscreenExtensionsClear();
             return true;
         }
@@ -1014,51 +800,26 @@
     // 创建设置界面实例
     const screen = new LianDressOptimizationSettingScreen();
 
+    // 登录完成后立即应用设置，无需等用户打开设置页
+    mod.hookFunction("LoginResponse", 0, (args, next) => {
+        const result = next(args);
+        if (Player && Player.MemberNumber != null) {
+            screen.settings = loadSettings();
+            screen.originalSettings = Object.assign({}, screen.settings);
+            applySettings(screen.settings);
+        }
+        return result;
+    });
+
     // 注册设置界面
     PreferenceRegisterExtensionSetting({
         Identifier: "LianDressOptimization",
         Image: "Icons/Dress.png",
         ButtonText: "Lian 换装优化",
         load: () => {
-            // 加载设置
-            if (Player.OnlineSettings && Player.OnlineSettings.LianDressOpt) {
-                screen.settings = {
-                    WheelScrollEnabled: Player.OnlineSettings.LianDressOpt.WheelScrollEnabled !== false, // 默认启用
-                    ShowThumbnailEnabled: Player.OnlineSettings.LianDressOpt.ShowThumbnailEnabled !== false, // 默认启用
-                    ItemHighlightEnabled: Player.OnlineSettings.LianDressOpt.ItemHighlightEnabled !== false, // 默认启用
-                    UseAdjustmentWindow: Player.OnlineSettings.LianDressOpt.UseAdjustmentWindow !== false // 默认启用
-                };
-                
-                // 保存原始设置
-                screen.originalSettings = {
-                    WheelScrollEnabled: screen.settings.WheelScrollEnabled,
-                    ShowThumbnailEnabled: screen.settings.ShowThumbnailEnabled,
-                    ItemHighlightEnabled: screen.settings.ItemHighlightEnabled,
-                    UseAdjustmentWindow: screen.settings.UseAdjustmentWindow
-                };
-                
-                // 应用设置
-                dressOptimizationManager.setWheelScrollEnabled(screen.settings.WheelScrollEnabled);
-                dressOptimizationManager.setShowThumbnailEnabled(screen.settings.ShowThumbnailEnabled);
-                dressOptimizationManager.setItemHighlightEnabled(screen.settings.ItemHighlightEnabled);
-            } else {
-                // 默认设置
-                screen.settings = {
-                    WheelScrollEnabled: true,
-                    ShowThumbnailEnabled: true,
-                    ItemHighlightEnabled: true,
-                    UseAdjustmentWindow: true
-                };
-                screen.originalSettings = {
-                    WheelScrollEnabled: true,
-                    ShowThumbnailEnabled: true,
-                    ItemHighlightEnabled: true,
-                    UseAdjustmentWindow: true
-                };
-                dressOptimizationManager.setWheelScrollEnabled(true);
-                dressOptimizationManager.setShowThumbnailEnabled(true);
-                dressOptimizationManager.setItemHighlightEnabled(true);
-            }
+            screen.settings = loadSettings();
+            screen.originalSettings = Object.assign({}, screen.settings);
+            applySettings(screen.settings);
         },
         run: () => {
             const origAlign = MainCanvas.textAlign;
@@ -1067,10 +828,7 @@
         },
         click: () => screen.Click(),
         unload: () => screen.Unload(),
-        exit: () => {
-            ServerAccountUpdate.QueueData({ OnlineSettings: Player.OnlineSettings });
-            screen.Exit();
-        }
+        exit: () => screen.Exit()
     });
 
     // 暴露调试接口
@@ -1628,7 +1386,8 @@
             this.highlightTimer = null; // 闪烁定时器
             this.highlightedNode = null; // 当前闪烁的节点
             this.highlightedLayerIndex = null; // 当前闪烁的图层索引
-            this.originalOpacities = new Map(); // 存储原始透明度值（layerIndex -> opacity）
+            this.originalOpacities = new Map(); // 存储原始透明度值（透明度槽位 -> opacity）
+            this.resizeHandler = null; // window resize 监听，destroy 时解绑
             this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
         }
 
@@ -1880,32 +1639,81 @@
          */
         shouldExcludeLayer(layerIndex) {
             if (!ItemColorItem || !ItemColorItem.Asset) return false;
-            
+
             const layer = ItemColorItem.Asset.Layer[layerIndex];
-            if (!layer) return false;
-            
-            // 检查图层是否有Property.Opacity属性，如果没有，说明是固定不透明度为1的图层
-            if (ItemColorItem.Property && ItemColorItem.Property.Opacity) {
-                // 如果Property.Opacity数组中该索引不存在或为undefined，说明是固定图层
-                if (ItemColorItem.Property.Opacity[layerIndex] === undefined) {
-                    return true;
-                }
-            } else {
-                // 如果Property.Opacity不存在，检查ItemColorState.opacity
-                // 如果ItemColorState.opacity中该索引不存在或为undefined，且默认值为1，说明是固定图层
-                if (ItemColorState && ItemColorState.opacity) {
-                    if (ItemColorState.opacity[layerIndex] === undefined) {
-                        return true;
-                    }
-                }
-            }
-            
-            // 检查图层是否隐藏
-            if (layer.Hide === true) {
-                return true;
-            }
-            
+            if (!layer) return true;
+
+            // 整个物品不允许调透明度
+            if (ItemColorState && ItemColorState.editOpacity === false) return true;
+
+            // CommonDraw 会把透明度 clamp 到 [MinOpacity, MaxOpacity]，
+            // 两者相等意味着这一层的透明度是固定的，调了也不会变
+            if (layer.MinOpacity === layer.MaxOpacity) return true;
+
+            if (layer.Hide === true) return true;
+
             return false;
+        }
+
+        /**
+         * 求图层索引实际生效的 Property.Opacity 槽位。
+         *
+         * CommonDraw 读透明度时是按 layer.Name 去 Asset.Layer 里正向查找、且不 break，
+         * 因此同名（含多个 Name 为 null）的图层最终都会落到「最后一个同名层」的槽位上。
+         * 这里复刻该行为，保证写入的位置和绘制读取的位置一致。
+         * @param {number} layerIndex - 图层索引
+         * @returns {number} - 实际生效的槽位索引
+         */
+        getOpacitySlot(layerIndex) {
+            const layers = ItemColorItem?.Asset?.Layer;
+            if (!Array.isArray(layers)) return layerIndex;
+            const layer = layers[layerIndex];
+            if (!layer) return layerIndex;
+
+            const limit = Math.min(layers.length, ItemColorState?.opacity?.length ?? layers.length);
+            let slot = 0;
+            for (let i = 0; i < limit; i++) {
+                if (layers[i].Name === layer.Name) slot = i;
+            }
+            return slot;
+        }
+
+        /**
+         * 收集节点（含所有后代）覆盖的图层索引，去重
+         * @param {Object} node - 节点对象
+         * @returns {number[]} - 图层索引数组
+         */
+        collectLayerIndices(node) {
+            const out = new Set();
+            const walk = (n) => {
+                if (!n) return;
+                if (Array.isArray(n.layerIndices) && n.layerIndices.length > 0) {
+                    n.layerIndices.forEach(i => out.add(i));
+                } else if (n.layerIndex !== undefined) {
+                    out.add(n.layerIndex);
+                }
+                if (Array.isArray(n.children)) n.children.forEach(walk);
+            };
+            walk(node);
+            return Array.from(out);
+        }
+
+        /**
+         * 写入某个图层的透明度，同时落到 ItemColorState.opacity 与 Property.Opacity。
+         * 两者在 R131 中是同一个数组引用，但显式写入以防本体日后改成拷贝。
+         * @param {number} layerIndex - 图层索引
+         * @param {number} opacityValue - 透明度值 (0-1)
+         */
+        writeLayerOpacity(layerIndex, opacityValue) {
+            if (!ItemColorState || !ItemColorItem) return;
+            const slot = this.getOpacitySlot(layerIndex);
+            if (Array.isArray(ItemColorState.opacity)) {
+                ItemColorState.opacity[slot] = opacityValue;
+            }
+            const prop = ItemColorItem.Property;
+            if (prop && Array.isArray(prop.Opacity)) {
+                prop.Opacity[slot] = opacityValue;
+            }
         }
 
         /**
@@ -1920,8 +1728,8 @@
                 if (this.shouldExcludeLayer(node.layerIndex)) {
                     return { opacity: 1.0, isMultiple: false, excluded: true };
                 }
-                // 使用 ?? 而不是 ||，因为 0 是有效的透明度值
-                const opacityValue = ItemColorState.opacity[node.layerIndex];
+                // 使用显式检查而不是 ||，因为 0 是有效的透明度值
+                const opacityValue = ItemColorState.opacity[this.getOpacitySlot(node.layerIndex)];
                 return {
                     opacity: opacityValue !== undefined ? opacityValue : 1.0,
                     isMultiple: false
@@ -1940,7 +1748,7 @@
                     
                     // 使用显式检查而不是 ||，因为 0 是有效的透明度值
                     const opacities = validLayerIndices.map(i => {
-                        const val = ItemColorState.opacity[i];
+                        const val = ItemColorState.opacity[this.getOpacitySlot(i)];
                         return val !== undefined ? val : 1.0;
                     });
                     const firstOpacity = opacities[0];
@@ -1967,11 +1775,6 @@
          */
         setNodeColor(node, color) {
             if (!ItemColorState || !ItemColorItem) return;
-
-            // 如果正在闪烁，先停止闪烁并恢复原始值
-            if (this.highlightTimer !== null || this.highlightedNode !== null) {
-                this.stopNodeHighlight();
-            }
 
             // 如果正在闪烁，先停止闪烁并恢复原始值
             if (this.highlightTimer !== null || this.highlightedNode !== null) {
@@ -2040,54 +1843,9 @@
                 this.stopNodeHighlight();
             }
 
-            if (node.type === 'layer') {
-                // 单个图层
-                ItemColorState.opacity[node.layerIndex] = opacityValue;
-                if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
-                    ItemColorItem.Property.Opacity[node.layerIndex] = opacityValue;
-                }
-            } else {
-                // 分组或根节点：设置所有子节点的透明度（排除固定图层）
-                const setOpacityRecursive = (n) => {
-                    if (n.type === 'layer') {
-                        // 检查是否应该排除
-                        if (this.shouldExcludeLayer(n.layerIndex)) {
-                            return; // 跳过固定图层
-                        }
-                        // 如果节点有layerIndices数组，设置所有共享该ColorIndex的图层
-                        if (n.layerIndices && n.layerIndices.length > 0) {
-                            n.layerIndices.forEach(layerIdx => {
-                                if (!this.shouldExcludeLayer(layerIdx)) {
-                                    ItemColorState.opacity[layerIdx] = opacityValue;
-                                    if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
-                                        ItemColorItem.Property.Opacity[layerIdx] = opacityValue;
-                                    }
-                                }
-                            });
-                        } else {
-                            // 兼容旧代码：只设置单个图层
-                            ItemColorState.opacity[n.layerIndex] = opacityValue;
-                            if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
-                                ItemColorItem.Property.Opacity[n.layerIndex] = opacityValue;
-                            }
-                        }
-                    } else if (n.children && n.children.length > 0) {
-                        // 递归处理所有子节点
-                        n.children.forEach(setOpacityRecursive);
-                    } else if (n.layerIndices && n.layerIndices.length > 0) {
-                        // 如果节点没有children但有layerIndices，直接设置所有图层
-                        n.layerIndices.forEach(layerIdx => {
-                            if (!this.shouldExcludeLayer(layerIdx)) {
-                                ItemColorState.opacity[layerIdx] = opacityValue;
-                                if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
-                                    ItemColorItem.Property.Opacity[layerIdx] = opacityValue;
-                                }
-                            }
-                        });
-                    }
-                };
-                setOpacityRecursive(node);
-            }
+            this.collectLayerIndices(node)
+                .filter(i => !this.shouldExcludeLayer(i))
+                .forEach(i => this.writeLayerOpacity(i, opacityValue));
 
 
             // 更新角色渲染
@@ -2149,13 +1907,9 @@
          * @returns {number} 透明度值 (0-1)
          */
         getLayerOpacity(layerIndex) {
-            if (!ItemColorState) return 1.0;
-            // 如果新组件存在，使用它获取真实透明度值
-            if (window.OpacityHighlightManager) {
-                return window.OpacityHighlightManager.getRealOpacity(layerIndex);
-            }
-            // 使用 ?? 而不是 ||，因为 0 是有效的透明度值
-            const opacityValue = ItemColorState.opacity[layerIndex];
+            if (!ItemColorState || !Array.isArray(ItemColorState.opacity)) return 1.0;
+            // 使用显式检查而不是 ||，因为 0 是有效的透明度值
+            const opacityValue = ItemColorState.opacity[this.getOpacitySlot(layerIndex)];
             return opacityValue !== undefined ? opacityValue : 1.0;
         }
 
@@ -2172,11 +1926,8 @@
                 this.stopLayerHighlight();
             }
             
-            ItemColorState.opacity[layerIndex] = opacityValue;
-            if (ItemColorItem.Property && ItemColorItem.Property.Opacity && Array.isArray(ItemColorItem.Property.Opacity)) {
-                ItemColorItem.Property.Opacity[layerIndex] = opacityValue;
-            }
-            
+            this.writeLayerOpacity(layerIndex, opacityValue);
+
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
                 CharacterLoadCanvas(ItemColorCharacter);
@@ -2357,7 +2108,7 @@
                 }
             };
             window.addEventListener('resize', resizeHandler);
-            this.windowElement._resizeHandler = resizeHandler;
+            this.resizeHandler = resizeHandler;
 
             // 添加到body
             document.body.appendChild(this.windowElement);
@@ -3551,10 +3302,23 @@
          * 销毁窗口
          */
         destroy() {
+            this.stopNodeHighlight();
+            this.stopLayerHighlight();
+            if (this.resizeHandler) {
+                window.removeEventListener('resize', this.resizeHandler);
+                this.resizeHandler = null;
+            }
             if (this.windowElement) {
                 this.windowElement.remove();
                 this.windowElement = null;
             }
+            this.colorPickerPanel.hide();
+            this.isVisible = false;
+            this.treeNodes = [];
+            this.selectedNodeId = null;
+            this.hoveredNodeId = null;
+            this.hoveredLayeringNodeId = null;
+            this.originalOpacities.clear();
         }
 
         /**
@@ -3579,60 +3343,25 @@
             this.highlightedNode = node;
             this.originalOpacities.clear();
 
-            // 获取节点或节点组的所有图层索引
-            let layerIndices = [];
-            if (node.type === 'layer') {
-                // 单个图层节点
-                if (node.layerIndices && node.layerIndices.length > 0) {
-                    layerIndices = node.layerIndices;
-                } else if (node.layerIndex !== undefined) {
-                    layerIndices = [node.layerIndex];
-                }
-            } else {
-                // 分组或根节点：获取所有子图层的索引
-                const collectLayerIndices = (n) => {
-                    if (n.type === 'layer') {
-                        if (n.layerIndices && n.layerIndices.length > 0) {
-                            layerIndices.push(...n.layerIndices);
-                        } else if (n.layerIndex !== undefined) {
-                            layerIndices.push(n.layerIndex);
-                        }
-                    } else if (n.children) {
-                        n.children.forEach(collectLayerIndices);
-                    } else if (n.layerIndices && n.layerIndices.length > 0) {
-                        layerIndices.push(...n.layerIndices);
-                    }
-                };
-                collectLayerIndices(node);
-            }
-
-            // 过滤掉应该排除的图层
-            layerIndices = layerIndices.filter(i => !this.shouldExcludeLayer(i));
+            const layerIndices = this.collectLayerIndices(node)
+                .filter(i => !this.shouldExcludeLayer(i));
 
             if (layerIndices.length === 0) return;
 
             // 获取第一个图层的当前透明度（用于判断闪烁方向）
-            const firstLayerIndex = layerIndices[0];
-            const currentOpacity = this.getLayerOpacity(firstLayerIndex);
+            const currentOpacity = this.getLayerOpacity(layerIndices[0]);
 
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            // 使用新的闪烁组件（如果存在）
-            if (window.OpacityHighlightManager) {
-                layerIndices.forEach(layerIndex => {
-                    const originalOpacity = this.getLayerOpacity(layerIndex);
-                    this.originalOpacities.set(layerIndex, originalOpacity);
-                    window.OpacityHighlightManager.startHighlight(layerIndex, targetOpacity, originalOpacity);
-                });
-            } else {
-                // 旧版方式：直接修改ItemColorState.opacity
-                layerIndices.forEach(layerIndex => {
-                    const originalOpacity = this.getLayerOpacity(layerIndex);
-                    this.originalOpacities.set(layerIndex, originalOpacity);
-                    ItemColorState.opacity[layerIndex] = targetOpacity;
-                });
-            }
+            // originalOpacities 以槽位为键，保证恢复时写回的位置与读取一致
+            layerIndices.forEach(layerIndex => {
+                const slot = this.getOpacitySlot(layerIndex);
+                if (!this.originalOpacities.has(slot)) {
+                    this.originalOpacities.set(slot, this.getLayerOpacity(layerIndex));
+                }
+                this.writeLayerOpacity(layerIndex, targetOpacity);
+            });
 
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
@@ -3677,15 +3406,8 @@
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            // 使用新的闪烁组件（如果存在）
-            if (window.OpacityHighlightManager) {
-                this.originalOpacities.set(layerIndex, currentOpacity);
-                window.OpacityHighlightManager.startHighlight(layerIndex, targetOpacity, currentOpacity);
-            } else {
-                // 旧版方式：直接修改ItemColorState.opacity
-                this.originalOpacities.set(layerIndex, currentOpacity);
-                ItemColorState.opacity[layerIndex] = targetOpacity;
-            }
+            this.originalOpacities.set(this.getOpacitySlot(layerIndex), currentOpacity);
+            this.writeLayerOpacity(layerIndex, targetOpacity);
 
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
@@ -3700,23 +3422,28 @@
         }
 
         /**
+         * 把 originalOpacities 里记录的槽位原值写回
+         */
+        restoreOpacitySlots() {
+            if (!ItemColorState) return;
+            const prop = ItemColorItem?.Property;
+            this.originalOpacities.forEach((originalOpacity, slot) => {
+                if (Array.isArray(ItemColorState.opacity)) {
+                    ItemColorState.opacity[slot] = originalOpacity;
+                }
+                if (prop && Array.isArray(prop.Opacity)) {
+                    prop.Opacity[slot] = originalOpacity;
+                }
+            });
+        }
+
+        /**
          * 恢复节点闪烁
          */
         restoreNodeHighlight() {
             if (!ItemColorState || this.originalOpacities.size === 0) return;
 
-            // 使用新的闪烁组件（如果存在）
-            if (window.OpacityHighlightManager) {
-                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                    window.OpacityHighlightManager.stopHighlight(layerIndex);
-                });
-            } else {
-                // 旧版方式：直接恢复ItemColorState.opacity
-                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                    ItemColorState.opacity[layerIndex] = originalOpacity;
-                });
-            }
-
+            this.restoreOpacitySlots();
             this.originalOpacities.clear();
             this.highlightedNode = null;
 
@@ -3732,18 +3459,7 @@
         restoreLayerHighlight() {
             if (!ItemColorState || this.originalOpacities.size === 0) return;
 
-            // 使用新的闪烁组件（如果存在）
-            if (window.OpacityHighlightManager) {
-                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                    window.OpacityHighlightManager.stopHighlight(layerIndex);
-                });
-            } else {
-                // 旧版方式：直接恢复ItemColorState.opacity
-                this.originalOpacities.forEach((originalOpacity, layerIndex) => {
-                    ItemColorState.opacity[layerIndex] = originalOpacity;
-                });
-            }
-
+            this.restoreOpacitySlots();
             this.originalOpacities.clear();
             this.highlightedLayerIndex = null;
 
@@ -3780,30 +3496,36 @@
     const itemColorAdjustmentWindow = new ItemColorAdjustmentWindow();
 
     // Hook ItemColorLoad 函数，在进入Color模式时显示窗口
+    // ItemColorLoad 是 async 且内部 await 了多个 TextCache，必须等 Promise 落地
+    // 才能保证 ItemColorState / ItemColorLayerNames 已就绪
     mod.hookFunction("ItemColorLoad", 1, (args, next) => {
         const result = next(args);
-        // 检查设置，决定是否显示窗口
-        const useWindow = Player.OnlineSettings?.LianDressOpt?.UseAdjustmentWindow !== false; // 默认启用
-        if (useWindow) {
-            // 延迟显示窗口，确保ItemColorState已初始化
-            setTimeout(() => {
-                itemColorAdjustmentWindow.show();
-            }, 100);
+        if (!screen.settings.UseAdjustmentWindow) return result;
+
+        const show = () => {
+            // 期间可能已经退出了颜色界面
+            if (ItemColorState && ItemColorItem) itemColorAdjustmentWindow.show();
+        };
+        if (result && typeof result.then === "function") {
+            return result.then((value) => { show(); return value; });
         }
+        show();
         return result;
     });
 
-    // Hook ItemColorFireExit 函数，关闭调整窗口
+    // Hook ItemColorFireExit 函数，销毁调整窗口
+    // 必须在 next 之前销毁：ItemColorFireExit 会调 ItemColorReset() 清空
+    // ItemColorState / ItemColorItem，之后闪烁就没法恢复原始透明度了
     mod.hookFunction("ItemColorFireExit", 1, (args, next) => {
-        itemColorAdjustmentWindow.hide();
+        itemColorAdjustmentWindow.destroy();
         return next(args);
     });
 
-    // 在屏幕切换时也隐藏窗口
+    // 在屏幕切换时也销毁窗口
     mod.hookFunction("CommonSetScreen", 1, (args, next) => {
         const result = next(args);
         if (typeof CurrentScreen !== 'undefined' && CurrentScreen !== 'Appearance') {
-            itemColorAdjustmentWindow.hide();
+            itemColorAdjustmentWindow.destroy();
         }
         return result;
     });
