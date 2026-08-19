@@ -228,7 +228,12 @@
         hlStroke: "rgba(255,179,0,0.95)",
         hlDash: [8, 6],
         hlLabelBg: "rgba(0,0,0,0.6)",
-        hlFont: 26
+        hlFont: 26,
+        // 画布上鼠标划过时的预览框。比点击后的提示更淡，
+        // 因为它跟着光标持续出现，太显眼会干扰对贴图本身的观察
+        hoverFill: "rgba(255,179,0,0.04)",
+        hoverStroke: "rgba(255,179,0,0.5)",
+        hoverLabelBg: "rgba(0,0,0,0.38)"
     };
 
     // 透明度闪烁的时长。短促一下即可，太长会挡住对颜色的判断
@@ -1615,6 +1620,9 @@
             this.gizmo = new LayerTransformGizmo(this); // 预览区的变换包围框
             this.deferRefresh = false; // 为 true 时合并角色刷新
             this.refreshPending = false; // 合并期间是否有刷新请求
+            // 画布拾取的上一次记录，用于重叠图层的轮换选中
+            // { x, y, key, layerIndex } 或 null
+            this.lastPick = null;
         }
 
         /**
@@ -3865,6 +3873,8 @@
          */
         toggleLayeringSelection(layeringId, layerIndex) {
             this.stopAllHighlight();
+            // 面板上手动选过之后，画布轮换的基准已经不作数了
+            this.resetPickCycle();
             const willSelect = this.selectedLayeringId !== layeringId;
             this.selectedLayeringId = willSelect ? layeringId : null;
 
@@ -3879,6 +3889,165 @@
             }
 
             this.updateWindow();
+        }
+
+        /**
+         * 递归遍历树节点
+         * @param {Function} fn - 对每个节点调用，返回 true 时中止遍历
+         * @returns {boolean} 是否被中止
+         */
+        walkNodes(fn, nodes = this.treeNodes) {
+            for (const node of nodes) {
+                if (fn(node)) return true;
+                if (node.children?.length && this.walkNodes(fn, node.children)) return true;
+            }
+            return false;
+        }
+
+        /**
+         * 找出承载某个图层的树节点。层级行挂在 layer 类型节点下，
+         * 没有对应 layer 节点时（如无颜色分组的资产）退回到 root。
+         * @param {number} layerIndex
+         * @returns {Object|null}
+         */
+        findNodeForLayer(layerIndex) {
+            let found = null;
+            this.walkNodes((node) => {
+                if (node.type !== 'layer') return false;
+                const list = node.layerIndices?.length ? node.layerIndices : this.collectLayerIndices(node);
+                if (list.includes(layerIndex)) { found = node; return true; }
+                return false;
+            });
+            if (found) return found;
+            const root = this.treeNodes.find(n => n.type === 'root');
+            return root && this.collectLayerIndices(root).includes(layerIndex) ? root : null;
+        }
+
+        /**
+         * 画布点击拾取：在右侧展开并定位到光标下图层对应的层级行。
+         * 只做展开定位，不进入句柄操作状态。
+         *
+         * 多个图层的包围盒重叠时，在同一位置重复点击会依次轮换到下一个，
+         * 循环到底再回到第一个。位置一变就从最上层（面积最小的）重新开始。
+         *
+         * @param {number} mx - 主画布坐标
+         * @param {number} my
+         * @returns {boolean} 是否命中并定位到了某个图层
+         */
+        pickLayerAt(mx, my) {
+            const hits = this.gizmo.pickLayersAt(mx, my);
+            if (hits.length === 0) return false;
+
+            const layerIndex = hits[this.cycleIndex(hits, mx, my)];
+            this.lastPick = { x: mx, y: my, key: hits.join(","), layerIndex };
+            this.selectLayerRow(layerIndex);
+            return true;
+        }
+
+        /** 光标离开或状态变化时重置轮换，下次点击从最上层重新开始 */
+        resetPickCycle() {
+            this.lastPick = null;
+        }
+
+        /**
+         * 鼠标在画布上移动时，预览光标下会被选中的那个图层。
+         *
+         * 预览的目标与 pickLayerAt 完全一致（含轮换位置），
+         * 这样看到的框就是点下去会选中的东西。
+         *
+         * 面板侧的行悬浮闪烁优先：那是用户正在操作列表，
+         * 此时画布预览会互相打断。
+         *
+         * @param {number} mx - 主画布坐标
+         * @param {number} my
+         */
+        previewPickAt(mx, my) {
+            // 已进入句柄操作状态时不预览，避免和选中框叠在一起分不清
+            if (this.gizmo.isActive() || this.gizmo.isDragging()) return;
+            // 面板侧正在闪烁，让它占用高亮框
+            if (this.highlightBoxTimer !== null || this.highlightTimer !== null) return;
+
+            const layerIndex = this.peekPickTarget(mx, my);
+            if (layerIndex === null) {
+                this.clearHoverPreview();
+                return;
+            }
+
+            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
+            const label = layer?.Name || ItemColorItem?.Asset?.Description
+                || ItemColorItem?.Asset?.Name || "";
+            this.gizmo.setHighlight([layerIndex], label, true);
+        }
+
+        /** 收掉画布悬浮预览框。只清 hover 态的，不影响面板闪烁的提示框 */
+        clearHoverPreview() {
+            if (this.gizmo.highlight?.hover) this.gizmo.clearHighlight();
+        }
+
+        /**
+         * 算出此刻点击会选中哪个图层，但不改变轮换状态。
+         * 供悬浮预览使用，所以必须是只读的。
+         * @returns {number|null}
+         */
+        peekPickTarget(mx, my) {
+            const hits = this.gizmo.pickLayersAt(mx, my);
+            if (hits.length === 0) return null;
+            return hits[this.cycleIndex(hits, mx, my)];
+        }
+
+        /**
+         * 轮换下标：同一位置连续点击时依次后移，位置或命中集合一变就归零。
+         * @param {number[]} hits - 命中的图层，已按面积升序
+         * @returns {number}
+         */
+        cycleIndex(hits, mx, my) {
+            // 光标挪动超过这个距离就视为新的一次拾取，不再延续轮换。
+            // 取句柄直径量级，容忍点击时的轻微手抖
+            const SAME_SPOT = GIZMO_HANDLE_R * 2;
+            const last = this.lastPick;
+            const sameSpot = last
+                && Math.hypot(mx - last.x, my - last.y) <= SAME_SPOT
+                && last.key === hits.join(",");
+            return sameSpot ? (hits.indexOf(last.layerIndex) + 1) % hits.length : 0;
+        }
+
+        /**
+         * 定位到某图层的层级行：展开祖先链、滚动到可见处、闪一下确认。
+         * 不写选中态，所以不会展开变换行、也不出现操作句柄。
+         * @param {number} layerIndex
+         */
+        selectLayerRow(layerIndex) {
+            const node = this.findNodeForLayer(layerIndex);
+            if (!node) return;
+
+            this.stopAllHighlight();
+
+            // 层级行只在父节点展开后才存在，先把整条祖先链打开
+            for (let p = node.parent; p; p = p.parent) this.expandedNodes.add(p.id);
+            this.expandedLayeringNodes.add(node.id);
+
+            const layeringId = `${node.id}_layering_${layerIndex}`;
+            // 只定位到行，不写 selectedLayeringId：那会展开变换行并
+            // 拉起操作句柄。画布点击的意图是"找到这一层"，
+            // 要不要改变换由用户再点该行的选中按钮决定
+            this.selectedNodeId = layeringId;
+
+            // 展开后闪一下并框住范围，确认点中的是哪一层
+            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
+            const label = layer?.Name || ItemColorItem?.Asset?.Description
+                || ItemColorItem?.Asset?.Name || "";
+
+            this.updateWindow();
+            this.scrollLayeringIntoView(layeringId);
+            this.showHighlightBox([layerIndex], label);
+        }
+
+        /** 把指定层级行滚动到面板可见区域 */
+        scrollLayeringIntoView(layeringId) {
+            if (!this.windowElement) return;
+            const row = this.windowElement.querySelector(
+                `[data-layering-id="${CSS.escape(layeringId)}"]`);
+            row?.scrollIntoView({ block: 'nearest' });
         }
 
         /**
@@ -4130,6 +4299,7 @@
             this.hoveredNodeId = null;
             this.hoveredLayeringNodeId = null;
             this.originalOpacities.clear();
+            this.resetPickCycle();
         }
 
         /**
@@ -4381,19 +4551,22 @@
         }
 
         /**
-         * 是否需要收集绘制数据。选中态和高亮态都要，缺一个框就画不出来。
-         * 没有任何需求时跳过捕获，省掉每帧的字符串匹配。
+         * 是否需要收集绘制数据。
+         *
+         * 面板可见时一律收集：画布点击拾取要对所有图层做命中判定，
+         * 而用户可能在任何时候点击，没法预先知道要哪一个。
+         * 单次收集就是几十个字符串比对，代价远小于漏掉数据导致点不中。
          */
         isCapturing() {
-            return this.isActive() || this.highlight !== null;
+            return this.win?.isVisible || this.isActive() || this.highlight !== null;
         }
 
         /**
-         * 是否需要全部图层的捕获数据。物品级要求并集，
-         * 高亮可能覆盖多个图层，两者都不能只收集选中的那一个。
+         * 是否需要全部图层的捕获数据。物品级要求并集、高亮可能覆盖多个图层、
+         * 点击拾取要遍历所有图层，三者都不能只收集选中的那一个。
          */
         needsAllCaptures() {
-            return this.highlight !== null;
+            return this.highlight !== null || !!this.win?.isVisible;
         }
 
         /**
@@ -4402,7 +4575,7 @@
          * @param {number[]} indices - 要框住的图层索引
          * @param {string} [label] - 框上方的文字标注
          */
-        setHighlight(indices, label) {
+        setHighlight(indices, label, hover = false) {
             const list = Array.isArray(indices) ? indices.filter(i => Number.isInteger(i)) : [];
             if (list.length === 0) {
                 this.clearHighlight();
@@ -4410,8 +4583,9 @@
             }
             const key = list.join(",");
             // 同一批图层重复设置时保留原对象，避免每帧触发无谓的状态变化
-            if (this.highlight && this.highlight.key === key && this.highlight.label === label) return;
-            this.highlight = { indices: list, label: label || "", key };
+            if (this.highlight && this.highlight.key === key
+                && this.highlight.label === label && this.highlight.hover === hover) return;
+            this.highlight = { indices: list, label: label || "", key, hover };
         }
 
         /** 清除高亮范围 */
@@ -4891,6 +5065,48 @@
         }
 
         /**
+         * 找出主画布坐标命中的所有图层，按包围盒面积从小到大排序。
+         *
+         * 小的排前面是因为大图层（衣服主体、遮罩）往往盖住整个躯干，
+         * 若按图层顺序返回，点小配件时总是先选中大的那个。
+         *
+         * @param {number} mx
+         * @param {number} my
+         * @returns {number[]} 命中的图层索引
+         */
+        pickLayersAt(mx, my) {
+            const layers = ItemColorItem?.Asset?.Layer;
+            const map = this.getCanvasToScreen();
+            if (!Array.isArray(layers) || !map || this.captures.size === 0) return [];
+
+            const hits = [];
+            for (const [idx, cap] of this.captures) {
+                const layer = layers[idx];
+                const rect = this.getContentRect(cap.url);
+                if (!layer || !rect) continue;
+
+                const q = this.transformRect(cap, rect, this.readTransforms(layer));
+                const screen = q.corners.map(p => this.toScreenPoint(p, map));
+                // 极小的图层撑一下再判定，否则贴花之类几乎点不中
+                const center = this.toScreenPoint(q.center, map);
+                const corners = this.padCorners(screen, center);
+                if (!this.pointInQuad(mx, my, corners)) continue;
+
+                // 鞋带式的面积：叉积法适用于任意凸四边形
+                let area = 0;
+                for (let i = 0; i < 4; i++) {
+                    const [x1, y1] = corners[i];
+                    const [x2, y2] = corners[(i + 1) % 4];
+                    area += x1 * y2 - x2 * y1;
+                }
+                hits.push({ idx, area: Math.abs(area) / 2 });
+            }
+
+            hits.sort((a, b) => a.area - b.area || a.idx - b.idx);
+            return hits.map(h => h.idx);
+        }
+
+        /**
          * 高亮框在主画布上的角点。走并集包围盒，不带句柄，
          * 因为高亮只是提示范围，不参与交互。
          * @returns {{corners: number[][], center: number[]}|null}
@@ -5232,6 +5448,12 @@
             const quad = this.getHighlightQuad();
             if (!quad) return;
 
+            // 画布悬浮的预览框更淡：它跟着光标持续出现，
+            // 和点击后那次确认性的提示要能区分开
+            const hover = this.highlight.hover;
+            const fill = hover ? GIZMO_STYLE.hoverFill : GIZMO_STYLE.hlFill;
+            const stroke = hover ? GIZMO_STYLE.hoverStroke : GIZMO_STYLE.hlStroke;
+
             ctx.save();
             const path = () => {
                 ctx.beginPath();
@@ -5239,16 +5461,17 @@
                 ctx.closePath();
             };
             path();
-            ctx.fillStyle = GIZMO_STYLE.hlFill;
+            ctx.fillStyle = fill;
             ctx.fill();
 
             path();
             ctx.setLineDash(GIZMO_STYLE.hlDash);
             ctx.strokeStyle = GIZMO_STYLE.outline;
-            ctx.lineWidth = GIZMO_STYLE.outlineW;
+            // 悬浮框的黑描边也减细，否则淡色线被压得看不出来
+            ctx.lineWidth = hover ? GIZMO_STYLE.strokeW + 1 : GIZMO_STYLE.outlineW;
             ctx.stroke();
             path();
-            ctx.strokeStyle = GIZMO_STYLE.hlStroke;
+            ctx.strokeStyle = stroke;
             ctx.lineWidth = GIZMO_STYLE.strokeW;
             ctx.stroke();
             ctx.setLineDash([]);
@@ -5271,9 +5494,10 @@
             // 框顶太靠上时标签会跑出画布，改放到框内侧
             const cy = top - h / 2 - 4 < h ? top + h / 2 + 4 : top - h / 2 - 4;
 
-            ctx.fillStyle = GIZMO_STYLE.hlLabelBg;
+            const hover = this.highlight.hover;
+            ctx.fillStyle = hover ? GIZMO_STYLE.hoverLabelBg : GIZMO_STYLE.hlLabelBg;
             ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
-            ctx.fillStyle = GIZMO_STYLE.hlStroke;
+            ctx.fillStyle = hover ? GIZMO_STYLE.hoverStroke : GIZMO_STYLE.hlStroke;
             ctx.fillText(text, cx, cy);
         }
 
@@ -5483,16 +5707,27 @@
     // 不 stopPropagation，让 BC 自己的 pointerdown 照常收到事件；
     // 误触改由 CommonClick 钩子按命中判定精确拦截。
     function onCanvasPointerDown(e) {
-        if (gizmo.isDragging() || !gizmoInteractive()) return;
+        if (gizmo.isDragging() || !inColorScreen()) return;
 
         const p = toGameCoords(e);
-        if (!p || !gizmo.hitTest(p.x, p.y)) return;
+        if (!p) return;
 
-        gizmo.shiftKey = !!e.shiftKey;
-        if (gizmo.startDrag(p.x, p.y)) {
-            itemColorAdjustmentWindow.stopAllHighlight();
-            beginDocDrag();
-            // 只阻默认行为（文字选中、触屏滚动），不阻断传播
+        // 已有选中框时，句柄与平移区优先，拖拽不能被拾取抢走
+        if (gizmo.isActive() && gizmo.hitTest(p.x, p.y)) {
+            gizmo.shiftKey = !!e.shiftKey;
+            if (gizmo.startDrag(p.x, p.y)) {
+                itemColorAdjustmentWindow.stopAllHighlight();
+                beginDocDrag();
+                // 只阻默认行为（文字选中、触屏滚动），不阻断传播
+                e.preventDefault();
+            }
+            return;
+        }
+
+        // 没落在当前包围框上：按点击位置拾取图层。
+        // 命中即接管这次点击，否则会同时触发本体的换装按钮
+        if (itemColorAdjustmentWindow.pickLayerAt(p.x, p.y)) {
+            gizmoSuppressClick = true;
             e.preventDefault();
         }
     }
@@ -5538,16 +5773,32 @@
     }, true);
 
     mod.hookFunction("CommonMouseMove", 0, (args, next) => {
-        // 拖拽中的移动由 document 监听接管，这里只负责悬浮高亮
-        if (gizmoInteractive() && !gizmo.isDragging()) {
+        if (inColorScreen() && !gizmo.isDragging()) {
             const p = toGameCoords(args[0]);
             if (p) {
                 gizmo.shiftKey = !!args[0].shiftKey;
-                gizmo.hoverHandle = gizmo.hitTest(p.x, p.y);
+                // 拖拽中的移动由 document 监听接管，这里只负责句柄悬浮态
+                gizmo.hoverHandle = gizmo.isActive() ? gizmo.hitTest(p.x, p.y) : null;
+                // 未进入句柄状态时预览光标下的图层，让点击前就能看清目标
+                itemColorAdjustmentWindow.previewPickAt(p.x, p.y);
             }
         }
         return next(args);
     });
+
+    // 鼠标移出画布后重新点击应当从最上层开始，而不是接着上次的轮换
+    document.addEventListener('pointerdown', (e) => {
+        if (e.target instanceof Element && e.target.id !== "MainCanvas") {
+            itemColorAdjustmentWindow.resetPickCycle();
+        }
+    }, true);
+
+    // CommonMouseMove 只在指针位于画布上时触发，移出后要主动收掉预览框，
+    // 否则它会停在最后一次的位置上不消失
+    document.addEventListener('pointermove', (e) => {
+        if (!(e.target instanceof Element) || e.target.id === "MainCanvas") return;
+        itemColorAdjustmentWindow.clearHoverPreview();
+    }, true);
 
     // 拦掉因拖拽产生的那次 click，避免松手位置正好落在底层按钮上时误触。
     //
