@@ -48,6 +48,78 @@
         }
     }
 
+    // alpha 紧包围盒：扫描贴图剔除全透明边缘，得到贴合内容的框。
+    // 实测衣物贴图内容只占全幅的 1%~8%（同组共用 500x1000 画布，其余是留白），
+    // 不剔除的话框大得几乎等于整个角色轮廓，句柄也离图案很远。
+    const ALPHA_BBOX = {
+        enabled: true,
+        threshold: 8,   // alpha 低于此值视为透明，略高于 0 以容忍抗锯齿杂边
+        maxPixels: 4e6  // 超过这个像素量就跳过，避免同步扫描卡顿
+    };
+
+    // alpha 边界缓存，键为贴图 URL。值为 {x, y, w, h} 或 null（整幅皆透明 / 读不到）
+    const alphaBoundsCache = new Map();
+
+    /**
+     * 求贴图中非透明像素的边界框，返回贴图局部坐标下的矩形。
+     *
+     * 为什么需要：同组贴图共用画布尺寸，实际图案往往只占其中一小块，
+     * 剩下全是透明留白。直接用 naturalWidth/Height 画框会明显偏大，
+     * 框住一片空白，句柄也离图案很远。
+     *
+     * 代价：需要把图画到离屏 canvas 再 getImageData，属于同步像素读取。
+     * 所以按 URL 缓存，且对超大图直接放弃。
+     *
+     * @param {string} url - 贴图 URL
+     * @param {HTMLImageElement} img - 已加载的图片
+     * @returns {{x: number, y: number, w: number, h: number}|null}
+     */
+    function getAlphaBounds(url, img) {
+        if (!ALPHA_BBOX.enabled || !url || !img) return null;
+        if (alphaBoundsCache.has(url)) return alphaBoundsCache.get(url);
+
+        const W = img.naturalWidth || img.width;
+        const H = img.naturalHeight || img.height;
+        // 宽高为 1 是 GLDrawLoadImage 的占位纹理，等下一帧真正加载完再算
+        if (!(W > 1 && H > 1)) return null;
+
+        let result = null;
+        if (W * H <= ALPHA_BBOX.maxPixels) {
+            try {
+                const cv = document.createElement("canvas");
+                cv.width = W;
+                cv.height = H;
+                const c = cv.getContext("2d", { willReadFrequently: true });
+                c.drawImage(img, 0, 0);
+                // 跨域贴图会在这里抛 SecurityError，交给下面兜底
+                const data = c.getImageData(0, 0, W, H).data;
+
+                const th = ALPHA_BBOX.threshold;
+                let minX = W, minY = H, maxX = -1, maxY = -1;
+                for (let y = 0; y < H; y++) {
+                    const row = y * W * 4;
+                    for (let x = 0; x < W; x++) {
+                        if (data[row + x * 4 + 3] > th) {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+                if (maxX >= minX && maxY >= minY) {
+                    result = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+                }
+            } catch {
+                // 读像素失败（多为跨域），退回整幅尺寸
+                result = null;
+            }
+        }
+
+        alphaBoundsCache.set(url, result);
+        return result;
+    }
+
     /**
      * 放开资产的透明度下限。
      *
@@ -140,10 +212,39 @@
         sliderW: 165    // 透明度控件容器宽度（滑条 + 输入框 + %）
     };
 
+    // 包围框的视觉样式，集中在一处便于统一调整
+    const GIZMO_STYLE = {
+        outline: "rgba(0,0,0,0.75)",  // 外描边，保证浅色贴图上也看得清
+        layer: "#4FC3F7",             // 单图层：实线蓝
+        item: "#7CB342",              // 物品整体：虚线绿（各图层并集）
+        active: "#FFB300",            // 句柄悬浮 / 拖拽中
+        handleFill: "#FFFFFF",
+        outlineW: 4,
+        strokeW: 2,
+        itemDash: [12, 8],
+        // 悬浮高亮：半透明填充 + 细虚线，与选中框的实心句柄区分开。
+        // 填充压得很淡，避免糊住底下的贴图细节，范围主要靠虚线边框表达
+        hlFill: "rgba(255,179,0,0.07)",
+        hlStroke: "rgba(255,179,0,0.95)",
+        hlDash: [8, 6],
+        hlLabelBg: "rgba(0,0,0,0.6)",
+        hlFont: 26
+    };
+
+    // 透明度闪烁的时长。短促一下即可，太长会挡住对颜色的判断
+    const HIGHLIGHT_DURATION = 200;
+    // 高亮框的时长。比闪烁久一些，闪烁过去后还能再看清一会儿范围
+    const HIGHLIGHT_BOX_DURATION = 500;
+
     // 包围框句柄的屏幕半径（主画布坐标，2000x1000 空间）
     const GIZMO_HANDLE_R = 9;
     // 旋转句柄距包围框上边的距离
     const GIZMO_ROTATE_DIST = 46;
+    // 包围框在屏幕上的最小边长。小图案（几十像素的贴花、铭牌之类）算出来的框
+    // 只有十几像素宽，八个句柄会挤成一团分不开也点不准。
+    // 不足时把框沿自身两轴对称撑到这个尺寸，只影响显示与命中，
+    // 缩放换算仍用真实的 edges，所以拖动比例不变。
+    const GIZMO_MIN_BOX = GIZMO_HANDLE_R * 2 * 3 + 6;  // 三个句柄并排的宽度
     // 八方向缩放句柄。x/y 取值 -1 / 0 / 1，表示所在边角
     const GIZMO_HANDLES = [
         { id: "nw", x: -1, y: -1 }, { id: "n", x: 0, y: -1 }, { id: "ne", x: 1, y: -1 },
@@ -1501,7 +1602,9 @@
             this.colorPickerPanel = new ColorPickerPanel(); // 颜色选择器面板实例
             this.hoveredNodeId = null; // 当前悬浮的节点ID
             this.hoveredLayeringNodeId = null; // 当前悬浮的层级节点ID
-            this.highlightTimer = null; // 闪烁定时器
+            this.highlightTimer = null; // 透明度闪烁定时器
+            // 高亮框的定时器。框比闪烁多留一会儿，所以要独立计时
+            this.highlightBoxTimer = null;
             this.highlightedNode = null; // 当前闪烁的节点
             this.highlightedLayerIndex = null; // 当前闪烁的图层索引
             this.originalOpacities = new Map(); // 存储原始透明度值（透明度槽位 -> opacity）
@@ -3943,6 +4046,8 @@
             if (this.highlightedLayerIndex !== null) {
                 this.stopLayerHighlight();
             }
+            // 上面两条都没进时框可能还挂着（透明度全被排除的节点），兜一下
+            this.hideHighlightBox();
         }
 
         /**
@@ -3998,6 +4103,7 @@
             }
             this.colorPickerPanel.hide();
             this.gizmo.endDrag();
+            this.hideHighlightBox();
         }
 
         /**
@@ -4016,7 +4122,7 @@
                 this.windowElement = null;
             }
             this.colorPickerPanel.hide();
-            this.gizmo.clear();
+            this.gizmo.reset();
             this.isVisible = false;
             this.treeNodes = [];
             this.selectedNodeId = null;
@@ -4053,6 +4159,10 @@
 
             if (layerIndices.length === 0) return;
 
+            // 同时在角色上画个半透明框标出范围。图层小或被遮挡时，
+            // 单看透明度变化很难定位到底是哪一块
+            this.showHighlightBox(layerIndices, this.getHighlightLabel(node));
+
             // 获取第一个图层的当前透明度（用于判断闪烁方向）
             const currentOpacity = this.getLayerOpacity(layerIndices[0]);
 
@@ -4073,11 +4183,10 @@
                 CharacterLoadCanvas(ItemColorCharacter);
             }
 
-            // 0.2s后恢复
             this.highlightTimer = setTimeout(() => {
                 this.restoreNodeHighlight();
                 this.highlightTimer = null;
-            }, 200);
+            }, HIGHLIGHT_DURATION);
         }
 
         /**
@@ -4105,6 +4214,9 @@
             this.highlightedLayerIndex = layerIndex;
             this.originalOpacities.clear();
 
+            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
+            this.showHighlightBox([layerIndex], layer?.Name || ItemColorItem?.Asset?.Name || "");
+
             // 获取当前透明度
             const currentOpacity = this.getLayerOpacity(layerIndex);
 
@@ -4119,11 +4231,51 @@
                 CharacterLoadCanvas(ItemColorCharacter);
             }
 
-            // 0.2s后恢复
             this.highlightTimer = setTimeout(() => {
                 this.restoreLayerHighlight();
                 this.highlightTimer = null;
-            }, 200);
+            }, HIGHLIGHT_DURATION);
+        }
+
+        /**
+         * 显示高亮框并起独立计时。框比透明度闪烁留得久，
+         * 闪烁过去后还能再看清一会儿范围。
+         * @param {number[]} layerIndices
+         * @param {string} label
+         */
+        showHighlightBox(layerIndices, label) {
+            this.clearHighlightBoxTimer();
+            this.gizmo.setHighlight(layerIndices, label);
+            this.highlightBoxTimer = setTimeout(() => {
+                this.highlightBoxTimer = null;
+                this.gizmo.clearHighlight();
+            }, HIGHLIGHT_BOX_DURATION);
+        }
+
+        /** 只停掉框的计时，不动框本身 */
+        clearHighlightBoxTimer() {
+            if (this.highlightBoxTimer !== null) {
+                clearTimeout(this.highlightBoxTimer);
+                this.highlightBoxTimer = null;
+            }
+        }
+
+        /** 立即收掉高亮框，连计时一起清。鼠标离开或开始交互时用 */
+        hideHighlightBox() {
+            this.clearHighlightBoxTimer();
+            this.gizmo.clearHighlight();
+        }
+
+        /**
+         * 高亮框上方显示的文字。物品整体用资产名，分组用组名，图层用图层名。
+         * @param {Object} node
+         * @returns {string}
+         */
+        getHighlightLabel(node) {
+            const assetName = ItemColorItem?.Asset?.Description || ItemColorItem?.Asset?.Name || "";
+            if (!node) return assetName;
+            if (node.type === 'root') return assetName;
+            return node.name || assetName;
         }
 
         /**
@@ -4146,6 +4298,7 @@
          * 恢复节点闪烁
          */
         restoreNodeHighlight() {
+            // 框不在这里清：它有自己更长的计时，由 highlightBoxTimer 负责
             if (!ItemColorState || this.originalOpacities.size === 0) return;
 
             this.restoreOpacitySlots();
@@ -4182,6 +4335,7 @@
                 clearTimeout(this.highlightTimer);
                 this.highlightTimer = null;
             }
+            this.hideHighlightBox();
             this.restoreNodeHighlight();
         }
 
@@ -4193,6 +4347,7 @@
                 clearTimeout(this.highlightTimer);
                 this.highlightTimer = null;
             }
+            this.hideHighlightBox();
             this.restoreLayerHighlight();
         }
     }
@@ -4220,6 +4375,48 @@
             this.shiftKey = false;    // 最近一次鼠标事件的 Shift 状态，用于角度吸附
             this.drawAt = null;       // 角色本帧的绘制位置与缩放，来自 DrawCharacter
             this.frameDrawAt = null;  // 本帧收集中的候选，帧末提交到 drawAt
+            // 悬浮高亮：闪烁期间用半透明框标出目标图层的范围。
+            // { indices: number[], label: string } 或 null
+            this.highlight = null;
+        }
+
+        /**
+         * 是否需要收集绘制数据。选中态和高亮态都要，缺一个框就画不出来。
+         * 没有任何需求时跳过捕获，省掉每帧的字符串匹配。
+         */
+        isCapturing() {
+            return this.isActive() || this.highlight !== null;
+        }
+
+        /**
+         * 是否需要全部图层的捕获数据。物品级要求并集，
+         * 高亮可能覆盖多个图层，两者都不能只收集选中的那一个。
+         */
+        needsAllCaptures() {
+            return this.highlight !== null;
+        }
+
+        /**
+         * 设置高亮范围。只记图层索引，几何在绘制时按当前捕获数据实时算，
+         * 所以闪烁期间图层被改透明度也不影响框的位置。
+         * @param {number[]} indices - 要框住的图层索引
+         * @param {string} [label] - 框上方的文字标注
+         */
+        setHighlight(indices, label) {
+            const list = Array.isArray(indices) ? indices.filter(i => Number.isInteger(i)) : [];
+            if (list.length === 0) {
+                this.clearHighlight();
+                return;
+            }
+            const key = list.join(",");
+            // 同一批图层重复设置时保留原对象，避免每帧触发无谓的状态变化
+            if (this.highlight && this.highlight.key === key && this.highlight.label === label) return;
+            this.highlight = { indices: list, label: label || "", key };
+        }
+
+        /** 清除高亮范围 */
+        clearHighlight() {
+            this.highlight = null;
         }
 
         /**
@@ -4312,7 +4509,7 @@
             this.captures.clear();
         }
 
-        /** 清除选中态 */
+        /** 清除选中态。高亮是独立状态，由闪烁流程自己管，这里不动 */
         clear() {
             this.layerIndex = null;
             this.itemLevel = false;
@@ -4321,6 +4518,12 @@
             this.captures.clear();
             this.drawAt = null;
             this.frameDrawAt = null;
+        }
+
+        /** 面板关闭时的完全复位，选中与高亮一起清掉 */
+        reset() {
+            this.clear();
+            this.highlight = null;
         }
         /**
          * 取选中的 AssetLayer。物品级返回 null，正好对应
@@ -4356,6 +4559,27 @@
                 ?? fromCache(bcGlobal("DrawCacheImage")?.get(url))
                 ?? null;
         }
+
+        /**
+         * 贴图的内容矩形：优先取非透明像素的边界，拿不到则退回整幅贴图。
+         *
+         * tw/th 始终是整幅尺寸，因为渲染的旋转与缩放支点固定在整幅贴图中心
+         * （见 GLDrawImage 里的 tex.width/2），换算时不能用内容中心代替。
+         *
+         * @param {string} url
+         * @returns {{tw: number, th: number, x: number, y: number, w: number, h: number}|null}
+         */
+        getContentRect(url) {
+            const size = this.getTextureSize(url);
+            if (!size) return null;
+            const { width: tw, height: th } = size;
+
+            const img = bcGlobal("GLDrawImageCache")?.get(url) ?? bcGlobal("DrawCacheImage")?.get(url);
+            const ab = getAlphaBounds(url, img);
+            return ab
+                ? { tw, th, x: ab.x, y: ab.y, w: ab.w, h: ab.h }
+                : { tw, th, x: 0, y: 0, w: tw, h: th };
+        }
         /**
          * 位移倍率。WebGL 路径下 dstX 已含一份 TranslationX，
          * GLDrawImage 的矩阵里又叠加了一次，实际位移是设定值的两倍；
@@ -4384,25 +4608,62 @@
         getLayerLocalQuad() {
             const layer = this.getLayer();
             const cap = this.captures.get(this.layerIndex);
-            const tex = this.getTextureSize(cap?.url);
-            if (!layer || !tex || !cap) return null;
+            const rect = this.getContentRect(cap?.url);
+            if (!layer || !rect || !cap) return null;
 
             const t = this.readTransforms(layer);
-            const f = this.getTranslationFactor();
-            const { width: tw, height: th } = tex;
-            const cx = cap.x + tw / 2 + t.TranslationX * f;
-            const cy = cap.y + th / 2 + t.TranslationY * f;
+            const q = this.transformRect(cap, rect, t);
 
-            const hw = tw / 2 * t.ScaleX;
-            const hh = th / 2 * t.ScaleY;
+            return {
+                corners: q.corners,
+                center: q.center,
+                pivot: q.pivot,
+                edges: q.edges,
+                // 缩放换算的参考尺寸取画面上框的实际大小（已含当前缩放）
+                tex: { width: rect.w * t.ScaleX, height: rect.h * t.ScaleY }
+            };
+        }
+
+        /**
+         * 把贴图内容矩形按图层变换映射到角色画布坐标。
+         *
+         * 复现 GLDrawImage 的矩阵链：缩放与旋转的支点都是整幅贴图中心
+         * （tex.width/2, tex.height/2），不是内容矩形的中心。所以内容矩形
+         * 偏离画布中心时，缩放会同时把它推离支点，这与本体渲染一致。
+         *
+         * @param {{x: number, y: number}} cap - 该图层的绘制原点
+         * @param {{tw: number, th: number, x: number, y: number, w: number, h: number}} rect
+         * @param {{TranslationX: number, TranslationY: number, ScaleX: number, ScaleY: number, Rotation: number}} t
+         * @returns {{corners: number[][], center: number[], pivot: number[]}}
+         */
+        transformRect(cap, rect, t) {
+            const f = this.getTranslationFactor();
+            // 支点：整幅贴图中心，加上位移
+            const px = cap.x + rect.tw / 2 + t.TranslationX * f;
+            const py = cap.y + rect.th / 2 + t.TranslationY * f;
+
             const a = t.Rotation * Math.PI / 180;
             const cos = Math.cos(a), sin = Math.sin(a);
+            // 内容矩形四角相对支点的偏移，先缩放再旋转
+            const map = (ux, uy) => {
+                const dx = (ux - rect.tw / 2) * t.ScaleX;
+                const dy = (uy - rect.th / 2) * t.ScaleY;
+                return [px + dx * cos - dy * sin, py + dx * sin + dy * cos];
+            };
 
-            const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => [
-                cx + dx * cos - dy * sin,
-                cy + dx * sin + dy * cos
-            ]);
-            return { corners, center: [cx, cy], tex };
+            const x2 = rect.x + rect.w, y2 = rect.y + rect.h;
+            const corners = [map(rect.x, rect.y), map(x2, rect.y), map(x2, y2), map(rect.x, y2)];
+            return {
+                corners,
+                center: map(rect.x + rect.w / 2, rect.y + rect.h / 2),
+                pivot: [px, py],
+                // 四条边到支点的带符号距离（局部轴、含当前缩放），缩放拖拽据此
+                // 换算比例，保证被拖的那条边跟着鼠标走
+                edges: {
+                    x: [(rect.x - rect.tw / 2) * t.ScaleX, (x2 - rect.tw / 2) * t.ScaleX],
+                    y: [(rect.y - rect.th / 2) * t.ScaleY, (y2 - rect.th / 2) * t.ScaleY]
+                }
+            };
         }
 
         /**
@@ -4412,29 +4673,31 @@
          * @returns {{corners: number[][], center: number[], tex: Object}|null}
          */
         getItemLocalQuad() {
+            return this.getUnionLocalQuad(null);
+        }
+
+        /**
+         * 若干图层的轴对齐并集包围框。各图层可能有各自的旋转，合起来没有
+         * 统一朝向，所以取所有角点的外接矩形。物品级选中与悬浮高亮共用此逻辑。
+         *
+         * @param {number[]|null} indices - 参与计算的图层索引，null 表示全部已捕获的
+         * @returns {{corners: number[][], center: number[], tex: Object}|null}
+         */
+        getUnionLocalQuad(indices) {
             const layers = ItemColorItem?.Asset?.Layer;
             if (!Array.isArray(layers) || this.captures.size === 0) return null;
 
-            const f = this.getTranslationFactor();
+            const wanted = indices ? new Set(indices) : null;
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
             for (const [idx, cap] of this.captures) {
+                if (wanted && !wanted.has(idx)) continue;
                 const layer = layers[idx];
-                const tex = this.getTextureSize(cap.url);
-                if (!layer || !tex) continue;
+                const rect = this.getContentRect(cap.url);
+                if (!layer || !rect) continue;
 
-                const t = this.readTransforms(layer);
-                const { width: tw, height: th } = tex;
-                const cx = cap.x + tw / 2 + t.TranslationX * f;
-                const cy = cap.y + th / 2 + t.TranslationY * f;
-                const hw = tw / 2 * t.ScaleX;
-                const hh = th / 2 * t.ScaleY;
-                const a = t.Rotation * Math.PI / 180;
-                const cos = Math.cos(a), sin = Math.sin(a);
-
-                for (const [dx, dy] of [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]) {
-                    const px = cx + dx * cos - dy * sin;
-                    const py = cy + dx * sin + dy * cos;
+                const { corners } = this.transformRect(cap, rect, this.readTransforms(layer));
+                for (const [px, py] of corners) {
                     if (px < minX) minX = px;
                     if (px > maxX) maxX = px;
                     if (py < minY) minY = py;
@@ -4548,13 +4811,16 @@
             const map = this.getCanvasToScreen();
             if (!local || !map) return null;
 
-            const toScreen = ([x, y]) => [
-                map.ox + x * map.sx,
-                map.oy + (y - map.yStart) * map.sy
-            ];
+            const toScreen = (p) => this.toScreenPoint(p, map);
 
-            const corners = local.corners.map(toScreen);
             const center = toScreen(local.center);
+            // 小图案的框会小到句柄叠在一起，撑到最小可操作尺寸。
+            // 只改这里的显示与命中几何，local.edges 保持原值，
+            // 所以 applyScale 的换算比例不受影响
+            const corners = this.padCorners(local.corners.map(toScreen), center);
+            // 渲染的旋转支点是整幅贴图中心，剔除透明边后它与框心不再重合，
+            // 旋转拖拽必须绕支点算角度，否则鼠标与图案转动会不同步
+            const pivot = local.pivot ? toScreen(local.pivot) : center;
 
             // 旋转句柄挂在上边中点的外侧，沿框自身的"上"方向偏移
             const [nw, ne] = corners;
@@ -4568,7 +4834,78 @@
                 Math.max(rr, Math.min(1000 - rr, topMid[1] + uy / len * GIZMO_ROTATE_DIST))
             ];
 
-            return { corners, center, rotateAt, topMid, map, tex: local.tex };
+            return { corners, center, pivot, rotateAt, topMid, map, tex: local.tex, edges: local.edges };
+        }
+
+        /**
+         * 角色画布坐标 -> 主画布坐标
+         * @param {number[]} p - [x, y]
+         * @param {Object} map - getCanvasToScreen 的结果
+         * @returns {number[]}
+         */
+        toScreenPoint([x, y], map) {
+            return [map.ox + x * map.sx, map.oy + (y - map.yStart) * map.sy];
+        }
+
+        /**
+         * 框太小时沿自身两轴对称撑到最小尺寸，纯显示层调整。
+         *
+         * 小贴花的框只有十几像素，八个句柄会重叠在一起，既看不清也点不准。
+         * 沿框自身的边向量撑（而不是轴对齐），旋转后的框才不会被拉歪。
+         * 中心保持不动，所以支点、旋转角度、缩放换算都不受影响。
+         *
+         * @param {number[][]} corners - 屏幕坐标四角，顺序 nw, ne, se, sw
+         * @param {number[]} center - 屏幕坐标框心
+         * @returns {number[][]} 撑大后的四角，够大时原样返回
+         */
+        padCorners(corners, center) {
+            const [nw, ne, , sw] = corners;
+            // 框自身的半轴向量：ax 沿上边，ay 沿左边
+            let ax = [(ne[0] - nw[0]) / 2, (ne[1] - nw[1]) / 2];
+            let ay = [(sw[0] - nw[0]) / 2, (sw[1] - nw[1]) / 2];
+            const lx = Math.hypot(ax[0], ax[1]);
+            const ly = Math.hypot(ay[0], ay[1]);
+            const half = GIZMO_MIN_BOX / 2;
+
+            if (lx >= half && ly >= half) return corners;
+
+            // 长度为 0 时没有方向可依，借另一轴的垂线补一个
+            const fix = (v, len, other) => {
+                if (len >= half) return v;
+                if (len > 1e-6) return [v[0] / len * half, v[1] / len * half];
+                const ol = Math.hypot(other[0], other[1]);
+                return ol > 1e-6
+                    ? [-other[1] / ol * half, other[0] / ol * half]
+                    : [half, 0];
+            };
+            const nax = fix(ax, lx, ay);
+            const nay = fix(ay, ly, ax);
+
+            // 按 nw, ne, se, sw 的顺序重建，与 GIZMO_HANDLES 的方向约定一致
+            return [
+                [center[0] - nax[0] - nay[0], center[1] - nax[1] - nay[1]],
+                [center[0] + nax[0] - nay[0], center[1] + nax[1] - nay[1]],
+                [center[0] + nax[0] + nay[0], center[1] + nax[1] + nay[1]],
+                [center[0] - nax[0] + nay[0], center[1] - nax[1] + nay[1]]
+            ];
+        }
+
+        /**
+         * 高亮框在主画布上的角点。走并集包围盒，不带句柄，
+         * 因为高亮只是提示范围，不参与交互。
+         * @returns {{corners: number[][], center: number[]}|null}
+         */
+        getHighlightQuad() {
+            if (!this.highlight) return null;
+            const local = this.getUnionLocalQuad(this.highlight.indices);
+            const map = this.getCanvasToScreen();
+            if (!local || !map) return null;
+            const center = this.toScreenPoint(local.center, map);
+            // 小图层的框只有几像素，撑一下才看得见
+            return {
+                corners: this.padCorners(local.corners.map(p => this.toScreenPoint(p, map)), center),
+                center
+            };
         }
         /**
          * 八向句柄在主画布上的位置。句柄挂在旋转后的框上，所以要按框的
@@ -4656,8 +4993,11 @@
                 // 缩放换算要用包围框自身尺寸，物品级是并集外接矩形
                 tex: quad.tex,
                 center: quad.center,
+                pivot: quad.pivot,
+                edges: quad.edges,
                 map: quad.map,
-                startAngle: Math.atan2(my - quad.center[1], mx - quad.center[0])
+                // 角度基准取渲染支点，与 applyRotate 保持一致
+                startAngle: Math.atan2(my - quad.pivot[1], mx - quad.pivot[0])
             };
             return true;
         }
@@ -4692,7 +5032,7 @@
         /** 旋转句柄：按鼠标绕框心转过的角度增量写入。按住 Shift 吸附到 15 度 */
         applyRotate(mx, my) {
             const d = this.drag;
-            const now = Math.atan2(my - d.center[1], mx - d.center[0]);
+            const now = Math.atan2(my - d.pivot[1], mx - d.pivot[0]);
             const delta = (now - d.startAngle) * 180 / Math.PI;
 
             // 吸附要按画面上看到的角度对齐，再换算回槽位应写的值
@@ -4711,8 +5051,8 @@
         applyScale(mx, my, mode) {
             const d = this.drag;
             const handle = GIZMO_HANDLES.find(h => h.id === mode);
-            // 尺寸取拖拽开始时的包围框：图层级是贴图原始尺寸，
-            // 物品级是全部图层的外接矩形，两者都以中心为支点
+            // 尺寸取拖拽开始时框在画面上的实际大小（已含当前缩放），
+            // 这样拖动距离与框的尺寸变化是 1:1，不受已有缩放影响
             const tex = d.tex;
             if (!handle || !tex?.width || !tex?.height) return;
 
@@ -4724,12 +5064,36 @@
             const lx = dx * Math.cos(a) - dy * Math.sin(a);
             const ly = dx * Math.sin(a) + dy * Math.cos(a);
 
-            // 先求画面上应达到的缩放：支点在中心，拖动边只贡献一半尺寸变化，
-            // 所以分母用半宽半高。tex 已经是含当前缩放的框尺寸
+            // 缩放比例的分母是被拖那条边到渲染支点的距离，不是框的半宽。
+            // 支点固定在整幅贴图中心，剔除透明边后它与框心不重合，
+            // 用半宽会让边跑得比鼠标快（偏离越远越明显）。
+            // 没有 edges 时（物品级并集框）退回半宽，此时支点就是框心。
             const uniform = this.shiftKey;
+            // 取被拖那条边的带符号臂长，缩放后该边位移恰好等于鼠标位移。
+            //
+            // 臂长要按屏幕上撑大后的框取下限：小图案的真实臂长只有几像素，
+            // 直接除会让比例暴涨（拖 25px 就放大四倍，一下撞上 3.0 上限）。
+            // 框已被 padCorners 撑到 GIZMO_MIN_BOX，换算也跟着用那个尺度，
+            // 手感才和框的视觉大小一致
+            // 只放大绝对值、保留原符号：符号编码了这条边在支点的哪一侧，
+            // 支点可能落在内容矩形之外，不能用句柄方向反推
+            const minArm = (axisScale) => GIZMO_MIN_BOX / 2 / (axisScale || 1);
+            const growArm = (v, min) => {
+                if (Math.abs(v) >= min) return v;
+                if (Math.abs(v) > 1e-6) return Math.sign(v) * min;
+                return 0;  // 边压在支点上，交给下面的零臂长分支跳过该轴
+            };
+            const armX = growArm(
+                d.edges ? d.edges.x[handle.x > 0 ? 1 : 0] : handle.x * tex.width / 2,
+                minArm(d.map.sx));
+            const armY = growArm(
+                d.edges ? d.edges.y[handle.y > 0 ? 1 : 0] : handle.y * tex.height / 2,
+                minArm(d.map.sy));
+
             let rx = 1, ry = 1;
-            if (handle.x !== 0) rx = 1 + handle.x * lx / (tex.width / 2);
-            if (handle.y !== 0) ry = 1 + handle.y * ly / (tex.height / 2);
+            // 边正好压在支点上时臂长为 0，比例无从换算，跳过该轴
+            if (handle.x !== 0 && Math.abs(armX) > 1e-6) rx = 1 + lx / armX;
+            if (handle.y !== 0 && Math.abs(armY) > 1e-6) ry = 1 + ly / armY;
 
             if (uniform && handle.x !== 0 && handle.y !== 0) {
                 // 角句柄配合 Shift 等比缩放，取变化幅度较大的轴
@@ -4780,71 +5144,155 @@
             const hover = this.drag ? this.drag.mode : this.hoverHandle;
             ctx.save();
             this.drawFrame(ctx, quad);
+            this.drawPivot(ctx, quad);
             this.drawRotateHandle(ctx, quad, hover === "rotate");
             for (const h of this.getHandlePoints(quad)) {
                 this.drawHandle(ctx, h.x, h.y, hover === h.id);
             }
             ctx.restore();
         }
-        /** 框线。画双色描边，保证在浅色和深色贴图上都看得清 */
-        drawFrame(ctx, quad) {
-            const [nw, ne, se, sw] = quad.corners;
-            const path = () => {
-                ctx.beginPath();
-                ctx.moveTo(nw[0], nw[1]);
-                ctx.lineTo(ne[0], ne[1]);
-                ctx.lineTo(se[0], se[1]);
-                ctx.lineTo(sw[0], sw[1]);
-                ctx.closePath();
-            };
+        /**
+         * 当前模式的主色。物品级是各图层的并集外框，用另一种颜色区别于
+         * 单图层；都不用 active 色，那是句柄的悬浮/拖拽色。
+         */
+        getAccent() {
+            return this.itemLevel ? GIZMO_STYLE.item : GIZMO_STYLE.layer;
+        }
 
+        /**
+         * 描两遍：先粗黑再细彩，保证在浅色和深色贴图上都看得清。
+         * @param {() => void} path - 构建路径的回调，会被调用两次
+         * @param {number[]} [dash]
+         */
+        strokeTwice(ctx, path, dash) {
             path();
             ctx.setLineDash([]);
-            ctx.strokeStyle = "rgba(0,0,0,0.75)";
-            ctx.lineWidth = 4;
+            ctx.strokeStyle = GIZMO_STYLE.outline;
+            ctx.lineWidth = GIZMO_STYLE.outlineW;
             ctx.stroke();
 
             path();
-            // 物品级是各图层的并集外框，用虚线和另一种颜色区别于单图层的实线。
-            // 不用 #FFB300，那是句柄的悬浮/激活色
-            if (this.itemLevel) ctx.setLineDash([12, 8]);
-            ctx.strokeStyle = this.itemLevel ? "#7CB342" : "#4FC3F7";
-            ctx.lineWidth = 2;
+            if (dash) ctx.setLineDash(dash);
+            ctx.strokeStyle = this.getAccent();
+            ctx.lineWidth = GIZMO_STYLE.strokeW;
             ctx.stroke();
             ctx.setLineDash([]);
         }
 
+        /** 框线。物品级用虚线，区别于单图层的实线 */
+        drawFrame(ctx, quad) {
+            this.strokeTwice(ctx, () => {
+                ctx.beginPath();
+                quad.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+                ctx.closePath();
+            }, this.itemLevel ? GIZMO_STYLE.itemDash : null);
+        }
+
         /** 旋转句柄，含一条连到框上边的引线 */
         drawRotateHandle(ctx, quad, active) {
-            ctx.beginPath();
-            ctx.moveTo(quad.topMid[0], quad.topMid[1]);
-            ctx.lineTo(quad.rotateAt[0], quad.rotateAt[1]);
-            ctx.strokeStyle = "rgba(0,0,0,0.75)";
-            ctx.lineWidth = 4;
-            ctx.stroke();
-            ctx.strokeStyle = this.itemLevel ? "#7CB342" : "#4FC3F7";
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(quad.rotateAt[0], quad.rotateAt[1], GIZMO_HANDLE_R, 0, Math.PI * 2);
-            ctx.fillStyle = active ? "#FFB300" : (this.itemLevel ? "#7CB342" : "#4FC3F7");
-            ctx.fill();
-            ctx.strokeStyle = "#000";
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            this.strokeTwice(ctx, () => {
+                ctx.beginPath();
+                ctx.moveTo(quad.topMid[0], quad.topMid[1]);
+                ctx.lineTo(quad.rotateAt[0], quad.rotateAt[1]);
+            });
+            this.fillShape(ctx, () => {
+                ctx.beginPath();
+                ctx.arc(quad.rotateAt[0], quad.rotateAt[1], GIZMO_HANDLE_R, 0, Math.PI * 2);
+            }, active ? GIZMO_STYLE.active : this.getAccent());
         }
 
         /** 单个方形缩放句柄 */
         drawHandle(ctx, x, y, active) {
             const r = GIZMO_HANDLE_R;
-            ctx.beginPath();
-            ctx.rect(x - r, y - r, r * 2, r * 2);
-            ctx.fillStyle = active ? "#FFB300" : "#FFFFFF";
+            this.fillShape(ctx, () => {
+                ctx.beginPath();
+                ctx.rect(x - r, y - r, r * 2, r * 2);
+            }, active ? GIZMO_STYLE.active : GIZMO_STYLE.handleFill);
+        }
+
+        /** 实心填充加黑描边，句柄共用 */
+        fillShape(ctx, path, fill) {
+            path();
+            ctx.fillStyle = fill;
             ctx.fill();
             ctx.strokeStyle = "#000";
-            ctx.lineWidth = 2;
+            ctx.lineWidth = GIZMO_STYLE.strokeW;
             ctx.stroke();
+        }
+
+        /**
+         * 画悬浮高亮框。闪烁期间在角色上标出目标范围，
+         * 比只靠透明度变化更容易定位小图层。
+         * 与选中框独立，两者可以同时显示。
+         */
+        drawHighlight() {
+            const ctx = bcGlobal("MainCanvas");
+            if (!ctx || typeof ctx.save !== "function" || !this.highlight) return;
+
+            const quad = this.getHighlightQuad();
+            if (!quad) return;
+
+            ctx.save();
+            const path = () => {
+                ctx.beginPath();
+                quad.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+                ctx.closePath();
+            };
+            path();
+            ctx.fillStyle = GIZMO_STYLE.hlFill;
+            ctx.fill();
+
+            path();
+            ctx.setLineDash(GIZMO_STYLE.hlDash);
+            ctx.strokeStyle = GIZMO_STYLE.outline;
+            ctx.lineWidth = GIZMO_STYLE.outlineW;
+            ctx.stroke();
+            path();
+            ctx.strokeStyle = GIZMO_STYLE.hlStroke;
+            ctx.lineWidth = GIZMO_STYLE.strokeW;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            if (this.highlight.label) this.drawHighlightLabel(ctx, quad);
+            ctx.restore();
+        }
+
+        /** 高亮框上方的文字标注，贴着框顶外侧，超出上边界时改画在框内 */
+        drawHighlightLabel(ctx, quad) {
+            const text = this.highlight.label;
+            ctx.font = `${GIZMO_STYLE.hlFont}px Arial`;
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "center";
+
+            const padX = 8, h = GIZMO_STYLE.hlFont + 8;
+            const w = ctx.measureText(text).width + padX * 2;
+            const top = Math.min(...quad.corners.map(c => c[1]));
+            const cx = quad.center[0];
+            // 框顶太靠上时标签会跑出画布，改放到框内侧
+            const cy = top - h / 2 - 4 < h ? top + h / 2 + 4 : top - h / 2 - 4;
+
+            ctx.fillStyle = GIZMO_STYLE.hlLabelBg;
+            ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+            ctx.fillStyle = GIZMO_STYLE.hlStroke;
+            ctx.fillText(text, cx, cy);
+        }
+
+        /**
+         * 渲染支点标记。剔除透明边后支点与框心不重合，画个十字提示
+         * 旋转和缩放实际绕哪里发生，否则拖动结果看起来像是错的。
+         */
+        drawPivot(ctx, quad) {
+            const [px, py] = quad.pivot;
+            // 与框心几乎重合时不画，避免和中心区域的视觉噪音叠在一起
+            if (Math.hypot(px - quad.center[0], py - quad.center[1]) < GIZMO_HANDLE_R) return;
+            const r = GIZMO_HANDLE_R;
+            this.strokeTwice(ctx, () => {
+                ctx.beginPath();
+                ctx.moveTo(px - r, py);
+                ctx.lineTo(px + r, py);
+                ctx.moveTo(px, py - r);
+                ctx.lineTo(px, py + r);
+            });
         }
     }
 
@@ -4865,7 +5313,7 @@
      * @returns {number}
      */
     function matchDrawLayerIndex(url) {
-        if (!gizmo.isActive() || typeof url !== "string") return -1;
+        if (!gizmo.isCapturing() || typeof url !== "string") return -1;
         const asset = ItemColorItem?.Asset;
         const layers = asset?.Layer;
         if (!Array.isArray(layers)) return -1;
@@ -4879,8 +5327,9 @@
         const file = url.slice(url.lastIndexOf("/") + 1).replace(/\.png$/i, "");
         if (!file.startsWith(asset.Name)) return -1;
 
-        // 选中单个图层时只需比对那一个，省掉整轮遍历
-        const only = gizmo.itemLevel ? null : gizmo.layerIndex;
+        // 选中单个图层时只需比对那一个，省掉整轮遍历。
+        // 高亮框要框住任意节点（可能是多个图层），此时必须全量收集
+        const only = (gizmo.itemLevel || gizmo.needsAllCaptures()) ? null : gizmo.layerIndex;
 
         // 末段由 [asset.Name, parentAssetName, layerType, colorSegment, layerSegment]
         // 用下划线拼成，layerSegment 即 layer.Name；无名图层没有这一段。
@@ -4935,7 +5384,7 @@
     // colorItem 模式、还有制作与商店，各自的角色位置都不同
     mod.hookFunction("DrawCharacter", 0, (args, next) => {
         const [C, x, y, zoom, heightResize] = args;
-        if (gizmo.isActive() && C && C === ItemColorCharacter) {
+        if (gizmo.isCapturing() && C && C === ItemColorCharacter) {
             gizmo.captureDraw(x, y, zoom, heightResize);
         }
         return next(args);
@@ -4947,8 +5396,12 @@
      * colorItem / colorExpression 模式（道具调色走这里）
      */
     function gizmoInteractive() {
-        if (!gizmo.isActive() || !itemColorAdjustmentWindow.isVisible) return false;
-        // ItemColorState 存在即说明调色界面处于活动状态
+        return gizmo.isActive() && inColorScreen();
+    }
+
+    /** 调色界面是否处于活动状态。ItemColorState 存在即可判定 */
+    function inColorScreen() {
+        if (!itemColorAdjustmentWindow.isVisible) return false;
         return !!(typeof ItemColorState !== 'undefined' && ItemColorState && ItemColorItem);
     }
 
@@ -4958,9 +5411,11 @@
         if (typeof w[runFn] !== "function") continue;
         mod.hookFunction(runFn, 0, (args, next) => {
             const result = next(args);
-            if (gizmoInteractive()) {
+            if (inColorScreen()) {
                 gizmo.commitDraw();
-                gizmo.draw();
+                // 高亮先画，选中框盖在上面，避免半透明填充糊住句柄
+                gizmo.drawHighlight();
+                if (gizmo.isActive()) gizmo.draw();
             }
             return result;
         });
