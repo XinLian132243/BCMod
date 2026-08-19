@@ -404,33 +404,50 @@
         return next(args);
     });
 
-    // 绘制房间按钮
+    // 同步顶部菜单按钮（每帧 ChatRoomDraw 都会调用 ChatRoomTopMenuSync）
     mod.hookFunction(
-        "ChatRoomMenuDraw",
+        "ChatRoomTopMenuSync",
         0,
         (args, next) => {
             next(args);
-            if(SpeakModule.isSpeakEnabled()) {               
-                // 绘制开
-                DrawButton(965, 785, 40, 40, "🎧", "#FFFFFF");
-            } else {                
-                // 绘制关
-                DrawButton(965, 785, 40, 40, "🎧", "#444444");
-            }
-        }
-    );
 
-    // 点击房间内按钮
-    mod.hookFunction(
-        "ChatRoomClick",
-        0,
-        (args, next) => {
-            if (MouseIn(965, 785, 40, 40)) {
-                SpeakModule.toggleSpeak();
-                CheckOnlineCRESetting();
-                return;
-            }            
-            next(args);
+            const bar = document.getElementById("chat-room-top-menu");
+            if (!bar || bar.hasAttribute("hidden")) return;
+
+            const btnId = "cre-speak-btn";
+            // replaceChildren 会清空菜单，所以每次都要重建
+            if (!document.getElementById(btnId)) {
+                const enabled = SpeakModule.isSpeakEnabled();
+                const btn = ElementButton.Create(
+                    btnId,
+                    () => {
+                        SpeakModule.toggleSpeak();
+                        CheckOnlineCRESetting();
+                        // 点击后立刻同步颜色状态（Limited=黄色高亮/开启，Default=白色/关闭）
+                        const b = document.getElementById(btnId);
+                        if (b) b.dataset.color = SpeakModule.isSpeakEnabled() ? "Limited" : "Default";
+                    },
+                    {
+                        tooltip: "语音播报开关",
+                        label: "🎧",
+                        labelPosition: "center",
+                        noStyling: false,
+                    },
+                    {
+                        button: {
+                            classList: ["chat-room-top-menu-btn"],
+                            dataAttributes: { color: enabled ? "Limited" : "Default" },
+                        },
+                    }
+                );
+                bar.appendChild(btn);
+            } else {
+                // 按钮已存在时，每帧同步颜色状态（防止外部状态变化未反映）
+                const existingBtn = document.getElementById(btnId);
+                if (existingBtn) {
+                    existingBtn.dataset.color = SpeakModule.isSpeakEnabled() ? "Limited" : "Default";
+                }
+            }
         }
     );
 
