@@ -29,9 +29,78 @@
 
     // =======================================================================================
     const w = window;
+
+    /**
+     * 取 BC 的顶层全局。
+     * 本体有一批全局是用 let / const 声明的（MainCanvas、CanvasUpperOverflow、
+     * DrawCacheImage 等），这类声明不会挂到 window 上，只能通过词法作用域访问。
+     * 更糟的是 index.html 里有 <canvas id="MainCanvas">，浏览器的命名访问会让
+     * window.MainCanvas 返回那个 DOM 元素，静默拿到错误的对象。
+     * 这里统一用间接 eval 在全局作用域里求值，var / let / const 都能正确取到。
+     * @param {string} name - 全局变量名
+     * @returns {any} 取不到时返回 undefined
+     */
+    function bcGlobal(name) {
+        try {
+            return (0, eval)(`typeof ${name} !== "undefined" ? ${name} : undefined`);
+        } catch {
+            return undefined;
+        }
+    }
     // =======================================================================================
 
     const SETTINGS_KEY = "LianDressOpt";
+
+    // 图层变换配置。范围与步长对齐本体 Layering.js 的 _GetTabContents
+    // 存储位置为 Property.Layer{Prop}[layerName]，绘制侧在 CommonDraw.getTransform 读取：
+    // 平移/旋转与物品级值相加，缩放与物品级值相乘
+    const TRANSFORM_GROUPS = [
+        {
+            key: "Translation",
+            label: "位移",
+            unit: "px",
+            props: [
+                { prop: "TranslationX", axis: "X" },
+                { prop: "TranslationY", axis: "Y" }
+            ],
+            min: -500, max: 500, step: 1, coarseStep: 10, precision: 1, defaultValue: 0
+        },
+        {
+            key: "Scale",
+            // 下限用 0.01：本体 UI 初始 min 是 0.1，但 _UpdateLimits 与
+            // CommonDraw 的实际下限都是 0.01，这里放开到真实限制
+            label: "缩放",
+            props: [
+                { prop: "ScaleX", axis: "X" },
+                { prop: "ScaleY", axis: "Y" }
+            ],
+            min: 0.01, max: 3.0, step: 0.01, coarseStep: 0.1, precision: 2, defaultValue: 1.0
+        },
+        {
+            key: "Rotation",
+            // 单位为度，GLDraw 按 Rotation * PI / 180 换算。
+            // 支点是整幅贴图的中心（tex.width/2, tex.height/2），不是图案自身中心，
+            // 所以离画布中心越远的图层，同样角度下被"甩"出的位移越大。
+            // 步长压到 0.1 度以便精细控制。
+            label: "旋转",
+            unit: "°",
+            props: [
+                { prop: "Rotation", axis: "" }
+            ],
+            min: -180, max: 180, step: 0.1, coarseStep: 1, precision: 2, defaultValue: 0
+        }
+    ];
+
+    // 包围框句柄的屏幕半径（主画布坐标，2000x1000 空间）
+    const GIZMO_HANDLE_R = 9;
+    // 旋转句柄距包围框上边的距离
+    const GIZMO_ROTATE_DIST = 46;
+    // 八方向缩放句柄。x/y 取值 -1 / 0 / 1，表示所在边角
+    const GIZMO_HANDLES = [
+        { id: "nw", x: -1, y: -1 }, { id: "n", x: 0, y: -1 }, { id: "ne", x: 1, y: -1 },
+        { id: "e", x: 1, y: 0 }, { id: "se", x: 1, y: 1 }, { id: "s", x: 0, y: 1 },
+        { id: "sw", x: -1, y: 1 }, { id: "w", x: -1, y: 0 }
+    ];
 
     const DEFAULT_SETTINGS = {
         WheelScrollEnabled: true,
@@ -1388,7 +1457,11 @@
             this.highlightedLayerIndex = null; // 当前闪烁的图层索引
             this.originalOpacities = new Map(); // 存储原始透明度值（透明度槽位 -> opacity）
             this.resizeHandler = null; // window resize 监听，destroy 时解绑
+            this.docListeners = []; // 挂在 document 上的临时监听，重建内容前统一解绑
             this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
+            this.gizmo = new LayerTransformGizmo(this); // 预览区的变换包围框
+            this.deferRefresh = false; // 为 true 时合并角色刷新
+            this.refreshPending = false; // 合并期间是否有刷新请求
         }
 
         /**
@@ -1679,6 +1752,27 @@
         }
 
         /**
+         * 注册一个挂在 document 上的监听，并记录以便统一解绑。
+         * updateWindow 会重建全部行 DOM，若不解绑会逐次累积。
+         * @param {string} type - 事件类型
+         * @param {Function} handler - 处理函数
+         */
+        addDocListener(type, handler) {
+            document.addEventListener(type, handler);
+            this.docListeners.push({ type, handler });
+        }
+
+        /**
+         * 解绑所有由 addDocListener 注册的监听
+         */
+        clearDocListeners() {
+            this.docListeners.forEach(({ type, handler }) => {
+                document.removeEventListener(type, handler);
+            });
+            this.docListeners = [];
+        }
+
+        /**
          * 收集节点（含所有后代）覆盖的图层索引，去重
          * @param {Object} node - 节点对象
          * @returns {number[]} - 图层索引数组
@@ -1855,6 +1949,195 @@
 
             // 更新UI
             this.updateWindow();
+        }
+
+        /**
+         * 图层变换属性在 Property 中的键名（与 CommonDraw 的读取一致）
+         * @param {Object} layer - 图层对象
+         * @returns {string}
+         */
+        getTransformLayerName(layer) {
+            return layer.Name ?? ItemColorItem?.Asset?.Name;
+        }
+
+        /**
+         * 该物品是否允许图层变换。规则对齐本体 Layering._GetTabContents：
+         * 非 AllowNone 的组（Pussy 除外）与 DynamicAfterDraw 资产禁止变换
+         * @returns {{allowed: boolean, reason: string}}
+         */
+        getTransformAvailability() {
+            const asset = ItemColorItem?.Asset;
+            if (!asset) return { allowed: false, reason: "无物品" };
+
+            const group = asset.Group;
+            const isPussy = group?.Name === "Pussy";
+            if (group && !group.AllowNone && !isPussy) {
+                return { allowed: false, reason: "该部位不支持变换" };
+            }
+            if (asset.DynamicAfterDraw) {
+                return { allowed: false, reason: "该物品不支持变换" };
+            }
+            return { allowed: true, reason: "" };
+        }
+
+        /**
+         * 取某个变换分组的有效约束。Pussy 组有特殊限制：
+         * 位移仅 Y 轴且 ±20、缩放 0.5~1.5 且 X/Y 联动、不支持旋转
+         * @param {Object} group - TRANSFORM_GROUPS 中的一项
+         * @returns {null | {min: number, max: number, step: number, precision: number, defaultValue: number, props: Object[], uniform: boolean}}
+         */
+        getTransformConstraint(group) {
+            const asset = ItemColorItem?.Asset;
+            const isPussy = asset?.Group?.Name === "Pussy";
+
+            if (!isPussy) {
+                return {
+                    min: group.min, max: group.max,
+                    step: group.step, coarseStep: group.coarseStep ?? group.step,
+                    precision: group.precision, defaultValue: group.defaultValue,
+                    unit: group.unit ?? "",
+                    props: group.props, uniform: false
+                };
+            }
+
+            if (group.key === "Translation") {
+                // X 轴锁定为 0，只保留 Y
+                return {
+                    min: -20, max: 20, step: 1, coarseStep: 5, precision: 1, defaultValue: 0,
+                    unit: group.unit ?? "",
+                    props: group.props.filter(p => p.prop === "TranslationY"),
+                    uniform: false
+                };
+            }
+            if (group.key === "Scale") {
+                return {
+                    min: 0.5, max: 1.5, step: 0.01, coarseStep: 0.1, precision: 2, defaultValue: 1.0,
+                    unit: group.unit ?? "",
+                    props: group.props, uniform: true
+                };
+            }
+            return null; // Pussy 不支持旋转
+        }
+
+        /**
+         * 读取图层的变换值
+         * @param {Object} layer - 图层对象
+         * @param {string} prop - 属性名，如 TranslationX
+         * @param {number} defaultValue - 未设置时的默认值
+         * @returns {number}
+         */
+        getLayerTransform(layer, prop, defaultValue) {
+            const store = ItemColorItem?.Property?.[`Layer${prop}`];
+            const value = store?.[this.getTransformLayerName(layer)];
+            return typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
+        }
+
+        /**
+         * 写入图层的变换值。等于默认值时删除该键，避免留下冗余数据
+         * @param {Object} layer - 图层对象
+         * @param {string} prop - 属性名
+         * @param {number} value - 目标值
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         */
+        setLayerTransform(layer, prop, value, constraint) {
+            if (!ItemColorItem) return;
+            ItemColorItem.Property ??= {};
+
+            const clamped = Math.max(constraint.min, Math.min(constraint.max, value));
+            const rounded = this.roundTransformValue(clamped, constraint);
+
+            // 缩放联动时 X/Y 一起写
+            const targets = constraint.uniform && prop.startsWith("Scale")
+                ? ["ScaleX", "ScaleY"]
+                : [prop];
+
+            const layerName = this.getTransformLayerName(layer);
+            for (const target of targets) {
+                const key = `Layer${target}`;
+                if (rounded === constraint.defaultValue) {
+                    if (ItemColorItem.Property[key]) {
+                        delete ItemColorItem.Property[key][layerName];
+                        if (Object.keys(ItemColorItem.Property[key]).length === 0) {
+                            delete ItemColorItem.Property[key];
+                        }
+                    }
+                } else {
+                    (ItemColorItem.Property[key] ??= {})[layerName] = rounded;
+                }
+            }
+
+            this.refreshCharacter();
+        }
+
+        /**
+         * 重置图层某个变换分组的所有属性
+         * @param {Object} layer - 图层对象
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         * @param {Object} group - TRANSFORM_GROUPS 中的一项
+         */
+        resetLayerTransform(layer, constraint, group) {
+            if (!ItemColorItem?.Property) return;
+            const layerName = this.getTransformLayerName(layer);
+
+            // 重置时把整组都清掉（含被 Pussy 约束过滤掉的轴）
+            for (const { prop } of group.props) {
+                const key = `Layer${prop}`;
+                const store = ItemColorItem.Property[key];
+                if (!store) continue;
+                delete store[layerName];
+                if (Object.keys(store).length === 0) {
+                    delete ItemColorItem.Property[key];
+                }
+            }
+
+            this.refreshCharacter();
+        }
+
+        /**
+         * 该图层在某个变换分组下是否有非默认值
+         * @param {Object} layer - 图层对象
+         * @param {Object} group - TRANSFORM_GROUPS 中的一项
+         * @returns {boolean}
+         */
+        hasCustomTransform(layer, group) {
+            const layerName = this.getTransformLayerName(layer);
+            return group.props.some(({ prop }) => {
+                const value = ItemColorItem?.Property?.[`Layer${prop}`]?.[layerName];
+                return typeof value === "number" && !Number.isNaN(value);
+            });
+        }
+
+        /**
+         * 刷新角色渲染
+         */
+        refreshCharacter() {
+            // 拖拽包围框时一帧内会写多个属性，逐次重建 canvas 太重，
+            // 这里只打标记，由拖拽逻辑在写完后统一刷一次
+            if (this.deferRefresh) {
+                this.refreshPending = true;
+                return;
+            }
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 合并一批变换写入产生的角色刷新，避免同一帧重复重建 canvas
+         * @param {Function} fn - 执行写入的函数
+         */
+        batchRefresh(fn) {
+            this.deferRefresh = true;
+            this.refreshPending = false;
+            try {
+                fn();
+            } finally {
+                this.deferRefresh = false;
+            }
+            if (this.refreshPending) {
+                this.refreshPending = false;
+                this.refreshCharacter();
+            }
         }
 
         /**
@@ -2137,8 +2420,19 @@
             const activeElement = document.activeElement;
             let focusRestoreInfo = null;
             if (activeElement && content.contains(activeElement)) {
+                // 变换输入框：靠 data 属性精确定位，优先于下面基于 min/max 的推断
+                const transformRow = activeElement.closest?.('[data-transform-node]');
+                if (activeElement.dataset?.transformProp && transformRow) {
+                    focusRestoreInfo = {
+                        transformNode: transformRow.dataset.transformNode,
+                        transformProp: activeElement.dataset.transformProp,
+                        selectionStart: activeElement.selectionStart,
+                        selectionEnd: activeElement.selectionEnd
+                    };
+                }
+
                 // 尝试保存焦点信息
-                if (activeElement.type === 'number') {
+                if (!focusRestoreInfo && activeElement.type === 'number') {
                     const nodeRow = activeElement.closest('[data-node-id]');
                     const nodeId = nodeRow?.dataset?.nodeId;
                     const isOpacity = activeElement.min === '0' && activeElement.max === '100';
@@ -2177,6 +2471,8 @@
                 }
             }
 
+            // 行 DOM 即将全部重建，先解绑上一轮挂到 document 的滑条监听
+            this.clearDocListeners();
             content.innerHTML = '';
 
             // 递归渲染节点
@@ -2437,8 +2733,8 @@
                         }, 100);
                     };
                     
-                    document.addEventListener('mousemove', opacityMouseMoveHandler);
-                    document.addEventListener('mouseup', opacityMouseUpHandler);
+                    this.addDocListener('mousemove', opacityMouseMoveHandler);
+                    this.addDocListener('mouseup', opacityMouseUpHandler);
                     
                     opacitySlider.addEventListener('input', (e) => {
                         if (!isDraggingOpacity) {
@@ -3045,8 +3341,8 @@
                                 }, 100);
                             };
                             
-                            document.addEventListener('mousemove', layeringOpacityMouseMoveHandler);
-                            document.addEventListener('mouseup', layeringOpacityMouseUpHandler);
+                            this.addDocListener('mousemove', layeringOpacityMouseMoveHandler);
+                            this.addDocListener('mouseup', layeringOpacityMouseUpHandler);
                             
                             layeringOpacitySlider.addEventListener('input', (e) => {
                                 if (!isDraggingLayeringOpacity) {
@@ -3206,6 +3502,10 @@
                             };
                             
                             content.appendChild(layeringNodeRow);
+
+                            // 变换行：位移 / 缩放 / 旋转
+                            const transformRow = this.buildTransformRow(layer, layerIndex, node, layeringNodeId);
+                            if (transformRow) content.appendChild(transformRow);
                         });
                     }
                 }
@@ -3217,7 +3517,14 @@
             if (focusRestoreInfo) {
                 setTimeout(() => {
                     let targetElement = null;
-                    if (focusRestoreInfo.nodeId) {
+                    if (focusRestoreInfo.transformNode) {
+                        const row = content.querySelector(
+                            `[data-transform-node="${focusRestoreInfo.transformNode}"]`
+                        );
+                        targetElement = row?.querySelector(
+                            `input[data-transform-prop="${focusRestoreInfo.transformProp}"]`
+                        );
+                    } else if (focusRestoreInfo.nodeId) {
                         const nodeRow = content.querySelector(`[data-node-id="${focusRestoreInfo.nodeId}"]`);
                         if (nodeRow) {
                             if (focusRestoreInfo.inputType === 'opacity') {
@@ -3239,11 +3546,272 @@
                     }
                     if (targetElement) {
                         targetElement.focus();
-                        if (focusRestoreInfo.selectionStart !== null && focusRestoreInfo.selectionEnd !== null) {
-                            targetElement.setSelectionRange(focusRestoreInfo.selectionStart, focusRestoreInfo.selectionEnd);
+                        if (focusRestoreInfo.selectionStart != null && focusRestoreInfo.selectionEnd != null) {
+                            // number 类型输入框在部分浏览器上不支持选区操作
+                            try {
+                                targetElement.setSelectionRange(focusRestoreInfo.selectionStart, focusRestoreInfo.selectionEnd);
+                            } catch { /* 忽略 */ }
                         }
                     }
                 }, 0);
+            }
+        }
+
+        /**
+         * 构建图层的变换行（位移 / 缩放 / 旋转）
+         * @param {Object} layer - 图层对象
+         * @param {number} layerIndex - 图层索引
+         * @param {Object} node - 所属的树节点
+         * @param {string} layeringNodeId - 对应层级行的节点ID
+         * @returns {HTMLElement|null}
+         */
+        buildTransformRow(layer, layerIndex, node, layeringNodeId) {
+            const row = document.createElement('div');
+            row.dataset.transformLayer = String(layerIndex);
+            row.dataset.transformNode = layeringNodeId;
+            row.style.cssText = `
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 6px 12px;
+                padding: 6px 15px 8px ${(node.level + 2) * 30 + 15}px;
+                border-bottom: 1px solid #ddd;
+                background: #f0f0f0;
+            `;
+
+            const availability = this.getTransformAvailability();
+            if (!availability.allowed) {
+                const note = document.createElement('span');
+                note.textContent = availability.reason;
+                note.style.cssText = 'font-size: 15px; color: #888;';
+                row.appendChild(note);
+                return row;
+            }
+
+            row.appendChild(this.buildGizmoToggle(layerIndex));
+
+            let rendered = 0;
+            for (const group of TRANSFORM_GROUPS) {
+                const constraint = this.getTransformConstraint(group);
+                if (!constraint || constraint.props.length === 0) continue;
+                row.appendChild(this.buildTransformGroup(layer, group, constraint));
+                rendered++;
+            }
+
+            if (rendered === 0) return null;
+
+            // 悬浮高亮对应图层，与层级行行为一致
+            row.addEventListener('mouseenter', () => {
+                row.style.background = '#e4e4e4';
+                if (this.isInteracting) return;
+                this.startLayerHighlight(layerIndex);
+            });
+            row.addEventListener('mouseleave', () => {
+                row.style.background = '#f0f0f0';
+                this.stopLayerHighlight();
+            });
+            row.addEventListener('mousedown', () => {
+                this.isInteracting = true;
+                this.stopLayerHighlight();
+            });
+            row.addEventListener('mouseup', () => {
+                setTimeout(() => { this.isInteracting = false; }, 100);
+            });
+
+            return row;
+        }
+
+        /**
+         * 构建变换行最左侧的选中按钮。选中后在左侧角色预览上叠加包围框，
+         * 可直接拖拽进行平移、缩放、旋转
+         * @param {number} layerIndex - 图层索引
+         * @returns {HTMLElement}
+         */
+        buildGizmoToggle(layerIndex) {
+            const selected = this.gizmo.layerIndex === layerIndex;
+            const btn = document.createElement('button');
+            btn.textContent = selected ? '◉' : '○';
+            btn.title = selected
+                ? '取消选中，隐藏预览包围框'
+                : '选中该图层，在左侧预览上显示包围框\n框内拖动平移，句柄缩放，顶部句柄旋转';
+            btn.style.cssText = `
+                width: 26px;
+                padding: 2px 0;
+                background: ${selected ? '#4FC3F7' : '#fff'};
+                color: ${selected ? '#fff' : '#555'};
+                border: 1px solid #000;
+                cursor: pointer;
+                font-size: 15px;
+                line-height: 1.1;
+                flex-shrink: 0;
+            `;
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                this.stopAllHighlight();
+                this.gizmo.toggle(layerIndex);
+                // 贴图 URL 与绘制原点是在渲染过程中捕获的，选中后主动重建一次
+                // 角色 canvas，让包围框当帧就能定位
+                if (this.gizmo.isActive()) this.refreshCharacter();
+                this.updateWindow();
+            };
+            return btn;
+        }
+
+        /**
+         * 构建单个变换分组的控件块
+         * @param {Object} layer - 图层对象
+         * @param {Object} group - TRANSFORM_GROUPS 中的一项
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         * @returns {HTMLElement}
+         */
+        buildTransformGroup(layer, group, constraint) {
+            const block = document.createElement('div');
+            block.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+
+            const label = document.createElement('span');
+            label.textContent = constraint.unit ? `${group.label}(${constraint.unit})` : group.label;
+            label.title = `范围 ${constraint.min} ~ ${constraint.max}，滚轮 ${constraint.step}`
+                + (constraint.coarseStep !== constraint.step ? `，Shift+滚轮 ${constraint.coarseStep}` : '')
+                + (group.key === "Rotation"
+                    ? '\n支点为贴图中心，图层离中心越远，同角度下移动越明显'
+                    : '');
+            label.style.cssText = 'font-size: 15px; color: #555; margin-right: 2px;';
+            block.appendChild(label);
+
+            const inputs = [];
+            for (const { prop, axis } of constraint.props) {
+                if (axis) {
+                    const axisLabel = document.createElement('span');
+                    axisLabel.textContent = axis;
+                    axisLabel.style.cssText = 'font-size: 14px; color: #888;';
+                    block.appendChild(axisLabel);
+                }
+                const input = this.buildTransformInput(layer, group, constraint, prop, inputs);
+                inputs.push({ prop, input });
+                block.appendChild(input);
+            }
+
+            // 重置按钮，仅在该组存在自定义值时可见
+            const reset = document.createElement('button');
+            reset.textContent = '↺';
+            reset.title = `重置${group.label}`;
+            reset.style.cssText = `
+                padding: 2px 7px;
+                background: #FF9800;
+                color: white;
+                border: 1px solid #000;
+                cursor: pointer;
+                font-size: 15px;
+                visibility: ${this.hasCustomTransform(layer, group) ? 'visible' : 'hidden'};
+            `;
+            reset.onclick = (e) => {
+                e.stopPropagation();
+                this.resetLayerTransform(layer, constraint, group);
+                this.updateWindow();
+            };
+            block.appendChild(reset);
+
+            return block;
+        }
+
+        /**
+         * 构建一个变换数值输入框
+         * @param {Object} layer - 图层对象
+         * @param {Object} group - TRANSFORM_GROUPS 中的一项
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         * @param {string} prop - 属性名
+         * @param {Object[]} siblings - 同组内已创建的输入框，用于缩放联动同步显示
+         * @returns {HTMLInputElement}
+         */
+        buildTransformInput(layer, group, constraint, prop, siblings) {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.dataset.transformProp = prop;
+            input.min = String(constraint.min);
+            input.max = String(constraint.max);
+            input.step = String(constraint.step);
+            input.value = this.formatTransformValue(
+                this.getLayerTransform(layer, prop, constraint.defaultValue), constraint
+            );
+            input.title = `范围 ${constraint.min} ~ ${constraint.max}`;
+            input.style.cssText = `
+                width: 68px;
+                padding: 4px;
+                border: 1px solid #000;
+                font-size: 16px;
+                text-align: center;
+            `;
+
+            const apply = (raw) => {
+                if (raw === '' || Number.isNaN(raw)) return;
+                this.setLayerTransform(layer, prop, raw, constraint);
+                // 缩放联动时同步另一个轴的显示
+                if (constraint.uniform && prop.startsWith('Scale')) {
+                    const shown = this.formatTransformValue(
+                        this.getLayerTransform(layer, prop, constraint.defaultValue), constraint
+                    );
+                    siblings.forEach(s => {
+                        if (s.prop !== prop) s.input.value = shown;
+                    });
+                }
+            };
+
+            input.addEventListener('input', (e) => {
+                this.stopAllHighlight();
+                apply(e.target.valueAsNumber);
+            });
+
+            input.addEventListener('focus', (e) => e.target.select());
+
+            input.addEventListener('blur', () => this.updateWindow());
+
+            // 滚轮默认走细步长，按住 Shift 走粗步长
+            input.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                this.stopAllHighlight();
+                const current = parseFloat(input.value);
+                const base = Number.isNaN(current) ? constraint.defaultValue : current;
+                const stepSize = e.shiftKey ? constraint.coarseStep : constraint.step;
+                const raw = base + (e.deltaY > 0 ? -stepSize : stepSize);
+                const next = Math.max(constraint.min,
+                    Math.min(constraint.max, this.roundTransformValue(raw, constraint)));
+                input.value = this.formatTransformValue(next, constraint);
+                apply(next);
+            });
+
+            return input;
+        }
+
+        /**
+         * 按精度格式化变换值，避免浮点误差显示成 0.30000000000000004
+         * @param {number} value - 数值
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         * @returns {string}
+         */
+        formatTransformValue(value, constraint) {
+            return String(this.roundTransformValue(value, constraint));
+        }
+
+        /**
+         * 按精度取整，消除浮点误差（如 0.1+0.2 = 0.30000000000000004）
+         * @param {number} value - 数值
+         * @param {Object} constraint - getTransformConstraint 的返回值
+         * @returns {number}
+         */
+        roundTransformValue(value, constraint) {
+            const factor = Math.pow(10, constraint.precision ?? 0);
+            return Math.round(value * factor) / factor;
+        }
+
+        /**
+         * 停止所有闪烁（变换控件交互时调用）
+         */
+        stopAllHighlight() {
+            if (this.highlightTimer !== null || this.highlightedNode !== null) {
+                this.stopNodeHighlight();
+            }
+            if (this.highlightedLayerIndex !== null) {
+                this.stopLayerHighlight();
             }
         }
 
@@ -3278,6 +3846,8 @@
             if (!ItemColorState || !ItemColorItem) {
                 return;
             }
+            // 换了物品后图层索引不再对应同一张贴图，清掉旧的选中态
+            this.gizmo.clear();
             this.createWindow();
             this.buildTree();
             this.isVisible = true;
@@ -3296,6 +3866,7 @@
                 this.windowElement.style.display = 'none';
             }
             this.colorPickerPanel.hide();
+            this.gizmo.endDrag();
         }
 
         /**
@@ -3308,11 +3879,13 @@
                 window.removeEventListener('resize', this.resizeHandler);
                 this.resizeHandler = null;
             }
+            this.clearDocListeners();
             if (this.windowElement) {
                 this.windowElement.remove();
                 this.windowElement = null;
             }
             this.colorPickerPanel.hide();
+            this.gizmo.clear();
             this.isVisible = false;
             this.treeNodes = [];
             this.selectedNodeId = null;
@@ -3492,8 +4065,518 @@
         }
     }
 
+    /**
+     * 图层变换包围框。在换装界面的角色预览上叠加绘制一个可拖拽的选框，
+     * 提供八向缩放句柄、顶部旋转句柄，框内拖动为平移。
+     *
+     * 坐标系有三层，需要逐级换算：
+     *   贴图坐标   图层在 CommonDraw 里的绘制空间，原点是角色 canvas 左上（Y 已含 CanvasUpperOverflow）
+     *   canvas     角色离屏画布 500 x CanvasDrawHeight
+     *   主画布     游戏统一的 2000 x 1000 逻辑坐标，也是 MouseX / MouseY 所在的空间
+     */
+    class LayerTransformGizmo {
+        constructor(window) {
+            this.win = window;
+            this.layerIndex = null;   // 选中的图层索引，null 表示未选中
+            this.drag = null;         // 拖拽会话
+            this.hoverHandle = null;  // 当前悬浮的句柄 id
+            this.captureUrl = null;   // 渲染时捕获到的贴图 URL
+            this.captureBase = null;  // 渲染时捕获到的绘制原点（已剔除位移）
+            this.shiftKey = false;    // 最近一次鼠标事件的 Shift 状态，用于角度吸附
+        }
+
+        /**
+         * 由 CommonDraw 的绘制回调调用，记录选中图层的真实 URL 与绘制原点。
+         * 直接取渲染管线的实参，省去复现一遍 URL 拼接和坐标偏移的逻辑，
+         * 也自动跟随本体后续改动。
+         * @param {string} url - 贴图完整 URL
+         * @param {number} x - drawX，已含 TranslationX
+         * @param {number} y - drawY，已含 TranslationY
+         * @param {Object} opts - 绘制选项，含 Translation / Scale / Rotation
+         */
+        capture(url, x, y, opts) {
+            this.captureUrl = url;
+            // 反推未位移时的原点，后续换算不受当前位移值干扰
+            this.captureBase = {
+                x: x - (opts?.TranslationX || 0),
+                y: y - (opts?.TranslationY || 0),
+                mirror: !!opts?.Mirror,
+                invert: !!opts?.Invert
+            };
+        }
+        /** 当前是否有选中的图层 */
+        isActive() {
+            return this.layerIndex !== null;
+        }
+
+        /** 是否正在拖拽 */
+        isDragging() {
+            return this.drag !== null;
+        }
+
+        /**
+         * 切换某个图层的选中态
+         * @param {number} layerIndex
+         */
+        toggle(layerIndex) {
+            this.layerIndex = this.layerIndex === layerIndex ? null : layerIndex;
+            this.drag = null;
+            // 捕获数据属于上一个图层，换选后必须等新图层重新渲染一帧
+            this.captureUrl = null;
+            this.captureBase = null;
+        }
+
+        /** 清除选中态 */
+        clear() {
+            this.layerIndex = null;
+            this.drag = null;
+            this.hoverHandle = null;
+            this.captureUrl = null;
+            this.captureBase = null;
+        }
+        /** 取选中的 AssetLayer，失效时返回 null */
+        getLayer() {
+            if (this.layerIndex === null) return null;
+            const layers = ItemColorItem?.Asset?.Layer;
+            return Array.isArray(layers) ? layers[this.layerIndex] ?? null : null;
+        }
+
+        /**
+         * 取图层贴图的原始像素尺寸。缩放与旋转的支点都是贴图中心，
+         * 所以必须拿到真实宽高，不能用组的名义尺寸。
+         * URL 由 captureUrl 在渲染时捕获，这里只负责查缓存。
+         * 两条渲染路径的缓存不同：WebGL 走 GLDrawImageCache，2D 回退走 DrawCacheImage。
+         * @returns {{width: number, height: number}|null}
+         */
+        getTextureSize() {
+            if (!this.captureUrl) return null;
+
+            const fromCache = (img) => {
+                if (!img) return null;
+                const wpx = img.naturalWidth || img.width;
+                const hpx = img.naturalHeight || img.height;
+                // 宽高为 1 说明纹理还是 GLDrawLoadImage 塞的 1x1 占位像素
+                return (wpx > 1 && hpx > 1) ? { width: wpx, height: hpx } : null;
+            };
+
+            return fromCache(bcGlobal("GLDrawImageCache")?.get(this.captureUrl))
+                ?? fromCache(bcGlobal("DrawCacheImage")?.get(this.captureUrl))
+                ?? null;
+        }
+        /**
+         * 位移倍率。WebGL 路径下 dstX 已含一份 TranslationX，
+         * GLDrawImage 的矩阵里又叠加了一次，实际位移是设定值的两倍；
+         * 2D 回退路径只生效一次。拖动换算必须按当前路径取倍率。
+         * @returns {number}
+         */
+        getTranslationFactor() {
+            const gl = bcGlobal("GLDrawCanvas");
+            const usingGL = bcGlobal("GLVersion") !== "No WebGL" && gl && gl.GL && !gl.GL.isContextLost();
+            return usingGL ? 2 : 1;
+        }
+
+        /**
+         * 计算包围框在贴图空间的四个角（顺序 nw, ne, se, sw）。
+         * 复现 GLDrawImage 的矩阵链：先按中心缩放，再按中心旋转，最后整体平移。
+         * @returns {{corners: number[][], center: number[], tex: Object}|null}
+         */
+        getLocalQuad() {
+            const layer = this.getLayer();
+            const tex = this.getTextureSize();
+            if (!layer || !tex || !this.captureBase) return null;
+
+            const t = this.readTransforms(layer);
+            const f = this.getTranslationFactor();
+            const { width: tw, height: th } = tex;
+            const cx = this.captureBase.x + tw / 2 + t.TranslationX * f;
+            const cy = this.captureBase.y + th / 2 + t.TranslationY * f;
+
+            const hw = tw / 2 * t.ScaleX;
+            const hh = th / 2 * t.ScaleY;
+            const a = t.Rotation * Math.PI / 180;
+            const cos = Math.cos(a), sin = Math.sin(a);
+
+            const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => [
+                cx + dx * cos - dy * sin,
+                cy + dx * sin + dy * cos
+            ]);
+            return { corners, center: [cx, cy], tex };
+        }
+        /**
+         * 读取图层当前的合成变换值，规则与 CommonDraw 的 getTransform 一致：
+         * 位移与旋转是图层值加物品值，缩放是相乘。
+         * @returns {{TranslationX: number, TranslationY: number, ScaleX: number, ScaleY: number, Rotation: number}}
+         */
+        readTransforms(layer) {
+            const props = ItemColorItem?.Property ?? {};
+            const name = this.win.getTransformLayerName(layer);
+            const safe = (v) => (typeof v === "number" && !Number.isNaN(v)) ? v : undefined;
+
+            const read = (prop) => {
+                const layerVal = safe(props[`Layer${prop}`]?.[name]);
+                const assetVal = safe(props[prop]);
+                if (prop === "ScaleX" || prop === "ScaleY") {
+                    let v = assetVal ?? 1;
+                    if (layerVal !== undefined) v *= layerVal;
+                    return Math.max(0.01, Math.min(3.0, v));
+                }
+                const sum = (layerVal ?? 0) + (assetVal ?? 0);
+                return prop === "Rotation" ? Math.max(-180, Math.min(180, sum)) : sum;
+            };
+
+            return {
+                TranslationX: read("TranslationX"), TranslationY: read("TranslationY"),
+                ScaleX: read("ScaleX"), ScaleY: read("ScaleY"), Rotation: read("Rotation")
+            };
+        }
+        /**
+         * 求角色 canvas 到主画布的线性映射，复现 DrawCharacter 的贴图参数。
+         * 换装界面的主预览是 DrawCharacter(C, 660, 90, 0.95)（玩家）或 (660, 0, 1)。
+         * @returns {{ox: number, oy: number, sx: number, sy: number}|null}
+         */
+        getCanvasToScreen() {
+            const C = ItemColorCharacter;
+            if (!C) return null;
+
+            const isPlayer = typeof C.IsPlayer === "function" && C.IsPlayer();
+            const X = 660;
+            const Y = isPlayer ? 90 : 0;
+            const zoom = isPlayer ? 0.95 : 1;
+
+            // DrawCharacter 里 IsHeightResizeAllowed 未传，等价于允许
+            const hr = C.HeightRatio ?? 1;
+            const xOffset = w.CharacterAppearanceXOffset?.(C, hr) ?? 0;
+            const yOffset = w.CharacterAppearanceYOffset?.(C, hr) ?? 0;
+
+            // CanvasUpperOverflow 是 const 声明，不在 window 上
+            const upper = bcGlobal("CanvasUpperOverflow") ?? 700;
+            const yCutOff = yOffset >= 0 || (w.ServerPlayerIsInChatRoom?.() ?? false);
+            const yStart = upper + (yCutOff ? -yOffset / hr : 0);
+            const srcH = 1000 / hr + (yCutOff ? 0 : -yOffset / hr);
+            const destY = yCutOff ? 0 : yOffset;
+
+            const destW = 500 * hr * zoom;
+            const destH = (1000 - destY) * zoom;
+
+            return {
+                ox: X + xOffset * zoom,
+                oy: Y + destY * zoom,
+                sx: destW / 500,
+                sy: destH / srcH,
+                yStart
+            };
+        }
+        /**
+         * 包围框在主画布上的几何信息，绘制与命中判定都基于它
+         * @returns {{corners: number[][], center: number[], rotateAt: number[], map: Object}|null}
+         */
+        getScreenQuad() {
+            const local = this.getLocalQuad();
+            const map = this.getCanvasToScreen();
+            if (!local || !map) return null;
+
+            const toScreen = ([x, y]) => [
+                map.ox + x * map.sx,
+                map.oy + (y - map.yStart) * map.sy
+            ];
+
+            const corners = local.corners.map(toScreen);
+            const center = toScreen(local.center);
+
+            // 旋转句柄挂在上边中点的外侧，沿框自身的"上"方向偏移
+            const [nw, ne] = corners;
+            const topMid = [(nw[0] + ne[0]) / 2, (nw[1] + ne[1]) / 2];
+            let ux = topMid[0] - center[0], uy = topMid[1] - center[1];
+            const len = Math.hypot(ux, uy) || 1;
+            const rotateAt = [
+                topMid[0] + ux / len * GIZMO_ROTATE_DIST,
+                topMid[1] + uy / len * GIZMO_ROTATE_DIST
+            ];
+
+            return { corners, center, rotateAt, topMid, map };
+        }
+        /**
+         * 八向句柄在主画布上的位置。句柄挂在旋转后的框上，所以要按框的
+         * 两条边向量插值，而不是简单取轴对齐的包围盒。
+         * @returns {{id: string, x: number, y: number, hx: number, hy: number}[]}
+         */
+        getHandlePoints(quad) {
+            const [nw, ne, se, sw] = quad.corners;
+            // 框自身的半轴向量
+            const ax = [(ne[0] - nw[0]) / 2, (ne[1] - nw[1]) / 2];
+            const ay = [(sw[0] - nw[0]) / 2, (sw[1] - nw[1]) / 2];
+            const c = quad.center;
+
+            return GIZMO_HANDLES.map(h => ({
+                id: h.id, hx: h.x, hy: h.y,
+                x: c[0] + ax[0] * h.x + ay[0] * h.y,
+                y: c[1] + ax[1] * h.x + ay[1] * h.y
+            }));
+        }
+
+        /**
+         * 判断主画布坐标命中了哪个部分
+         * @returns {string|null} 句柄 id、"rotate"、"move" 或 null
+         */
+        hitTest(mx, my) {
+            const quad = this.getScreenQuad();
+            if (!quad) return null;
+
+            const near = (px, py, r) => Math.hypot(mx - px, my - py) <= r;
+
+            if (near(quad.rotateAt[0], quad.rotateAt[1], GIZMO_HANDLE_R + 3)) return "rotate";
+            for (const h of this.getHandlePoints(quad)) {
+                if (near(h.x, h.y, GIZMO_HANDLE_R + 2)) return h.id;
+            }
+            return this.pointInQuad(mx, my, quad.corners) ? "move" : null;
+        }
+
+        /** 点是否在（可能旋转的）四边形内，用叉积同号判定 */
+        pointInQuad(px, py, corners) {
+            let sign = 0;
+            for (let i = 0; i < 4; i++) {
+                const [x1, y1] = corners[i];
+                const [x2, y2] = corners[(i + 1) % 4];
+                const cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+                if (cross === 0) continue;
+                const s = cross > 0 ? 1 : -1;
+                if (sign === 0) sign = s;
+                else if (s !== sign) return false;
+            }
+            return true;
+        }
+        /**
+         * 开始拖拽。记录起始变换值，后续移动都以它为基准做增量，
+         * 避免逐帧累加带来的漂移。
+         * @returns {boolean} 是否接管了本次点击
+         */
+        startDrag(mx, my) {
+            const mode = this.hitTest(mx, my);
+            if (!mode) return false;
+
+            const layer = this.getLayer();
+            const quad = this.getScreenQuad();
+            if (!layer || !quad) return false;
+
+            this.drag = {
+                mode, layer,
+                startX: mx, startY: my,
+                origin: this.readTransforms(layer),
+                center: quad.center,
+                map: quad.map,
+                startAngle: Math.atan2(my - quad.center[1], mx - quad.center[0])
+            };
+            return true;
+        }
+
+        /** 拖拽中，按模式分派。一帧内可能写两个轴，合并成一次角色刷新 */
+        moveDrag(mx, my) {
+            if (!this.drag) return;
+            const { mode } = this.drag;
+            this.win.batchRefresh(() => {
+                if (mode === "move") this.applyMove(mx, my);
+                else if (mode === "rotate") this.applyRotate(mx, my);
+                else this.applyScale(mx, my, mode);
+            });
+        }
+
+        /** 结束拖拽 */
+        endDrag() {
+            this.drag = null;
+        }
+        /** 框内拖动：平移。屏幕位移换算回贴图空间，再除以位移倍率 */
+        applyMove(mx, my) {
+            const d = this.drag;
+            const f = this.getTranslationFactor();
+            const dx = (mx - d.startX) / d.map.sx / f;
+            const dy = (my - d.startY) / d.map.sy / f;
+
+            this.write("TranslationX", d.origin.TranslationX + dx);
+            this.write("TranslationY", d.origin.TranslationY + dy);
+        }
+
+        /** 旋转句柄：按鼠标绕框心转过的角度增量写入。按住 Shift 吸附到 15 度 */
+        applyRotate(mx, my) {
+            const d = this.drag;
+            const now = Math.atan2(my - d.center[1], mx - d.center[0]);
+            let deg = d.origin.Rotation + (now - d.startAngle) * 180 / Math.PI;
+            if (this.shiftKey) deg = Math.round(deg / 15) * 15;
+            this.write("Rotation", ((deg + 180) % 360 + 360) % 360 - 180);
+        }
+        /**
+         * 八向句柄：缩放。鼠标位移先投影到框自身的两个轴上，
+         * 再换算成缩放比例，这样旋转后拖动方向依然符合直觉。
+         * 缩放支点是贴图中心，与本体渲染一致，对边不会固定。
+         */
+        applyScale(mx, my, mode) {
+            const d = this.drag;
+            const handle = GIZMO_HANDLES.find(h => h.id === mode);
+            const tex = this.getTextureSize();
+            if (!handle || !tex) return;
+
+            // 把屏幕位移转到贴图空间，再按框的旋转角反投影到局部轴
+            const dx = (mx - d.startX) / d.map.sx;
+            const dy = (my - d.startY) / d.map.sy;
+            const a = -d.origin.Rotation * Math.PI / 180;
+            const lx = dx * Math.cos(a) - dy * Math.sin(a);
+            const ly = dx * Math.sin(a) + dy * Math.cos(a);
+
+            // 支点在中心，拖动边只贡献一半尺寸变化，故比例分母用半宽半高
+            const uniform = this.shiftKey;
+            let sx = d.origin.ScaleX, sy = d.origin.ScaleY;
+            if (handle.x !== 0) sx = d.origin.ScaleX + handle.x * lx / (tex.width / 2);
+            if (handle.y !== 0) sy = d.origin.ScaleY + handle.y * ly / (tex.height / 2);
+
+            if (uniform && handle.x !== 0 && handle.y !== 0) {
+                // 角句柄配合 Shift 等比缩放，取变化幅度较大的轴
+                const rx = sx / (d.origin.ScaleX || 1);
+                const ry = sy / (d.origin.ScaleY || 1);
+                const r = Math.abs(rx - 1) > Math.abs(ry - 1) ? rx : ry;
+                sx = d.origin.ScaleX * r;
+                sy = d.origin.ScaleY * r;
+            }
+
+            if (handle.x !== 0 || uniform) this.write("ScaleX", sx);
+            if (handle.y !== 0 || uniform) this.write("ScaleY", sy);
+        }
+        /**
+         * 写入单个变换属性。复用窗口的写入逻辑，保证约束、取整、
+         * 默认值清理与输入框那条路径完全一致。
+         * 拖拽时一帧可能写两个轴，这里先压住刷新，由 moveDrag 统一触发一次。
+         * @param {string} prop - 属性名，如 TranslationX
+         * @param {number} value - 目标值
+         */
+        write(prop, value) {
+            const layer = this.drag?.layer ?? this.getLayer();
+            if (!layer) return;
+
+            const group = TRANSFORM_GROUPS.find(g => g.props.some(p => p.prop === prop));
+            if (!group) return;
+            const constraint = this.win.getTransformConstraint(group);
+            // 该部位不支持这个变换（如 Pussy 不支持旋转），或该轴被约束过滤掉
+            if (!constraint || !constraint.props.some(p => p.prop === prop)) return;
+
+            this.win.setLayerTransform(layer, prop, value, constraint);
+        }
+        /**
+         * 把包围框叠画到主画布。在 AppearanceRun 之后调用，
+         * 所以会盖在角色之上但不会污染角色的离屏 canvas。
+         */
+        draw() {
+            // 不能用 window.MainCanvas：那会拿到同名的 canvas DOM 元素
+            const ctx = bcGlobal("MainCanvas");
+            if (!ctx || typeof ctx.save !== "function" || !this.isActive()) return;
+
+            const quad = this.getScreenQuad();
+            if (!quad) {
+                // 贴图还没加载完，下一帧会自动补上
+                return;
+            }
+
+            const hover = this.drag ? this.drag.mode : this.hoverHandle;
+            ctx.save();
+            this.drawFrame(ctx, quad);
+            this.drawRotateHandle(ctx, quad, hover === "rotate");
+            for (const h of this.getHandlePoints(quad)) {
+                this.drawHandle(ctx, h.x, h.y, hover === h.id);
+            }
+            ctx.restore();
+        }
+        /** 框线。画双色描边，保证在浅色和深色贴图上都看得清 */
+        drawFrame(ctx, quad) {
+            const [nw, ne, se, sw] = quad.corners;
+            const path = () => {
+                ctx.beginPath();
+                ctx.moveTo(nw[0], nw[1]);
+                ctx.lineTo(ne[0], ne[1]);
+                ctx.lineTo(se[0], se[1]);
+                ctx.lineTo(sw[0], sw[1]);
+                ctx.closePath();
+            };
+
+            path();
+            ctx.strokeStyle = "rgba(0,0,0,0.75)";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            path();
+            ctx.strokeStyle = "#4FC3F7";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        /** 旋转句柄，含一条连到框上边的引线 */
+        drawRotateHandle(ctx, quad, active) {
+            ctx.beginPath();
+            ctx.moveTo(quad.topMid[0], quad.topMid[1]);
+            ctx.lineTo(quad.rotateAt[0], quad.rotateAt[1]);
+            ctx.strokeStyle = "rgba(0,0,0,0.75)";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+            ctx.strokeStyle = "#4FC3F7";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(quad.rotateAt[0], quad.rotateAt[1], GIZMO_HANDLE_R, 0, Math.PI * 2);
+            ctx.fillStyle = active ? "#FFB300" : "#4FC3F7";
+            ctx.fill();
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        /** 单个方形缩放句柄 */
+        drawHandle(ctx, x, y, active) {
+            const r = GIZMO_HANDLE_R;
+            ctx.beginPath();
+            ctx.rect(x - r, y - r, r * 2, r * 2);
+            ctx.fillStyle = active ? "#FFB300" : "#FFFFFF";
+            ctx.fill();
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    }
+
     // 创建全局实例
     const itemColorAdjustmentWindow = new ItemColorAdjustmentWindow();
+
+    // 捕获选中图层的贴图 URL 与绘制原点。
+    // GLDrawImage / DrawImageCanvas 是两条渲染路径的共同末端，参数里带着
+    // CommonDraw 算好的 drawX/drawY 和全部变换值，比在模组里复现一遍
+    // URL 拼接和坐标偏移更可靠，也能跟随本体改动。
+    const gizmo = itemColorAdjustmentWindow.gizmo;
+
+    /**
+     * 判断这次绘制是否属于当前选中的图层。
+     * 用图层名做后缀匹配：CommonDraw 的 URL 末段固定是 layer.Name
+     * @param {string} url
+     * @returns {boolean}
+     */
+    function isSelectedLayerDraw(url) {
+        if (!gizmo.isActive() || typeof url !== "string") return false;
+        const layer = gizmo.getLayer();
+        const asset = ItemColorItem?.Asset;
+        if (!layer || !asset) return false;
+        // 只认当前物品的贴图，避免同名图层误匹配
+        if (!url.includes(`/${asset.Group.Name}/`)) return false;
+
+        const file = url.slice(url.lastIndexOf("/") + 1).replace(/\.png$/i, "");
+        return layer.Name
+            ? file.endsWith(`_${layer.Name}`) || file === layer.Name
+            : file.startsWith(asset.Name);
+    }
+
+    for (const fn of ["GLDrawImage", "DrawImageCanvas"]) {
+        if (typeof w[fn] !== "function") continue;
+        mod.hookFunction(fn, 1, (args, next) => {
+            // GLDrawImage(url, gl, x, y, opts) / DrawImageCanvas(src, canvas, x, y, opts)
+            const [src, , x, y, opts] = args;
+            if (opts && isSelectedLayerDraw(src)) gizmo.capture(src, x, y, opts);
+            return next(args);
+        });
+    }
 
     // Hook ItemColorLoad 函数，在进入Color模式时显示窗口
     // ItemColorLoad 是 async 且内部 await 了多个 TextCache，必须等 Promise 落地
@@ -3511,6 +4594,94 @@
         }
         show();
         return result;
+    });
+
+    // 在角色绘制完成后叠画包围框。放在 AppearanceRun 之后，
+    // 这样框会盖在角色上方，且不会写进角色的离屏 canvas
+    mod.hookFunction("AppearanceRun", 0, (args, next) => {
+        const result = next(args);
+        if (itemColorAdjustmentWindow.isVisible &&
+            typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === 'Color') {
+            gizmo.draw();
+        }
+        return result;
+    });
+
+    /** 包围框当前是否应该响应交互 */
+    function gizmoInteractive() {
+        return gizmo.isActive() && itemColorAdjustmentWindow.isVisible &&
+            typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === 'Color';
+    }
+
+    /**
+     * 把 DOM 事件坐标换算成游戏的 2000x1000 逻辑坐标。
+     * 复现 GamePointerMove 的算法：mousedown 时本体还没更新 MouseX，
+     * 触屏上也不保证按下前先有 move，所以自己算更稳
+     * @param {MouseEvent} e
+     * @returns {{x: number, y: number}|null}
+     */
+    function toGameCoords(e) {
+        // 直接取 DOM 元素，避免依赖 MainCanvas 这个 2D context 全局
+        const canvas = document.getElementById("MainCanvas");
+        if (!canvas || !canvas.clientWidth || !e || typeof e.clientX !== "number") return null;
+        return {
+            x: (e.clientX - canvas.offsetLeft) * 2000 / canvas.clientWidth,
+            y: (e.clientY - canvas.offsetTop) * 1000 / canvas.clientHeight
+        };
+    }
+
+    // 拖拽刚结束时抑制一次 click：松手位置可能已经移出包围框，
+    // 单靠命中判定会让这次点击穿透到底层按钮
+    let gizmoSuppressClick = false;
+
+    mod.hookFunction("CommonMouseDown", 0, (args, next) => {
+        if (gizmoInteractive()) {
+            const p = toGameCoords(args[0]);
+            if (p) {
+                gizmo.shiftKey = !!args[0].shiftKey;
+                if (gizmo.startDrag(p.x, p.y)) {
+                    itemColorAdjustmentWindow.stopAllHighlight();
+                    gizmoSuppressClick = true;
+                    return;
+                }
+            }
+        }
+        return next(args);
+    });
+
+    mod.hookFunction("CommonMouseMove", 0, (args, next) => {
+        if (gizmoInteractive()) {
+            const p = toGameCoords(args[0]);
+            if (p) {
+                gizmo.shiftKey = !!args[0].shiftKey;
+                if (gizmo.isDragging()) {
+                    gizmo.moveDrag(p.x, p.y);
+                    return;
+                }
+                gizmo.hoverHandle = gizmo.hitTest(p.x, p.y);
+            }
+        }
+        return next(args);
+    });
+
+    mod.hookFunction("CommonMouseUp", 0, (args, next) => {
+        if (gizmo.isDragging()) {
+            gizmo.endDrag();
+            // 拖拽期间面板上的数值没跟着变，松手后同步一次
+            itemColorAdjustmentWindow.updateWindow();
+            return;
+        }
+        return next(args);
+    });
+
+    // 吞掉落在包围框上的点击，避免误触底层的颜色界面按钮
+    mod.hookFunction("AppearanceClick", 0, (args, next) => {
+        if (gizmoSuppressClick) {
+            gizmoSuppressClick = false;
+            return;
+        }
+        if (gizmoInteractive() && gizmo.hitTest(MouseX, MouseY)) return;
+        return next(args);
     });
 
     // Hook ItemColorFireExit 函数，销毁调整窗口
