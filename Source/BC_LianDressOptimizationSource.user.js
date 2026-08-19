@@ -47,6 +47,36 @@
             return undefined;
         }
     }
+
+    /**
+     * 放开资产的透明度下限。
+     *
+     * 本体只有声明了 EditOpacity 的资产才有可调透明度，其余（大部分道具）
+     * 在 AssetMapLayer 里被写成 MinOpacity = MaxOpacity = 1，而 CommonDraw
+     * 无条件执行 clamp(opacity, MinOpacity, MaxOpacity)，于是恒为 1，
+     * 写进 Property.Opacity 也不生效。
+     *
+     * 这里把下限放到 0。改的是 Asset 上的共享定义，属于全局生效，
+     * 所以每个资产只处理一次；不做还原，否则已调低的值会在下次进界面时被夹回。
+     * @param {Object} asset - Asset 对象
+     * @returns {boolean} 是否发生了修改
+     */
+    const opacityUnlocked = new WeakSet();
+    function unlockAssetOpacity(asset) {
+        if (!asset || !Array.isArray(asset.Layer) || opacityUnlocked.has(asset)) return false;
+        opacityUnlocked.add(asset);
+
+        // 只处理"被默认锁死"的情况。EditOpacity 为 true 时，Min/MaxOpacity
+        // 是资产自己写的值，相等就是刻意固定该层（如某些渐变层恒为 0.5），
+        // 不该动；为 false 时整套值都是 AssetMapLayer 填的 1，才是要放开的
+        if (asset.EditOpacity !== false) return false;
+
+        // Layer 在类型上是 readonly，运行时仍可写
+        for (const layer of asset.Layer) layer.MinOpacity = 0;
+        // EditOpacity 影响本体多处透明度 UI 的可用性，一并放开
+        try { asset.EditOpacity = true; } catch { /* 只读则忽略，绘制侧已够用 */ }
+        return true;
+    }
     // =======================================================================================
 
     const SETTINGS_KEY = "LianDressOpt";
@@ -58,6 +88,8 @@
         {
             key: "Translation",
             label: "位移",
+            // 行内用单字标签省宽度，完整名称保留在 tooltip
+            short: "移",
             unit: "px",
             props: [
                 { prop: "TranslationX", axis: "X" },
@@ -70,6 +102,7 @@
             // 下限用 0.01：本体 UI 初始 min 是 0.1，但 _UpdateLimits 与
             // CommonDraw 的实际下限都是 0.01，这里放开到真实限制
             label: "缩放",
+            short: "缩",
             props: [
                 { prop: "ScaleX", axis: "X" },
                 { prop: "ScaleY", axis: "Y" }
@@ -83,6 +116,7 @@
             // 所以离画布中心越远的图层，同样角度下被"甩"出的位移越大。
             // 步长压到 0.1 度以便精细控制。
             label: "旋转",
+            short: "转",
             unit: "°",
             props: [
                 { prop: "Rotation", axis: "" }
@@ -90,6 +124,21 @@
             min: -180, max: 180, step: 0.1, coarseStep: 1, precision: 2, defaultValue: 0
         }
     ];
+
+    // 界面尺寸。集中在一处便于整体调整密度
+    const UI = {
+        fontLg: 15,     // 节点名称
+        fontMd: 14,     // 输入框
+        fontSm: 13,     // 次要标签
+        fontXs: 12,     // 轴标记等
+        rowPadY: 4,     // 行垂直内边距
+        padX: 12,       // 行水平内边距
+        indent: 20,     // 每级缩进
+        gapX: 9,        // 控件横向间隔
+        gapY: 4,        // 换行时的纵向间隔
+        inputW: 46,     // 变换数值输入框宽度，三组统一以便对齐（含原生步进箭头）
+        sliderW: 165    // 透明度控件容器宽度（滑条 + 输入框 + %）
+    };
 
     // 包围框句柄的屏幕半径（主画布坐标，2000x1000 空间）
     const GIZMO_HANDLE_R = 9;
@@ -1459,6 +1508,7 @@
             this.resizeHandler = null; // window resize 监听，destroy 时解绑
             this.docListeners = []; // 挂在 document 上的临时监听，重建内容前统一解绑
             this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
+            this.selectedLayeringId = null; // 当前选中的层级行，选中后才展开变换行
             this.gizmo = new LayerTransformGizmo(this); // 预览区的变换包围框
             this.deferRefresh = false; // 为 true 时合并角色刷新
             this.refreshPending = false; // 合并期间是否有刷新请求
@@ -1716,11 +1766,14 @@
             const layer = ItemColorItem.Asset.Layer[layerIndex];
             if (!layer) return true;
 
-            // 整个物品不允许调透明度
-            if (ItemColorState && ItemColorState.editOpacity === false) return true;
-
-            // CommonDraw 会把透明度 clamp 到 [MinOpacity, MaxOpacity]，
-            // 两者相等意味着这一层的透明度是固定的，调了也不会变
+            // 只看 Min/MaxOpacity，不看 ItemColorState.editOpacity。
+            // 后者是 Asset.EditOpacity 的快照，而放开与否最终由绘制侧的
+            // clamp 决定，直接判断 clamp 的边界更贴近实际效果。
+            //
+            // CommonDraw 执行 clamp(opacity, MinOpacity, MaxOpacity)，
+            // 两者相等意味着这一层透明度固定，调了也不会变。
+            // unlockAssetOpacity 已把默认锁死的资产下限放到 0，
+            // 走到这里还相等的是资产自己刻意固定的层，仍旧排除
             if (layer.MinOpacity === layer.MaxOpacity) return true;
 
             if (layer.Hide === true) return true;
@@ -1817,51 +1870,37 @@
         getNodeOpacity(node) {
             if (!ItemColorState) return { opacity: 1.0, isMultiple: false };
             
-            if (node.type === 'layer') {
-                // 检查是否应该排除
-                if (this.shouldExcludeLayer(node.layerIndex)) {
-                    return { opacity: 1.0, isMultiple: false, excluded: true };
-                }
-                // 使用显式检查而不是 ||，因为 0 是有效的透明度值
-                const opacityValue = ItemColorState.opacity[this.getOpacitySlot(node.layerIndex)];
-                return {
-                    opacity: opacityValue !== undefined ? opacityValue : 1.0,
-                    isMultiple: false
-                };
-            } else {
-                // 对于分组或根节点，检查所有子节点的透明度是否相同
-                // 排除固定不透明度为1的图层
-                if (node.layerIndices && node.layerIndices.length > 0) {
-                    // 过滤掉应该排除的图层
-                    const validLayerIndices = node.layerIndices.filter(i => !this.shouldExcludeLayer(i));
-                    
-                    if (validLayerIndices.length === 0) {
-                        // 所有图层都被排除，返回默认值
-                        return { opacity: 1.0, isMultiple: false, excluded: true };
-                    }
-                    
-                    // 使用显式检查而不是 ||，因为 0 是有效的透明度值
-                    const opacities = validLayerIndices.map(i => {
-                        const val = ItemColorState.opacity[this.getOpacitySlot(i)];
-                        return val !== undefined ? val : 1.0;
-                    });
-                    const firstOpacity = opacities[0];
-                    const allSame = opacities.every(o => Math.abs(o - firstOpacity) < 0.001);
-                    
-                    if (allSame) {
-                        return {
-                            opacity: firstOpacity,
-                            isMultiple: false
-                        };
-                    } else {
-                        return {
-                            opacity: firstOpacity,
-                            isMultiple: true
-                        };
-                    }
-                }
+            // 根 / 分组 / 图层节点走同一套：收集该节点覆盖的全部图层再比较。
+            //
+            // 必须用 collectLayerIndices 递归收集，与 setNodeOpacity 的写入范围
+            // 对齐。之前分组与根节点直接读 node.layerIndices，而根节点的这个字段
+            // 只在资产存在 WholeItem 颜色组时才被填充，缺失时就是空数组，
+            // 于是滑条恒显示 100%、isMultiple 恒为 false，"重置不透明度"也不出现。
+            // 图层节点同理：一个节点可能代表多个共享 ColorIndex 的图层，
+            // 它们的透明度未必一致。
+            const collected = this.collectLayerIndices(node);
+            if (collected.length === 0) return { opacity: 1.0, isMultiple: false };
+
+            // 过滤掉排除的图层（渲染侧透明度被夹死，调了也不生效）
+            const validLayerIndices = collected.filter(i => !this.shouldExcludeLayer(i));
+            if (validLayerIndices.length === 0) {
+                return { opacity: 1.0, isMultiple: false, excluded: true };
             }
-            return { opacity: 1.0, isMultiple: false };
+
+            // 同名图层共用一个槽位，先去重再比较，
+            // 否则同一个值被数多次，不影响结果但白做功
+            const slots = new Set(validLayerIndices.map(i => this.getOpacitySlot(i)));
+            // 使用显式检查而不是 ||，因为 0 是有效的透明度值
+            const opacities = Array.from(slots, s => {
+                const val = ItemColorState.opacity[s];
+                return val !== undefined ? val : 1.0;
+            });
+            const firstOpacity = opacities[0];
+
+            return {
+                opacity: firstOpacity,
+                isMultiple: !opacities.every(o => Math.abs(o - firstOpacity) < 0.001)
+            };
         }
 
         /**
@@ -1927,7 +1966,14 @@
         }
 
         /**
-         * 设置节点透明度
+         * 设置节点（根 / 分组 / 图层）下所有图层的透明度。
+         *
+         * 这里刻意不调 updateWindow：那会重建整棵 DOM 树，把正在拖动的
+         * 滑条元素一起销毁，拖动闭包随之失效，结果是刚拖一帧就断。
+         * 与 setLayerOpacity 保持一致，刷新时机交给调用方，
+         * 拖动过程中只刷角色，松手后再统一刷 UI。
+         * @param {Object} node - 树节点
+         * @param {number} opacityValue - 透明度值 (0-1)
          */
         setNodeOpacity(node, opacityValue) {
             if (!ItemColorState || !ItemColorItem) return;
@@ -1941,14 +1987,10 @@
                 .filter(i => !this.shouldExcludeLayer(i))
                 .forEach(i => this.writeLayerOpacity(i, opacityValue));
 
-
             // 更新角色渲染
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
                 CharacterLoadCanvas(ItemColorCharacter);
             }
-
-            // 更新UI
-            this.updateWindow();
         }
 
         /**
@@ -2027,8 +2069,11 @@
          * @returns {number}
          */
         getLayerTransform(layer, prop, defaultValue) {
-            const store = ItemColorItem?.Property?.[`Layer${prop}`];
-            const value = store?.[this.getTransformLayerName(layer)];
+            // layer 为 null 表示物品级：存在 Property[prop]，对所有图层生效。
+            // 绘制侧 CommonDraw.getTransform 会把它与图层级的值合成
+            const value = layer === null
+                ? ItemColorItem?.Property?.[prop]
+                : ItemColorItem?.Property?.[`Layer${prop}`]?.[this.getTransformLayerName(layer)];
             return typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
         }
 
@@ -2051,18 +2096,29 @@
                 ? ["ScaleX", "ScaleY"]
                 : [prop];
 
-            const layerName = this.getTransformLayerName(layer);
-            for (const target of targets) {
-                const key = `Layer${target}`;
-                if (rounded === constraint.defaultValue) {
-                    if (ItemColorItem.Property[key]) {
-                        delete ItemColorItem.Property[key][layerName];
-                        if (Object.keys(ItemColorItem.Property[key]).length === 0) {
-                            delete ItemColorItem.Property[key];
-                        }
+            // 物品级直接写 Property[prop]，图层级写 Property[Layer+prop][layerName]
+            if (layer === null) {
+                for (const target of targets) {
+                    if (rounded === constraint.defaultValue) {
+                        delete ItemColorItem.Property[target];
+                    } else {
+                        ItemColorItem.Property[target] = rounded;
                     }
-                } else {
-                    (ItemColorItem.Property[key] ??= {})[layerName] = rounded;
+                }
+            } else {
+                const layerName = this.getTransformLayerName(layer);
+                for (const target of targets) {
+                    const key = `Layer${target}`;
+                    if (rounded === constraint.defaultValue) {
+                        if (ItemColorItem.Property[key]) {
+                            delete ItemColorItem.Property[key][layerName];
+                            if (Object.keys(ItemColorItem.Property[key]).length === 0) {
+                                delete ItemColorItem.Property[key];
+                            }
+                        }
+                    } else {
+                        (ItemColorItem.Property[key] ??= {})[layerName] = rounded;
+                    }
                 }
             }
 
@@ -2077,9 +2133,17 @@
          */
         resetLayerTransform(layer, constraint, group) {
             if (!ItemColorItem?.Property) return;
-            const layerName = this.getTransformLayerName(layer);
 
             // 重置时把整组都清掉（含被 Pussy 约束过滤掉的轴）
+            if (layer === null) {
+                for (const { prop } of group.props) {
+                    delete ItemColorItem.Property[prop];
+                }
+                this.refreshCharacter();
+                return;
+            }
+
+            const layerName = this.getTransformLayerName(layer);
             for (const { prop } of group.props) {
                 const key = `Layer${prop}`;
                 const store = ItemColorItem.Property[key];
@@ -2100,9 +2164,11 @@
          * @returns {boolean}
          */
         hasCustomTransform(layer, group) {
-            const layerName = this.getTransformLayerName(layer);
+            const layerName = layer === null ? null : this.getTransformLayerName(layer);
             return group.props.some(({ prop }) => {
-                const value = ItemColorItem?.Property?.[`Layer${prop}`]?.[layerName];
+                const value = layer === null
+                    ? ItemColorItem?.Property?.[prop]
+                    : ItemColorItem?.Property?.[`Layer${prop}`]?.[layerName];
                 return typeof value === "number" && !Number.isNaN(value);
             });
         }
@@ -2118,6 +2184,9 @@
                 return;
             }
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                // 重建是同步的，捕获会在这次调用里重新填好。先清掉旧数据，
+                // 否则图层被隐藏后残留的旧框会让物品级并集算大
+                this.gizmo.invalidateCaptures();
                 CharacterLoadCanvas(ItemColorCharacter);
             }
         }
@@ -2336,7 +2405,7 @@
             const header = document.createElement('div');
             header.className = 'lian-window-header';
             header.style.cssText = `
-                padding: 15px 30px;
+                padding: 7px ${UI.padX}px;
                 background: #E0E0E0;
                 border-bottom: 1px solid #000;
                 display: flex;
@@ -2346,19 +2415,19 @@
             `;
             const title = document.createElement('span');
             title.id = 'lian-item-color-adjustment-title';
-            title.style.cssText = 'font-weight: bold; font-size: 24px; flex: 1;';
+            title.style.cssText = 'font-weight: bold; font-size: 18px; flex: 1;';
             // 标题会在updateWindow中更新
             header.appendChild(title);
 
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '关闭';
             closeBtn.style.cssText = `
-                padding: 7.5px 22.5px;
+                padding: 4px 14px;
                 background: #fff;
                 border: 1px solid #000;
                 cursor: pointer;
-                margin-left: 15px;
-                font-size: 18px;
+                margin-left: ${UI.gapX}px;
+                font-size: ${UI.fontLg}px;
             `;
             closeBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -2420,11 +2489,12 @@
             const activeElement = document.activeElement;
             let focusRestoreInfo = null;
             if (activeElement && content.contains(activeElement)) {
-                // 变换输入框：靠 data 属性精确定位，优先于下面基于 min/max 的推断
-                const transformRow = activeElement.closest?.('[data-transform-node]');
-                if (activeElement.dataset?.transformProp && transformRow) {
+                // 变换输入框：靠 data 属性精确定位，优先于下面基于 min/max 的推断。
+                // 变换控件已内联进层级行，故按所在层级行的 id 定位
+                const transformOwner = activeElement.closest?.('[data-layering-id]');
+                if (activeElement.dataset?.transformProp && transformOwner) {
                     focusRestoreInfo = {
-                        transformNode: transformRow.dataset.transformNode,
+                        transformNode: transformOwner.dataset.layeringId,
                         transformProp: activeElement.dataset.transformProp,
                         selectionStart: activeElement.selectionStart,
                         selectionEnd: activeElement.selectionEnd
@@ -2440,10 +2510,10 @@
                     const selectionStart = activeElement.selectionStart;
                     const selectionEnd = activeElement.selectionEnd;
                     
-                    // 检查是否是层级节点的透明度输入框（层级节点没有data-node-id）
-                    const isLayeringOpacity = !nodeId && isOpacity && 
-                                             activeElement.closest('div[style*="background: #e8e8e8"]');
-                    
+                    // 层级行改用 data-layering-id 定位：选中态会改变背景色，
+                    // 原先按 background 匹配的做法在选中行上会失效
+                    const layeringRow = activeElement.closest('[data-layering-id]');
+
                     if (nodeId && (isOpacity || isLayering)) {
                         focusRestoreInfo = {
                             nodeId: nodeId,
@@ -2452,21 +2522,14 @@
                             selectionEnd: selectionEnd,
                             value: activeElement.value
                         };
-                    } else if (isLayeringOpacity) {
-                        // 层级节点的透明度输入框，通过层级节点名称来定位
-                        const layeringNodeRow = activeElement.closest('div[style*="background: #e8e8e8"]');
-                        if (layeringNodeRow) {
-                            const layeringNameSpan = layeringNodeRow.querySelector('span');
-                            if (layeringNameSpan) {
-                                focusRestoreInfo = {
-                                    layeringName: layeringNameSpan.textContent,
-                                    inputType: 'layeringOpacity',
-                                    selectionStart: selectionStart,
-                                    selectionEnd: selectionEnd,
-                                    value: activeElement.value
-                                };
-                            }
-                        }
+                    } else if (layeringRow && (isOpacity || isLayering)) {
+                        focusRestoreInfo = {
+                            layeringId: layeringRow.dataset.layeringId,
+                            inputType: isOpacity ? 'layeringOpacity' : 'layeringPriority',
+                            selectionStart: selectionStart,
+                            selectionEnd: selectionEnd,
+                            value: activeElement.value
+                        };
                     }
                 }
             }
@@ -2483,12 +2546,11 @@
                 nodeRow.style.cssText = `
                     display: flex;
                     align-items: center;
-                    padding: 7.5px;
-                    margin-left: ${node.level * 30}px;
+                    padding: ${UI.rowPadY}px ${UI.padX}px;
+                    margin-left: ${node.level * UI.indent}px;
                     cursor: pointer;
                     border-bottom: 1px solid #E0E0E0;
                     background: ${this.selectedNodeId === node.id ? '#E3F2FD' : 'transparent'};
-                    justify-content: space-between;
                 `;
 
                 // 展开/折叠图标
@@ -2496,7 +2558,7 @@
                 if (node.children && node.children.length > 0) {
                     expandIcon = document.createElement('span');
                     expandIcon.textContent = this.expandedNodes.has(node.id) ? '▼' : '▶';
-                    expandIcon.style.cssText = 'margin-right: 7.5px; width: 22.5px; display: inline-block; font-size: 18px;';
+                    expandIcon.style.cssText = `margin-right: 4px; width: 15px; display: inline-block; font-size: ${UI.fontSm}px;`;
                     expandIcon.onclick = (e) => {
                         e.stopPropagation();
                         this.toggleNode(node.id);
@@ -2504,32 +2566,35 @@
                     nodeRow.appendChild(expandIcon);
                 } else {
                     const spacer = document.createElement('span');
-                    spacer.style.cssText = 'width: 30px; display: inline-block;';
+                    spacer.style.cssText = 'width: 19px; display: inline-block;';
                     nodeRow.appendChild(spacer);
                 }
 
-                // 左侧容器（名称）
+                // 左侧容器（名称）。flex: 1 撑开剩余空间，把右侧控件推到最右
                 const leftContainer = document.createElement('div');
-                leftContainer.style.cssText = 'flex: 1; min-width: 0; display: flex; align-items: center;';
+                leftContainer.style.cssText = 'flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; align-items: center;';
                 
                 // 节点名称
                 const nameSpan = document.createElement('span');
                 nameSpan.textContent = node.name;
+                // 截断时看全名
+                nameSpan.title = node.name;
                 nameSpan.style.cssText = `
                     flex: 0 1 auto;
                     min-width: 0;
-                    max-width: 225px;
+                    max-width: 150px;
                     overflow: hidden;
                     text-overflow: ellipsis;
                     white-space: nowrap;
-                    font-size: 18px;
+                    font-size: ${UI.fontSm}px;
                 `;
                 leftContainer.appendChild(nameSpan);
                 nodeRow.appendChild(leftContainer);
 
-                // 右侧容器（颜色按钮和透明度控件）
+                // 右侧容器（颜色按钮、透明度控件、层级按钮）。
+                // 整块不参与压缩，靠 gap 而非 margin/spacer 控制间距
                 const rightContainer = document.createElement('div');
-                rightContainer.style.cssText = 'display: flex; align-items: center; gap: 15px; flex-shrink: 0; margin-right: 30px;';
+                rightContainer.style.cssText = `display: flex; align-items: center; gap: ${UI.gapY + 1}px; flex-shrink: 0;`;
                 
                 // 颜色按钮 - 点击后弹出Pickr颜色选择器
                 const colorBtn = document.createElement('button');
@@ -2538,13 +2603,14 @@
                 const displayText = nodeColorInfo.isMultiple ? '复数' : nodeColorInfo.color.toUpperCase();
                 colorBtn.textContent = displayText;
                 colorBtn.style.cssText = `
-                    width: 150px;
-                    height: 45px;
+                    width: 96px;
+                    height: 26px;
+                    flex-shrink: 0;
                     background: ${displayColor};
                     color: ${this.getContrastColor(displayColor)};
                     border: 1px solid #000;
                     cursor: pointer;
-                    font-size: 18px;
+                    font-size: ${UI.fontSm}px;
                 `;
                 colorBtn.onclick = (e) => {
                     e.stopPropagation();
@@ -2632,9 +2698,10 @@
                 };
                 rightContainer.appendChild(colorBtn);
 
-                // 透明度控件容器
+                // 透明度控件容器。flex: 0 0 <宽> 锁死尺寸，既不被右侧的层级按钮
+                // 压扁，也不因内部 range 的固有宽度而胀大
                 const opacityContainer = document.createElement('div');
-                opacityContainer.style.cssText = 'display: flex; align-items: center; width: 225px;';
+                opacityContainer.style.cssText = `display: flex; align-items: center; flex: 0 0 ${UI.sliderW}px; overflow: hidden;`;
                 
                 const opacityInfo = this.getNodeOpacity(node);
                 
@@ -2644,12 +2711,12 @@
                     resetButton.textContent = '重置不透明度';
                     resetButton.style.cssText = `
                         width: 100%;
-                        height: 45px;
+                        height: 26px;
                         background: #4CAF50;
                         color: white;
                         border: 1px solid #000;
                         cursor: pointer;
-                        font-size: 18px;
+                        font-size: ${UI.fontSm}px;
                     `;
                     resetButton.onclick = (e) => {
                         e.stopPropagation();
@@ -2669,7 +2736,10 @@
                     opacitySlider.max = '100';
                     const sliderOpacityPercentValue = Math.round(opacityInfo.opacity * 100);
                     opacitySlider.value = String(sliderOpacityPercentValue);
-                    opacitySlider.style.cssText = 'flex: 1; margin-right: 7.5px;';
+                    // min-width: 0 是必需的：range 有约 129px 的固有宽度，
+                    // 只写 flex: 1 时它不会缩到容器宽度以下，会把后面的
+                    // 输入框和层级按钮顶出去
+                    opacitySlider.style.cssText = 'flex: 1 1 0; min-width: 0; margin-right: 5px;';
                     
                     // 鼠标按下时开始拖动
                     let isDraggingOpacity = false;
@@ -2726,7 +2796,12 @@
                     };
                     
                     const opacityMouseUpHandler = () => {
-                        isDraggingOpacity = false;
+                        // 拖动期间没刷 UI（会销毁滑条），松手后补一次，
+                        // 让父级节点的显示值与"重置不透明度"按钮同步
+                        if (isDraggingOpacity) {
+                            isDraggingOpacity = false;
+                            this.updateWindow();
+                        }
                         // 延迟清除交互标志，防止 mouseup 后立即触发 mouseenter
                         setTimeout(() => {
                             this.isInteracting = false;
@@ -2763,7 +2838,7 @@
                     opacityInput.min = '0';
                     opacityInput.max = '100';
                     opacityInput.value = String(sliderOpacityPercentValue);
-                    opacityInput.style.cssText = 'width: 75px; padding: 3px; margin-right: 4.5px; font-size: 18px; text-align: center;';
+                    opacityInput.style.cssText = `width: 46px; flex-shrink: 0; padding: 2px; margin-right: 3px; font-size: ${UI.fontMd}px; text-align: center;`;
                     
                     // 实时生效：使用 input 事件而不是 change 事件
                     opacityInput.addEventListener('input', (e) => {
@@ -2801,24 +2876,25 @@
 
                     const opacityPercent = document.createElement('span');
                     opacityPercent.textContent = '%';
-                    opacityPercent.style.cssText = 'font-size: 18px;';
+                    opacityPercent.style.cssText = `font-size: ${UI.fontSm}px;`;
                     opacityContainer.appendChild(opacityPercent);
                 }
 
                 rightContainer.appendChild(opacityContainer);
                 
-                // 层级设置按钮（对 layer 类型节点和 root 节点显示）
+                // 层级设置按钮（对 layer 类型节点和 root 节点显示）。
+                // 同样用递归收集判断，root 的 layerIndices 可能为空
                 let layeringBtn = null;
-                if ((node.type === 'layer' || node.type === 'root') && node.layerIndices && node.layerIndices.length > 0) {
-                    const layeringSpacer = document.createElement('div');
-                    layeringSpacer.style.cssText = 'width: 30px;'; // 空一段距离
-                    rightContainer.appendChild(layeringSpacer);
-                    
+                if ((node.type === 'layer' || node.type === 'root')
+                    && this.collectLayerIndices(node).length > 0) {
+                    // 不再插 spacer：rightContainer 已有 gap，额外的 14px
+                    // 会把这一行挤宽，反过来压缩前面的透明度控件
                     layeringBtn = document.createElement('button');
                     layeringBtn.className = 'layering-expand-btn'; // 添加类名以便查找
                     layeringBtn.style.cssText = `
-                        width: 45px;
-                        height: 45px;
+                        width: 26px;
+                        height: 26px;
+                        flex-shrink: 0;
                         background: transparent;
                         border: 1px solid #000;
                         cursor: pointer;
@@ -2831,7 +2907,7 @@
                     // 加载图标
                     const layeringIcon = document.createElement('img');
                     layeringIcon.src = 'Icons/Dress.png';
-                    layeringIcon.style.cssText = 'width: 30px; height: 30px; object-fit: contain;';
+                    layeringIcon.style.cssText = 'width: 18px; height: 18px; object-fit: contain;';
                     layeringIcon.onerror = () => {
                         // 如果图标加载失败，显示文字
                         layeringIcon.style.display = 'none';
@@ -2854,8 +2930,13 @@
                     };
                     
                     rightContainer.appendChild(layeringBtn);
+                } else {
+                    // 没有层级按钮的行补等宽占位，让各行右边缘对齐
+                    const btnSpacer = document.createElement('div');
+                    btnSpacer.style.cssText = 'width: 26px; flex-shrink: 0;';
+                    rightContainer.appendChild(btnSpacer);
                 }
-                
+
                 nodeRow.appendChild(rightContainer);
 
                 // 鼠标悬浮效果（背景色变化）
@@ -2934,8 +3015,9 @@
                                 this.expandedNodes.add(node.id);
                             }
                         }
-                        // 如果有层级按钮，点击节点行时展开/收起层级节点
-                        if (layeringBtn && (node.type === 'layer' || node.type === 'root') && node.layerIndices && node.layerIndices.length > 0) {
+                        // 有层级按钮才能展开/收起。layeringBtn 只在
+                        // layer / root 节点上创建，故无需再判类型
+                        if (layeringBtn && (node.type === 'layer' || node.type === 'root')) {
                             if (this.expandedLayeringNodes.has(node.id)) {
                                 this.expandedLayeringNodes.delete(node.id);
                             } else {
@@ -2949,8 +3031,10 @@
 
                 content.appendChild(nodeRow);
 
-                // root节点特殊处理：在子节点之前渲染层级节点
-                if (node.type === 'root' && node.layerIndices && node.layerIndices.length > 0 && this.expandedLayeringNodes.has(node.id)) {
+                // root节点特殊处理：在子节点之前渲染层级节点。
+                // 条件与层级按钮的显示判据保持一致，否则按钮点了没反应
+                if (node.type === 'root' && this.expandedLayeringNodes.has(node.id)
+                    && this.collectLayerIndices(node).length > 0) {
                     const asset = ItemColorItem?.Asset;
                     if (asset && asset.Layer) {
                             // 显示一个整体的层级节点
@@ -2962,32 +3046,47 @@
                             const defaultPriority = assetPriority;
                             const hasCustomPriority = Number.isInteger(overridePriority) && currentPriority !== defaultPriority;
                             
+                            const itemLayeringId = `${node.id}_layering_item`;
+                            const itemSelected = this.selectedLayeringId === itemLayeringId;
+
                             const layeringNodeRow = document.createElement('div');
+                            layeringNodeRow.dataset.layeringId = itemLayeringId;
                             layeringNodeRow.style.cssText = `
                                 display: flex;
                                 align-items: center;
-                                padding: 7.5px 15px 7.5px ${(node.level + 1) * 30 + 15}px;
+                                padding: ${UI.rowPadY}px ${UI.padX}px ${UI.rowPadY}px ${(node.level + 1) * UI.indent + UI.padX}px;
                                 border-bottom: 1px solid #ddd;
-                                background: #e8e8e8;
+                                background: ${itemSelected ? '#D6E8F5' : '#e8e8e8'};
+                                cursor: pointer;
                             `;
-                            
+
+                            // 选中按钮放在名称之前。物品级作用于所有图层，无包围框
+                            layeringNodeRow.appendChild(
+                                this.buildTransformToggle(itemLayeringId, -1)
+                            );
+
                             const layeringNameSpan = document.createElement('span');
                             layeringNameSpan.textContent = '物品整体层级';
                             layeringNameSpan.style.cssText = `
                                 flex: 0 1 auto;
                                 min-width: 0;
-                                max-width: 225px;
+                                max-width: 110px;
                                 overflow: hidden;
                                 text-overflow: ellipsis;
                                 white-space: nowrap;
-                                margin-right: 15px;
-                                font-size: 18px;
+                                margin-right: ${UI.gapY}px;
+                                font-size: ${UI.fontSm}px;
                             `;
                             layeringNodeRow.appendChild(layeringNameSpan);
                             
                             const layeringRightContainer = document.createElement('div');
-                            layeringRightContainer.style.cssText = 'margin-left: auto; display: flex; align-items: center; gap: 7.5px;';
-                            
+                            layeringRightContainer.style.cssText = `margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: ${UI.gapY + 1}px;`;
+
+                            // 物品级变换控件，位于层级输入框之前。
+                            // layer 传 null 表示写 Property[prop]，对所有图层统一生效
+                            const itemTransformBox = this.buildTransformControls(null);
+                            if (itemTransformBox) layeringRightContainer.appendChild(itemTransformBox);
+
                             // 根据OverridePriority状态显示不同的控件
                             const isOverridePriority = Number.isInteger(overridePriority);
                             let layeringInput = null;
@@ -2998,12 +3097,12 @@
                                 enableAssetPriorityButton = document.createElement('button');
                                 enableAssetPriorityButton.textContent = '启用整体层级';
                                 enableAssetPriorityButton.style.cssText = `
-                                    padding: 6px 12px;
+                                    padding: 3px 8px;
                                     background: #4CAF50;
                                     color: white;
                                     border: 1px solid #000;
                                     cursor: pointer;
-                                    font-size: 16.5px;
+                                    font-size: 13px;
                                 `;
                                 enableAssetPriorityButton.onclick = (e) => {
                                     e.stopPropagation();
@@ -3028,10 +3127,10 @@
                                 layeringInput.value = String(currentPriority);
                                 layeringInput.defaultValue = String(defaultPriority);
                                 layeringInput.style.cssText = `
-                                    width: 90px;
-                                    padding: 6px;
+                                    width: 54px;
+                                    padding: 2px;
                                     border: 1px solid #000;
-                                    font-size: 18px;
+                                    font-size: 14px;
                                     text-align: center;
                                 `;
                                 
@@ -3070,13 +3169,13 @@
                             const resetLayeringButton = document.createElement('button');
                             resetLayeringButton.textContent = '重置层级';
                             resetLayeringButton.style.cssText = `
-                                padding: 6px 12px;
+                                padding: 3px 8px;
                                 background: #FF9800;
                                 color: white;
                                 border: 1px solid #000;
                                 cursor: pointer;
-                                font-size: 16.5px;
-                                margin-left: 7.5px;
+                                font-size: 13px;
+                                margin-left: 5px;
                                 visibility: ${hasCustomPriority ? 'visible' : 'hidden'};
                             `;
                             resetLayeringButton.onclick = (e) => {
@@ -3103,13 +3202,16 @@
                             
                             layeringNodeRow.onclick = (e) => {
                                 const isInteractiveElement = 
+                                    // 变换控件区整块排除，避免改数值时误触选中
+                                    (e.target instanceof Element && e.target.closest('[data-transform-box]')) ||
                                     (layeringInput && (e.target === layeringInput || layeringInput.contains(e.target))) ||
                                     (enableAssetPriorityButton && (e.target === enableAssetPriorityButton || enableAssetPriorityButton.contains(e.target))) ||
                                     (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
                                 
                                 if (!isInteractiveElement) {
-                                    this.selectedNodeId = `${node.id}_layering_asset`;
-                                    this.updateWindow();
+                                    // 点击整行与点击选中按钮等效
+                                    this.selectedNodeId = itemLayeringId;
+                                    this.toggleLayeringSelection(itemLayeringId, -1);
                                 }
                             };
                             
@@ -3122,47 +3224,67 @@
                     node.children.forEach(child => renderNode(child));
                 }
                 
-                // 渲染层级子节点（对 layer 类型节点）
-                if (node.type === 'layer' && node.layerIndices && node.layerIndices.length > 0 && this.expandedLayeringNodes.has(node.id)) {
+                // 渲染层级子节点（对 layer 类型节点）。
+                // 条件与层级按钮的显示判据保持一致，否则按钮点了没反应，
+                // 层级行不渲染也就没有包围框的选中按钮。
+                // 用节点自身的 layerIndices 优先，保持与原来相同的顺序与去重语义
+                const layeringIndices = node.type !== 'layer' ? []
+                    : (node.layerIndices?.length ? node.layerIndices : this.collectLayerIndices(node));
+                if (layeringIndices.length > 0 && this.expandedLayeringNodes.has(node.id)) {
                     const asset = ItemColorItem?.Asset;
                     if (asset && asset.Layer) {
                         // 为每个物理图层创建一个层级节点（即使它们共享 ColorIndex）
-                        node.layerIndices.forEach((layerIndex) => {
+                        layeringIndices.forEach((layerIndex) => {
                             const layer = asset.Layer[layerIndex];
                             if (!layer) return;
                             
                             const layerName = layer.Name || `Layer ${layerIndex + 1}`;
                             const layeringNodeId = `${node.id}_layering_${layerIndex}`;
                             
+                            const layerSelected = this.selectedLayeringId === layeringNodeId;
+
                             // 创建层级节点行
                             const layeringNodeRow = document.createElement('div');
+                            layeringNodeRow.dataset.layeringId = layeringNodeId;
                             layeringNodeRow.style.cssText = `
                                 display: flex;
                                 align-items: center;
-                                padding: 7.5px 15px 7.5px ${(node.level + 1) * 30 + 15}px;
+                                padding: ${UI.rowPadY}px ${UI.padX}px ${UI.rowPadY}px ${(node.level + 1) * UI.indent + UI.padX}px;
                                 border-bottom: 1px solid #ddd;
-                                background: #e8e8e8;
+                                background: ${layerSelected ? '#D6E8F5' : '#e8e8e8'};
+                                cursor: pointer;
                             `;
-                            
+
+                            // 选中按钮放在名称之前，选中即在预览上显示包围框
+                            layeringNodeRow.appendChild(
+                                this.buildTransformToggle(layeringNodeId, layerIndex)
+                            );
+
                             // 节点名称
                             const layeringNameSpan = document.createElement('span');
                             layeringNameSpan.textContent = layerName;
+                            // 宽度收窄后长名会被截断，悬浮可看全名
+                            layeringNameSpan.title = layerName;
                             layeringNameSpan.style.cssText = `
                                 flex: 0 1 auto;
                                 min-width: 0;
-                                max-width: 225px;
+                                max-width: 110px;
                                 overflow: hidden;
                                 text-overflow: ellipsis;
                                 white-space: nowrap;
-                                margin-right: 15px;
-                                font-size: 18px;
+                                margin-right: ${UI.gapY}px;
+                                font-size: ${UI.fontSm}px;
                             `;
                             layeringNodeRow.appendChild(layeringNameSpan);
                             
                             // 右侧控件容器
                             const layeringRightContainer = document.createElement('div');
-                            layeringRightContainer.style.cssText = 'margin-left: auto; display: flex; align-items: center; gap: 7.5px;';
-                            
+                            layeringRightContainer.style.cssText = `margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: ${UI.gapY + 1}px;`;
+
+                            // 图层变换控件，位于层级输入框之前
+                            const layerTransformBox = this.buildTransformControls(layer);
+                            if (layerTransformBox) layeringRightContainer.appendChild(layerTransformBox);
+
                             // 层级值输入框和上下按钮
                             const layeringInputContainer = document.createElement('div');
                             layeringInputContainer.style.cssText = 'display: flex; align-items: center; gap: 3px;';
@@ -3193,12 +3315,12 @@
                                 enableDifferentPriorityButton = document.createElement('button');
                                 enableDifferentPriorityButton.textContent = '启用不同层级';
                                 enableDifferentPriorityButton.style.cssText = `
-                                    padding: 6px 12px;
+                                    padding: 3px 8px;
                                     background: #2196F3;
                                     color: white;
                                     border: 1px solid #000;
                                     cursor: pointer;
-                                    font-size: 16.5px;
+                                    font-size: 13px;
                                 `;
                                 enableDifferentPriorityButton.onclick = (e) => {
                                     e.stopPropagation();
@@ -3222,10 +3344,10 @@
                                 layeringInput.value = String(currentPriority);
                                 layeringInput.defaultValue = String(defaultPriority);
                                 layeringInput.style.cssText = `
-                                    width: 90px;
-                                    padding: 6px;
+                                    width: 54px;
+                                    padding: 2px;
                                     border: 1px solid #000;
-                                    font-size: 18px;
+                                    font-size: 14px;
                                     text-align: center;
                                 `;
                                 
@@ -3265,7 +3387,7 @@
                             
                             // 透明度控件容器
                             const layeringOpacityContainer = document.createElement('div');
-                            layeringOpacityContainer.style.cssText = 'display: flex; align-items: center; width: 225px; margin-left: 15px;';
+                            layeringOpacityContainer.style.cssText = `display: flex; align-items: center; flex: 0 0 ${UI.sliderW}px; overflow: hidden; margin-left: ${UI.gapY}px;`;
                             
                             // 获取当前图层的透明度
                             const currentLayerOpacity = this.getLayerOpacity(layerIndex);
@@ -3277,7 +3399,8 @@
                             layeringOpacitySlider.min = '0';
                             layeringOpacitySlider.max = '100';
                             layeringOpacitySlider.value = String(opacityPercentValue);
-                            layeringOpacitySlider.style.cssText = 'flex: 1; margin-right: 7.5px;';
+                            // 同上，range 需要 min-width: 0 才能缩进容器宽度内
+                            layeringOpacitySlider.style.cssText = 'flex: 1 1 0; min-width: 0; margin-right: 5px;';
                             
                             // 鼠标按下时开始拖动
                             let isDraggingLayeringOpacity = false;
@@ -3371,7 +3494,7 @@
                             layeringOpacityInput.min = '0';
                             layeringOpacityInput.max = '100';
                             layeringOpacityInput.value = String(opacityPercentValue);
-                            layeringOpacityInput.style.cssText = 'width: 75px; padding: 3px; margin-right: 4.5px; font-size: 18px; text-align: center;';
+                            layeringOpacityInput.style.cssText = `width: 46px; flex-shrink: 0; padding: 2px; margin-right: 3px; font-size: ${UI.fontMd}px; text-align: center;`;
                             
                             // 实时生效：使用 input 事件而不是 change 事件
                             layeringOpacityInput.addEventListener('input', (e) => {
@@ -3409,7 +3532,7 @@
                             
                             const layeringOpacityPercent = document.createElement('span');
                             layeringOpacityPercent.textContent = '%';
-                            layeringOpacityPercent.style.cssText = 'font-size: 18px;';
+                            layeringOpacityPercent.style.cssText = `font-size: ${UI.fontSm}px;`;
                             layeringOpacityContainer.appendChild(layeringOpacityPercent);
                             
                             layeringRightContainer.appendChild(layeringOpacityContainer);
@@ -3418,13 +3541,13 @@
                             const resetLayeringButton = document.createElement('button');
                             resetLayeringButton.textContent = '重置层级';
                             resetLayeringButton.style.cssText = `
-                                padding: 6px 12px;
+                                padding: 3px 8px;
                                 background: #FF9800;
                                 color: white;
                                 border: 1px solid #000;
                                 cursor: pointer;
-                                font-size: 16.5px;
-                                margin-left: 7.5px;
+                                font-size: 13px;
+                                margin-left: 5px;
                                 visibility: ${hasCustomPriority ? 'visible' : 'hidden'};
                             `;
                             resetLayeringButton.onclick = (e) => {
@@ -3488,6 +3611,8 @@
                             // 点击事件
                             layeringNodeRow.onclick = (e) => {
                                 const isInteractiveElement = 
+                                    // 变换控件区整块排除，避免改数值时误触选中
+                                    (e.target instanceof Element && e.target.closest('[data-transform-box]')) ||
                                     (layeringInput && (e.target === layeringInput || layeringInput.contains(e.target))) ||
                                     (enableDifferentPriorityButton && (e.target === enableDifferentPriorityButton || enableDifferentPriorityButton.contains(e.target))) ||
                                     (layeringOpacitySlider && (e.target === layeringOpacitySlider || layeringOpacitySlider.contains(e.target))) ||
@@ -3496,16 +3621,13 @@
                                     (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
                                 
                                 if (!isInteractiveElement) {
+                                    // 点击整行与点击选中按钮等效
                                     this.selectedNodeId = layeringNodeId;
-                                    this.updateWindow();
+                                    this.toggleLayeringSelection(layeringNodeId, layerIndex);
                                 }
                             };
                             
                             content.appendChild(layeringNodeRow);
-
-                            // 变换行：位移 / 缩放 / 旋转
-                            const transformRow = this.buildTransformRow(layer, layerIndex, node, layeringNodeId);
-                            if (transformRow) content.appendChild(transformRow);
                         });
                     }
                 }
@@ -3519,7 +3641,7 @@
                     let targetElement = null;
                     if (focusRestoreInfo.transformNode) {
                         const row = content.querySelector(
-                            `[data-transform-node="${focusRestoreInfo.transformNode}"]`
+                            `[data-layering-id="${focusRestoreInfo.transformNode}"]`
                         );
                         targetElement = row?.querySelector(
                             `input[data-transform-prop="${focusRestoreInfo.transformProp}"]`
@@ -3533,15 +3655,15 @@
                                 targetElement = nodeRow.querySelector('input[type="number"][min="-99"][max="99"]');
                             }
                         }
-                    } else if (focusRestoreInfo.layeringName) {
-                        // 恢复层级节点的透明度输入框焦点
-                        const allLayeringRows = content.querySelectorAll('div[style*="background: #e8e8e8"]');
-                        for (const row of allLayeringRows) {
-                            const nameSpan = row.querySelector('span');
-                            if (nameSpan && nameSpan.textContent === focusRestoreInfo.layeringName) {
-                                targetElement = row.querySelector('input[type="number"][min="0"][max="100"]');
-                                break;
-                            }
+                    } else if (focusRestoreInfo.layeringId) {
+                        // 层级行按 data-layering-id 定位，不受选中态背景色变化影响
+                        const row = content.querySelector(
+                            `[data-layering-id="${focusRestoreInfo.layeringId}"]`
+                        );
+                        if (row) {
+                            targetElement = focusRestoreInfo.inputType === 'layeringOpacity'
+                                ? row.querySelector('input[type="number"][min="0"][max="100"]')
+                                : row.querySelector('input[type="number"][min="-99"][max="99"]');
                         }
                     }
                     if (targetElement) {
@@ -3558,103 +3680,102 @@
         }
 
         /**
-         * 构建图层的变换行（位移 / 缩放 / 旋转）
-         * @param {Object} layer - 图层对象
-         * @param {number} layerIndex - 图层索引
+         * 构建变换行（位移 / 缩放 / 旋转）
+         * @param {Object|null} layer - 图层对象；传 null 表示物品级，
+         *   写入 Property[prop] 对所有图层生效，绘制侧会与图层级的值合成
+         * @param {number} layerIndex - 图层索引，物品级传 -1
          * @param {Object} node - 所属的树节点
          * @param {string} layeringNodeId - 对应层级行的节点ID
+         * @param {number} [indentLevel] - 缩进层级，默认 node.level + 2
          * @returns {HTMLElement|null}
          */
-        buildTransformRow(layer, layerIndex, node, layeringNodeId) {
-            const row = document.createElement('div');
-            row.dataset.transformLayer = String(layerIndex);
-            row.dataset.transformNode = layeringNodeId;
-            row.style.cssText = `
-                display: flex;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 6px 12px;
-                padding: 6px 15px 8px ${(node.level + 2) * 30 + 15}px;
-                border-bottom: 1px solid #ddd;
-                background: #f0f0f0;
-            `;
+        buildTransformControls(layer) {
+            const box = document.createElement('div');
+            box.dataset.transformBox = '1';
+            box.style.cssText =
+                `display: flex; align-items: center; gap: ${UI.gapX}px; flex-shrink: 0;`;
 
             const availability = this.getTransformAvailability();
             if (!availability.allowed) {
                 const note = document.createElement('span');
                 note.textContent = availability.reason;
-                note.style.cssText = 'font-size: 15px; color: #888;';
-                row.appendChild(note);
-                return row;
+                note.style.cssText = `font-size: ${UI.fontSm}px; color: #888;`;
+                box.appendChild(note);
+                return box;
             }
-
-            row.appendChild(this.buildGizmoToggle(layerIndex));
 
             let rendered = 0;
             for (const group of TRANSFORM_GROUPS) {
                 const constraint = this.getTransformConstraint(group);
                 if (!constraint || constraint.props.length === 0) continue;
-                row.appendChild(this.buildTransformGroup(layer, group, constraint));
+                box.appendChild(this.buildTransformGroup(layer, group, constraint));
                 rendered++;
             }
 
-            if (rendered === 0) return null;
-
-            // 悬浮高亮对应图层，与层级行行为一致
-            row.addEventListener('mouseenter', () => {
-                row.style.background = '#e4e4e4';
-                if (this.isInteracting) return;
-                this.startLayerHighlight(layerIndex);
-            });
-            row.addEventListener('mouseleave', () => {
-                row.style.background = '#f0f0f0';
-                this.stopLayerHighlight();
-            });
-            row.addEventListener('mousedown', () => {
-                this.isInteracting = true;
-                this.stopLayerHighlight();
-            });
-            row.addEventListener('mouseup', () => {
-                setTimeout(() => { this.isInteracting = false; }, 100);
-            });
-
-            return row;
+            return rendered === 0 ? null : box;
         }
 
         /**
-         * 构建变换行最左侧的选中按钮。选中后在左侧角色预览上叠加包围框，
-         * 可直接拖拽进行平移、缩放、旋转
-         * @param {number} layerIndex - 图层索引
+         * 构建层级行的选中按钮，位于名称之前。
+         * 选中后在左侧角色预览上叠加包围框，可直接拖拽平移 / 缩放 / 旋转。
+         * 与点击整行等效。
+         * @param {string} layeringId - 层级行的唯一标识
+         * @param {number} layerIndex - 图层索引；物品级传 -1，此时不提供包围框
          * @returns {HTMLElement}
          */
-        buildGizmoToggle(layerIndex) {
-            const selected = this.gizmo.layerIndex === layerIndex;
+        buildTransformToggle(layeringId, layerIndex) {
+            const selected = this.selectedLayeringId === layeringId;
+            const isItem = layerIndex < 0;
             const btn = document.createElement('button');
             btn.textContent = selected ? '◉' : '○';
             btn.title = selected
                 ? '取消选中，隐藏预览包围框'
-                : '选中该图层，在左侧预览上显示包围框\n框内拖动平移，句柄缩放，顶部句柄旋转';
+                : (isItem
+                    ? '选中物品整体，包围框覆盖全部图层\n拖拽写入物品级变换，对所有图层一起生效'
+                        + '\n注意旋转支点仍是各图层自己的贴图中心，不是框心'
+                    : '选中该图层，在左侧预览上显示包围框')
+                    + '\n框内拖动平移，句柄缩放，顶部句柄旋转';
             btn.style.cssText = `
-                width: 26px;
-                padding: 2px 0;
+                width: 20px;
+                padding: 0;
+                margin-right: 5px;
                 background: ${selected ? '#4FC3F7' : '#fff'};
-                color: ${selected ? '#fff' : '#555'};
-                border: 1px solid #000;
+                color: ${selected ? '#fff' : '#666'};
+                border: 1px solid #999;
+                border-radius: 2px;
                 cursor: pointer;
-                font-size: 15px;
-                line-height: 1.1;
+                font-size: ${UI.fontXs}px;
+                line-height: 1.6;
                 flex-shrink: 0;
             `;
             btn.onclick = (e) => {
                 e.stopPropagation();
-                this.stopAllHighlight();
-                this.gizmo.toggle(layerIndex);
-                // 贴图 URL 与绘制原点是在渲染过程中捕获的，选中后主动重建一次
-                // 角色 canvas，让包围框当帧就能定位
-                if (this.gizmo.isActive()) this.refreshCharacter();
-                this.updateWindow();
+                this.toggleLayeringSelection(layeringId, layerIndex);
             };
             return btn;
+        }
+
+        /**
+         * 切换层级行的选中态，并同步预览包围框。同一行再次点击则取消选中
+         * @param {string} layeringId - 层级行的唯一标识
+         * @param {number} layerIndex - 图层索引；小于 0 表示物品级，不显示包围框
+         */
+        toggleLayeringSelection(layeringId, layerIndex) {
+            this.stopAllHighlight();
+            const willSelect = this.selectedLayeringId !== layeringId;
+            this.selectedLayeringId = willSelect ? layeringId : null;
+
+            // 同步预览包围框：图层级框住该图层，物品级框住全部图层的并集
+            if (willSelect) {
+                if (layerIndex >= 0) this.gizmo.select(layerIndex);
+                else this.gizmo.selectItem();
+                // 贴图 URL 与绘制原点在渲染过程中捕获，主动重建一次角色 canvas
+                this.refreshCharacter();
+            } else {
+                this.gizmo.clear();
+            }
+
+            this.updateWindow();
         }
 
         /**
@@ -3666,27 +3787,30 @@
          */
         buildTransformGroup(layer, group, constraint) {
             const block = document.createElement('div');
-            block.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+            block.style.cssText = 'display: flex; align-items: center; gap: 3px;';
 
-            const label = document.createElement('span');
-            label.textContent = constraint.unit ? `${group.label}(${constraint.unit})` : group.label;
-            label.title = `范围 ${constraint.min} ~ ${constraint.max}，滚轮 ${constraint.step}`
+            const tip = `范围 ${constraint.min} ~ ${constraint.max}，滚轮 ${constraint.step}`
                 + (constraint.coarseStep !== constraint.step ? `，Shift+滚轮 ${constraint.coarseStep}` : '')
+                + (layer === null
+                    ? '\n物品级：与各图层自身的值合成（位移旋转相加、缩放相乘）'
+                    : '')
                 + (group.key === "Rotation"
                     ? '\n支点为贴图中心，图层离中心越远，同角度下移动越明显'
                     : '');
-            label.style.cssText = 'font-size: 15px; color: #555; margin-right: 2px;';
+
+            const label = document.createElement('span');
+            label.textContent = group.short ?? group.label;
+            label.title = group.label + (constraint.unit ? `（${constraint.unit}）` : '') + '\n' + tip;
+            label.style.cssText = `font-size: ${UI.fontSm}px; color: #555; margin-right: 1px;`;
             block.appendChild(label);
 
+            // 输入框顺序即 X、Y，靠位置区分，不再单独标注轴名
             const inputs = [];
             for (const { prop, axis } of constraint.props) {
-                if (axis) {
-                    const axisLabel = document.createElement('span');
-                    axisLabel.textContent = axis;
-                    axisLabel.style.cssText = 'font-size: 14px; color: #888;';
-                    block.appendChild(axisLabel);
-                }
                 const input = this.buildTransformInput(layer, group, constraint, prop, inputs);
+                // 轴名与单位移到 tooltip，保持行内紧凑
+                input.title = (axis ? `${group.label} ${axis}` : group.label)
+                    + (constraint.unit ? `（${constraint.unit}）` : '') + '\n' + tip;
                 inputs.push({ prop, input });
                 block.appendChild(input);
             }
@@ -3696,12 +3820,15 @@
             reset.textContent = '↺';
             reset.title = `重置${group.label}`;
             reset.style.cssText = `
-                padding: 2px 7px;
+                width: 17px;
+                padding: 0;
                 background: #FF9800;
                 color: white;
                 border: 1px solid #000;
                 cursor: pointer;
-                font-size: 15px;
+                font-size: ${UI.fontXs}px;
+                line-height: 1.5;
+                flex-shrink: 0;
                 visibility: ${this.hasCustomTransform(layer, group) ? 'visible' : 'hidden'};
             `;
             reset.onclick = (e) => {
@@ -3733,13 +3860,16 @@
             input.value = this.formatTransformValue(
                 this.getLayerTransform(layer, prop, constraint.defaultValue), constraint
             );
-            input.title = `范围 ${constraint.min} ~ ${constraint.max}`;
+            // title 由 buildTransformGroup 统一设置（含轴名与单位）
+            // 三组输入框共用同一宽度，视觉上对齐。保留原生步进箭头，
+            // 故左侧留一点内边距，避免数字与箭头贴太近
             input.style.cssText = `
-                width: 68px;
-                padding: 4px;
+                width: ${UI.inputW}px;
+                padding: 1px 0 1px 3px;
                 border: 1px solid #000;
-                font-size: 16px;
+                font-size: ${UI.fontMd}px;
                 text-align: center;
+                flex-shrink: 0;
             `;
 
             const apply = (raw) => {
@@ -3848,6 +3978,7 @@
             }
             // 换了物品后图层索引不再对应同一张贴图，清掉旧的选中态
             this.gizmo.clear();
+            this.selectedLayeringId = null;
             this.createWindow();
             this.buildTree();
             this.isVisible = true;
@@ -3889,6 +4020,7 @@
             this.isVisible = false;
             this.treeNodes = [];
             this.selectedNodeId = null;
+            this.selectedLayeringId = null;
             this.hoveredNodeId = null;
             this.hoveredLayeringNodeId = null;
             this.originalOpacities.clear();
@@ -4078,10 +4210,13 @@
         constructor(window) {
             this.win = window;
             this.layerIndex = null;   // 选中的图层索引，null 表示未选中
+            // true 表示选中的是物品整体：框住全部图层的并集，写 Property[prop]
+            this.itemLevel = false;
             this.drag = null;         // 拖拽会话
             this.hoverHandle = null;  // 当前悬浮的句柄 id
-            this.captureUrl = null;   // 渲染时捕获到的贴图 URL
-            this.captureBase = null;  // 渲染时捕获到的绘制原点（已剔除位移）
+            // 渲染时捕获的绘制信息，键为图层索引，值含贴图 URL 与已剔除位移的原点。
+            // 物品级需要全部图层来求并集，所以用 Map 而不是单条记录
+            this.captures = new Map();
             this.shiftKey = false;    // 最近一次鼠标事件的 Shift 状态，用于角度吸附
             this.drawAt = null;       // 角色本帧的绘制位置与缩放，来自 DrawCharacter
             this.frameDrawAt = null;  // 本帧收集中的候选，帧末提交到 drawAt
@@ -4116,27 +4251,35 @@
         }
 
         /**
+         * 丢弃已捕获的绘制数据，下一次角色重建时重新收集。
+         * 图层被隐藏或换了贴图后，旧数据会让物品级并集算错，
+         * 所以在触发角色重建前调用。
+         */
+        invalidateCaptures() {
+            this.captures.clear();
+        }
+
+        /**
          * 由 CommonDraw 的绘制回调调用，记录选中图层的真实 URL 与绘制原点。
          * 直接取渲染管线的实参，省去复现一遍 URL 拼接和坐标偏移的逻辑，
          * 也自动跟随本体后续改动。
+         * @param {number} layerIndex - 该次绘制对应的图层索引
          * @param {string} url - 贴图完整 URL
          * @param {number} x - drawX，已含 TranslationX
          * @param {number} y - drawY，已含 TranslationY
          * @param {Object} opts - 绘制选项，含 Translation / Scale / Rotation
          */
-        capture(url, x, y, opts) {
-            this.captureUrl = url;
+        capture(layerIndex, url, x, y, opts) {
             // 反推未位移时的原点，后续换算不受当前位移值干扰
-            this.captureBase = {
+            this.captures.set(layerIndex, {
+                url,
                 x: x - (opts?.TranslationX || 0),
-                y: y - (opts?.TranslationY || 0),
-                mirror: !!opts?.Mirror,
-                invert: !!opts?.Invert
-            };
+                y: y - (opts?.TranslationY || 0)
+            });
         }
-        /** 当前是否有选中的图层 */
+        /** 当前是否有选中目标（单个图层或物品整体） */
         isActive() {
-            return this.layerIndex !== null;
+            return this.layerIndex !== null || this.itemLevel;
         }
 
         /** 是否正在拖拽 */
@@ -4145,30 +4288,47 @@
         }
 
         /**
-         * 切换某个图层的选中态
+         * 选中某个图层。已选中同一图层时不做处理，避免丢掉已捕获的渲染数据
          * @param {number} layerIndex
          */
-        toggle(layerIndex) {
-            this.layerIndex = this.layerIndex === layerIndex ? null : layerIndex;
+        select(layerIndex) {
+            if (!this.itemLevel && this.layerIndex === layerIndex) return;
+            this.layerIndex = layerIndex;
+            this.itemLevel = false;
             this.drag = null;
-            // 捕获数据属于上一个图层，换选后必须等新图层重新渲染一帧
-            this.captureUrl = null;
-            this.captureBase = null;
+            // 捕获数据属于上一个目标，换选后必须等新目标重新渲染一帧
+            this.captures.clear();
+        }
+
+        /**
+         * 选中物品整体。包围框取该物品全部图层的并集，
+         * 拖拽写 Property[prop]，与本体的 Item translation 语义一致
+         */
+        selectItem() {
+            if (this.itemLevel) return;
+            this.itemLevel = true;
+            this.layerIndex = null;
+            this.drag = null;
+            this.captures.clear();
         }
 
         /** 清除选中态 */
         clear() {
             this.layerIndex = null;
+            this.itemLevel = false;
             this.drag = null;
             this.hoverHandle = null;
-            this.captureUrl = null;
-            this.captureBase = null;
+            this.captures.clear();
             this.drawAt = null;
             this.frameDrawAt = null;
         }
-        /** 取选中的 AssetLayer，失效时返回 null */
+        /**
+         * 取选中的 AssetLayer。物品级返回 null，正好对应
+         * setLayerTransform / readTransforms 里"null 即物品级"的约定
+         * @returns {Object|null}
+         */
         getLayer() {
-            if (this.layerIndex === null) return null;
+            if (this.itemLevel || this.layerIndex === null) return null;
             const layers = ItemColorItem?.Asset?.Layer;
             return Array.isArray(layers) ? layers[this.layerIndex] ?? null : null;
         }
@@ -4176,12 +4336,13 @@
         /**
          * 取图层贴图的原始像素尺寸。缩放与旋转的支点都是贴图中心，
          * 所以必须拿到真实宽高，不能用组的名义尺寸。
-         * URL 由 captureUrl 在渲染时捕获，这里只负责查缓存。
+         * URL 由 capture 在渲染时记录，这里只负责查缓存。
          * 两条渲染路径的缓存不同：WebGL 走 GLDrawImageCache，2D 回退走 DrawCacheImage。
+         * @param {string} url
          * @returns {{width: number, height: number}|null}
          */
-        getTextureSize() {
-            if (!this.captureUrl) return null;
+        getTextureSize(url) {
+            if (!url) return null;
 
             const fromCache = (img) => {
                 if (!img) return null;
@@ -4191,8 +4352,8 @@
                 return (wpx > 1 && hpx > 1) ? { width: wpx, height: hpx } : null;
             };
 
-            return fromCache(bcGlobal("GLDrawImageCache")?.get(this.captureUrl))
-                ?? fromCache(bcGlobal("DrawCacheImage")?.get(this.captureUrl))
+            return fromCache(bcGlobal("GLDrawImageCache")?.get(url))
+                ?? fromCache(bcGlobal("DrawCacheImage")?.get(url))
                 ?? null;
         }
         /**
@@ -4213,15 +4374,24 @@
          * @returns {{corners: number[][], center: number[], tex: Object}|null}
          */
         getLocalQuad() {
+            return this.itemLevel ? this.getItemLocalQuad() : this.getLayerLocalQuad();
+        }
+
+        /**
+         * 单个图层的包围框：跟随该图层自身的旋转，所以是个可斜置的矩形
+         * @returns {{corners: number[][], center: number[], tex: Object}|null}
+         */
+        getLayerLocalQuad() {
             const layer = this.getLayer();
-            const tex = this.getTextureSize();
-            if (!layer || !tex || !this.captureBase) return null;
+            const cap = this.captures.get(this.layerIndex);
+            const tex = this.getTextureSize(cap?.url);
+            if (!layer || !tex || !cap) return null;
 
             const t = this.readTransforms(layer);
             const f = this.getTranslationFactor();
             const { width: tw, height: th } = tex;
-            const cx = this.captureBase.x + tw / 2 + t.TranslationX * f;
-            const cy = this.captureBase.y + th / 2 + t.TranslationY * f;
+            const cx = cap.x + tw / 2 + t.TranslationX * f;
+            const cy = cap.y + th / 2 + t.TranslationY * f;
 
             const hw = tw / 2 * t.ScaleX;
             const hh = th / 2 * t.ScaleY;
@@ -4234,18 +4404,91 @@
             ]);
             return { corners, center: [cx, cy], tex };
         }
+
+        /**
+         * 物品整体的包围框：各图层可能有各自的旋转，合起来没有统一朝向，
+         * 所以取所有图层四角的轴对齐外接矩形。
+         * tex 用外接矩形自身的尺寸，缩放拖拽据此换算比例。
+         * @returns {{corners: number[][], center: number[], tex: Object}|null}
+         */
+        getItemLocalQuad() {
+            const layers = ItemColorItem?.Asset?.Layer;
+            if (!Array.isArray(layers) || this.captures.size === 0) return null;
+
+            const f = this.getTranslationFactor();
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+            for (const [idx, cap] of this.captures) {
+                const layer = layers[idx];
+                const tex = this.getTextureSize(cap.url);
+                if (!layer || !tex) continue;
+
+                const t = this.readTransforms(layer);
+                const { width: tw, height: th } = tex;
+                const cx = cap.x + tw / 2 + t.TranslationX * f;
+                const cy = cap.y + th / 2 + t.TranslationY * f;
+                const hw = tw / 2 * t.ScaleX;
+                const hh = th / 2 * t.ScaleY;
+                const a = t.Rotation * Math.PI / 180;
+                const cos = Math.cos(a), sin = Math.sin(a);
+
+                for (const [dx, dy] of [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]) {
+                    const px = cx + dx * cos - dy * sin;
+                    const py = cy + dx * sin + dy * cos;
+                    if (px < minX) minX = px;
+                    if (px > maxX) maxX = px;
+                    if (py < minY) minY = py;
+                    if (py > maxY) maxY = py;
+                }
+            }
+
+            if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return null;
+
+            return {
+                corners: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]],
+                center: [(minX + maxX) / 2, (minY + maxY) / 2],
+                tex: { width: maxX - minX, height: maxY - minY }
+            };
+        }
         /**
          * 读取图层当前的合成变换值，规则与 CommonDraw 的 getTransform 一致：
          * 位移与旋转是图层值加物品值，缩放是相乘。
          * @returns {{TranslationX: number, TranslationY: number, ScaleX: number, ScaleY: number, Rotation: number}}
          */
+        /**
+         * 读取"将被写入的那个槽位"的当前值，作为拖拽增量的基准。
+         *
+         * 不能用 readTransforms：它返回的是图层级与物品级的合成结果，
+         * 而 write 只写其中一个槽位。物品级有值时，用合成值当基准会把
+         * 物品级那一份重复写进图层槽位，松手瞬间发生跳变。
+         *
+         * @param {Object|null} layer - null 表示物品级
+         * @returns {{TranslationX: number, TranslationY: number, ScaleX: number, ScaleY: number, Rotation: number}}
+         */
+        readWriteSlot(layer) {
+            const props = ItemColorItem?.Property ?? {};
+            const safe = (v, dft) => (typeof v === "number" && !Number.isNaN(v)) ? v : dft;
+
+            const read = (prop, dft) => safe(
+                layer === null ? props[prop] : props[`Layer${prop}`]?.[this.win.getTransformLayerName(layer)],
+                dft
+            );
+
+            return {
+                TranslationX: read("TranslationX", 0), TranslationY: read("TranslationY", 0),
+                ScaleX: read("ScaleX", 1), ScaleY: read("ScaleY", 1),
+                Rotation: read("Rotation", 0)
+            };
+        }
+
         readTransforms(layer) {
             const props = ItemColorItem?.Property ?? {};
-            const name = this.win.getTransformLayerName(layer);
+            // layer 为 null 表示只看物品级的值（拖动物品整体时的基准）
+            const name = layer ? this.win.getTransformLayerName(layer) : null;
             const safe = (v) => (typeof v === "number" && !Number.isNaN(v)) ? v : undefined;
 
             const read = (prop) => {
-                const layerVal = safe(props[`Layer${prop}`]?.[name]);
+                const layerVal = name === null ? undefined : safe(props[`Layer${prop}`]?.[name]);
                 const assetVal = safe(props[prop]);
                 if (prop === "ScaleX" || prop === "ScaleY") {
                     let v = assetVal ?? 1;
@@ -4325,7 +4568,7 @@
                 Math.max(rr, Math.min(1000 - rr, topMid[1] + uy / len * GIZMO_ROTATE_DIST))
             ];
 
-            return { corners, center, rotateAt, topMid, map };
+            return { corners, center, rotateAt, topMid, map, tex: local.tex };
         }
         /**
          * 八向句柄在主画布上的位置。句柄挂在旋转后的框上，所以要按框的
@@ -4396,14 +4639,22 @@
             const mode = this.hitTest(mx, my);
             if (!mode) return false;
 
+            // 物品级的 layer 为 null，写入端据此走 Property[prop]
             const layer = this.getLayer();
+            if (!layer && !this.itemLevel) return false;
+
             const quad = this.getScreenQuad();
-            if (!layer || !quad) return false;
+            if (!quad) return false;
 
             this.drag = {
                 mode, layer,
                 startX: mx, startY: my,
-                origin: this.readTransforms(layer),
+                // 增量基准必须是被写入的那个槽位，否则物品级有值时会被重复叠加
+                origin: this.readWriteSlot(layer),
+                // 合成值代表画面当前状态，用于换算屏幕位移与框的朝向
+                shown: this.readTransforms(layer),
+                // 缩放换算要用包围框自身尺寸，物品级是并集外接矩形
+                tex: quad.tex,
                 center: quad.center,
                 map: quad.map,
                 startAngle: Math.atan2(my - quad.center[1], mx - quad.center[0])
@@ -4433,6 +4684,7 @@
             const dx = (mx - d.startX) / d.map.sx / f;
             const dy = (my - d.startY) / d.map.sy / f;
 
+            // 位移是相加合成，增量直接加在槽位原值上即可
             this.write("TranslationX", d.origin.TranslationX + dx);
             this.write("TranslationY", d.origin.TranslationY + dy);
         }
@@ -4441,8 +4693,14 @@
         applyRotate(mx, my) {
             const d = this.drag;
             const now = Math.atan2(my - d.center[1], mx - d.center[0]);
-            let deg = d.origin.Rotation + (now - d.startAngle) * 180 / Math.PI;
-            if (this.shiftKey) deg = Math.round(deg / 15) * 15;
+            const delta = (now - d.startAngle) * 180 / Math.PI;
+
+            // 吸附要按画面上看到的角度对齐，再换算回槽位应写的值
+            let deg = d.origin.Rotation + delta;
+            if (this.shiftKey) {
+                const snapped = Math.round((d.shown.Rotation + delta) / 15) * 15;
+                deg = d.origin.Rotation + (snapped - d.shown.Rotation);
+            }
             this.write("Rotation", ((deg + 180) % 360 + 360) % 360 - 180);
         }
         /**
@@ -4453,33 +4711,36 @@
         applyScale(mx, my, mode) {
             const d = this.drag;
             const handle = GIZMO_HANDLES.find(h => h.id === mode);
-            const tex = this.getTextureSize();
-            if (!handle || !tex) return;
+            // 尺寸取拖拽开始时的包围框：图层级是贴图原始尺寸，
+            // 物品级是全部图层的外接矩形，两者都以中心为支点
+            const tex = d.tex;
+            if (!handle || !tex?.width || !tex?.height) return;
 
-            // 把屏幕位移转到贴图空间，再按框的旋转角反投影到局部轴
+            // 把屏幕位移转到贴图空间，再按框的旋转角反投影到局部轴。
+            // 反投影用画面上的角度（合成值），物品级的并集框不倾斜故为 0
             const dx = (mx - d.startX) / d.map.sx;
             const dy = (my - d.startY) / d.map.sy;
-            const a = -d.origin.Rotation * Math.PI / 180;
+            const a = this.itemLevel ? 0 : -d.shown.Rotation * Math.PI / 180;
             const lx = dx * Math.cos(a) - dy * Math.sin(a);
             const ly = dx * Math.sin(a) + dy * Math.cos(a);
 
-            // 支点在中心，拖动边只贡献一半尺寸变化，故比例分母用半宽半高
+            // 先求画面上应达到的缩放：支点在中心，拖动边只贡献一半尺寸变化，
+            // 所以分母用半宽半高。tex 已经是含当前缩放的框尺寸
             const uniform = this.shiftKey;
-            let sx = d.origin.ScaleX, sy = d.origin.ScaleY;
-            if (handle.x !== 0) sx = d.origin.ScaleX + handle.x * lx / (tex.width / 2);
-            if (handle.y !== 0) sy = d.origin.ScaleY + handle.y * ly / (tex.height / 2);
+            let rx = 1, ry = 1;
+            if (handle.x !== 0) rx = 1 + handle.x * lx / (tex.width / 2);
+            if (handle.y !== 0) ry = 1 + handle.y * ly / (tex.height / 2);
 
             if (uniform && handle.x !== 0 && handle.y !== 0) {
                 // 角句柄配合 Shift 等比缩放，取变化幅度较大的轴
-                const rx = sx / (d.origin.ScaleX || 1);
-                const ry = sy / (d.origin.ScaleY || 1);
                 const r = Math.abs(rx - 1) > Math.abs(ry - 1) ? rx : ry;
-                sx = d.origin.ScaleX * r;
-                sy = d.origin.ScaleY * r;
+                rx = r; ry = r;
             }
 
-            if (handle.x !== 0 || uniform) this.write("ScaleX", sx);
-            if (handle.y !== 0 || uniform) this.write("ScaleY", sy);
+            // 缩放是相乘合成，增量必须按比例作用在槽位值上，
+            // 不能像位移那样直接加，否则另一侧有值时步长会失真
+            if (handle.x !== 0 || uniform) this.write("ScaleX", d.origin.ScaleX * rx);
+            if (handle.y !== 0 || uniform) this.write("ScaleY", d.origin.ScaleY * ry);
         }
         /**
          * 写入单个变换属性。复用窗口的写入逻辑，保证约束、取整、
@@ -4489,8 +4750,9 @@
          * @param {number} value - 目标值
          */
         write(prop, value) {
-            const layer = this.drag?.layer ?? this.getLayer();
-            if (!layer) return;
+            // null 是物品级的合法取值（写 Property[prop]），不能当成失败
+            const layer = this.drag ? this.drag.layer : this.getLayer();
+            if (!layer && !this.itemLevel) return;
 
             const group = TRANSFORM_GROUPS.find(g => g.props.some(p => p.prop === prop));
             if (!group) return;
@@ -4537,14 +4799,19 @@
             };
 
             path();
+            ctx.setLineDash([]);
             ctx.strokeStyle = "rgba(0,0,0,0.75)";
             ctx.lineWidth = 4;
             ctx.stroke();
 
             path();
-            ctx.strokeStyle = "#4FC3F7";
+            // 物品级是各图层的并集外框，用虚线和另一种颜色区别于单图层的实线。
+            // 不用 #FFB300，那是句柄的悬浮/激活色
+            if (this.itemLevel) ctx.setLineDash([12, 8]);
+            ctx.strokeStyle = this.itemLevel ? "#7CB342" : "#4FC3F7";
             ctx.lineWidth = 2;
             ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         /** 旋转句柄，含一条连到框上边的引线 */
@@ -4555,13 +4822,13 @@
             ctx.strokeStyle = "rgba(0,0,0,0.75)";
             ctx.lineWidth = 4;
             ctx.stroke();
-            ctx.strokeStyle = "#4FC3F7";
+            ctx.strokeStyle = this.itemLevel ? "#7CB342" : "#4FC3F7";
             ctx.lineWidth = 2;
             ctx.stroke();
 
             ctx.beginPath();
             ctx.arc(quad.rotateAt[0], quad.rotateAt[1], GIZMO_HANDLE_R, 0, Math.PI * 2);
-            ctx.fillStyle = active ? "#FFB300" : "#4FC3F7";
+            ctx.fillStyle = active ? "#FFB300" : (this.itemLevel ? "#7CB342" : "#4FC3F7");
             ctx.fill();
             ctx.strokeStyle = "#000";
             ctx.lineWidth = 2;
@@ -4591,23 +4858,42 @@
     const gizmo = itemColorAdjustmentWindow.gizmo;
 
     /**
-     * 判断这次绘制是否属于当前选中的图层。
-     * 用图层名做后缀匹配：CommonDraw 的 URL 末段固定是 layer.Name
+     * 找出这次绘制对应当前物品的哪个图层，返回图层索引，不匹配则 -1。
+     * 用图层名做后缀匹配：CommonDraw 的 URL 末段固定是 layer.Name。
+     * 物品级需要全部图层来求并集，所以不能只认选中的那一个。
      * @param {string} url
-     * @returns {boolean}
+     * @returns {number}
      */
-    function isSelectedLayerDraw(url) {
-        if (!gizmo.isActive() || typeof url !== "string") return false;
-        const layer = gizmo.getLayer();
+    function matchDrawLayerIndex(url) {
+        if (!gizmo.isActive() || typeof url !== "string") return -1;
         const asset = ItemColorItem?.Asset;
-        if (!layer || !asset) return false;
-        // 只认当前物品的贴图，避免同名图层误匹配
-        if (!url.includes(`/${asset.Group.Name}/`)) return false;
+        const layers = asset?.Layer;
+        if (!Array.isArray(layers)) return -1;
 
+        // 只认当前物品的贴图。判据放在文件名上而不是目录上：
+        // CommonDraw 拼 URL 用的目录是 asset.DynamicGroupName，很多衣服资产
+        // 会把它指到别的组（如 ClothOuter 的资产贴图放在 Cloth/），
+        // 再加上 BodyStyle 换肤时会插入 Override/<style>/ 一段，
+        // 按 Group.Name 匹配目录会整个落空 —— 道具因两者多数相同才没暴露。
+        // 文件名首段固定是 asset.Name（见 CommonDraw 的 urlParts），足够唯一。
         const file = url.slice(url.lastIndexOf("/") + 1).replace(/\.png$/i, "");
-        return layer.Name
-            ? file.endsWith(`_${layer.Name}`) || file === layer.Name
-            : file.startsWith(asset.Name);
+        if (!file.startsWith(asset.Name)) return -1;
+
+        // 选中单个图层时只需比对那一个，省掉整轮遍历
+        const only = gizmo.itemLevel ? null : gizmo.layerIndex;
+
+        // 末段由 [asset.Name, parentAssetName, layerType, colorSegment, layerSegment]
+        // 用下划线拼成，layerSegment 即 layer.Name；无名图层没有这一段。
+        // 有名图层按后缀认；无名图层排除掉所有属于有名图层的文件即可
+        const named = layers.filter(l => l.Name).map(l => l.Name);
+        const hit = (layer) => {
+            if (!layer) return false;
+            if (layer.Name) return file.endsWith(`_${layer.Name}`) || file === layer.Name;
+            return !named.some(n => file.endsWith(`_${n}`) || file === n);
+        };
+
+        if (only !== null) return hit(layers[only]) ? only : -1;
+        return layers.findIndex(hit);
     }
 
     for (const fn of ["GLDrawImage", "DrawImageCanvas"]) {
@@ -4615,7 +4901,10 @@
         mod.hookFunction(fn, 1, (args, next) => {
             // GLDrawImage(url, gl, x, y, opts) / DrawImageCanvas(src, canvas, x, y, opts)
             const [src, , x, y, opts] = args;
-            if (opts && isSelectedLayerDraw(src)) gizmo.capture(src, x, y, opts);
+            if (opts) {
+                const idx = matchDrawLayerIndex(src);
+                if (idx >= 0) gizmo.capture(idx, src, x, y, opts);
+            }
             return next(args);
         });
     }
@@ -4624,6 +4913,10 @@
     // ItemColorLoad 是 async 且内部 await 了多个 TextCache，必须等 Promise 落地
     // 才能保证 ItemColorState / ItemColorLayerNames 已就绪
     mod.hookFunction("ItemColorLoad", 1, (args, next) => {
+        // 必须在 next 之前放开：ItemColorSanitizeProperty 会按
+        // MinOpacity/MaxOpacity 夹取已存的值，晚了就被夹回 1
+        if (screen.settings.UseAdjustmentWindow) unlockAssetOpacity(args[1]?.Asset);
+
         const result = next(args);
         if (!screen.settings.UseAdjustmentWindow) return result;
 
@@ -4708,6 +5001,8 @@
             if (!p) return;
             gizmo.shiftKey = !!e.shiftKey;
             gizmo.moveDrag(p.x, p.y);
+            // 真正产生了拖动，松手后那次 click 要吞掉
+            gizmoSuppressClick = true;
             // 拖拽时不让浏览器选中页面文字
             e.preventDefault();
         };
@@ -4726,38 +5021,63 @@
         document.addEventListener('pointercancel', onUp, true);
     }
 
-    // 拖拽的唯一起点。不挂 CommonMouseDown，因为 BC 的 pointerdown 绑在
-    // canvas 上，落在模组面板（z-index 10000）下方的句柄收不到事件。
-    // 这里用 document 捕获阶段，画布内外一视同仁。
-    // 监听随脚本常驻：内部用 gizmoInteractive 把作用域限制在调色界面
-    document.addEventListener('pointerdown', (e) => {
+    // 拖拽起点分两条路，都尽量少干扰其他元素。
+    //
+    // 早先只有一条：document 捕获阶段 + stopPropagation。那样任何一次命中
+    // 都会吞掉事件，原生按钮跟着受影响。现在主路径挂在 canvas 的冒泡阶段，
+    // 不 stopPropagation，让 BC 自己的 pointerdown 照常收到事件；
+    // 误触改由 CommonClick 钩子按命中判定精确拦截。
+    function onCanvasPointerDown(e) {
         if (gizmo.isDragging() || !gizmoInteractive()) return;
 
-        // 面板内的可交互元素优先，避免抢掉输入框与按钮的点击
-        if (e.target instanceof Element &&
-            e.target.closest('input, button, select, textarea, label, .lian-color-picker-panel')) {
-            return;
-        }
-
         const p = toGameCoords(e);
-        if (!p) return;
-
-        const hit = gizmo.hitTest(p.x, p.y);
-        if (!hit) return;
-
-        // 框内平移的命中区域很大，若整片都抢过来，面板空白处就没法点了。
-        // 所以平移只在画布上生效；句柄和旋转柄面积小，可以越过面板接管
-        if (hit === "move" && e.target instanceof Element &&
-            e.target.closest('#lian-item-color-adjustment-window')) {
-            return;
-        }
+        if (!p || !gizmo.hitTest(p.x, p.y)) return;
 
         gizmo.shiftKey = !!e.shiftKey;
         if (gizmo.startDrag(p.x, p.y)) {
             itemColorAdjustmentWindow.stopAllHighlight();
-            gizmoSuppressClick = true;
+            beginDocDrag();
+            // 只阻默认行为（文字选中、触屏滚动），不阻断传播
+            e.preventDefault();
+        }
+    }
+
+    // canvas 可能还没插进 DOM，重试到拿到为止
+    (function bindCanvas(retry = 0) {
+        const canvas = document.getElementById("MainCanvas");
+        if (canvas) {
+            canvas.addEventListener('pointerdown', onCanvasPointerDown);
+        } else if (retry < 40) {
+            setTimeout(() => bindCanvas(retry + 1), 250);
+        }
+    })();
+
+    // 兜底路径：面板浮在 canvas 上方，图层放大后句柄可能正好落在它下面，
+    // 那时 canvas 收不到 pointerdown。这里从 document 捕获阶段补上，
+    // 但范围收得很紧，只认落在小句柄上、且不在面板可交互控件上的按下：
+    //   - 平移区不走这条路（面积大，会挡住面板空白处的点击）
+    //   - 命中后才 stopPropagation，避免面板误响应这次按下
+    document.addEventListener('pointerdown', (e) => {
+        if (gizmo.isDragging() || !gizmoInteractive()) return;
+        if (!(e.target instanceof Element)) return;
+        // 事件已经落在 canvas 上时交给上面那条路径，别重复处理
+        if (e.target.id === "MainCanvas") return;
+        // 只处理被模组面板遮挡的情况
+        if (!e.target.closest('#lian-item-color-adjustment-window, .lian-color-picker-panel')) return;
+        // 面板自己的控件优先
+        if (e.target.closest('input, button, select, textarea, label')) return;
+
+        const p = toGameCoords(e);
+        if (!p) return;
+        const hit = gizmo.hitTest(p.x, p.y);
+        if (!hit || hit === "move") return;
+
+        gizmo.shiftKey = !!e.shiftKey;
+        if (gizmo.startDrag(p.x, p.y)) {
+            itemColorAdjustmentWindow.stopAllHighlight();
             beginDocDrag();
             e.preventDefault();
+            // 这次按下确实是给句柄的，不该再传给面板
             e.stopPropagation();
         }
     }, true);
@@ -4774,8 +5094,13 @@
         return next(args);
     });
 
-    // 吞掉落在包围框上的点击，避免误触底层的颜色界面按钮。
-    // 挂在 CommonClick 这个统一入口上，换装与道具（Dialog）两条路径都能覆盖
+    // 拦掉因拖拽产生的那次 click，避免松手位置正好落在底层按钮上时误触。
+    //
+    // 只拦两种情况，其余一律放行给本体：
+    //   1. 本次按下确实拖动过（gizmoSuppressClick）
+    //   2. 点在句柄或旋转柄上——这些是模组自己的控件
+    // 框内平移区面积很大，常常整片盖住本体按钮，所以单纯点一下不拦，
+    // 否则包围框会把下面的原生按钮全挡死。
     mod.hookFunction("CommonClick", 0, (args, next) => {
         if (gizmoSuppressClick) {
             gizmoSuppressClick = false;
@@ -4783,7 +5108,8 @@
         }
         if (gizmoInteractive()) {
             const p = toGameCoords(args[0]);
-            if (p && gizmo.hitTest(p.x, p.y)) return;
+            const hit = p && gizmo.hitTest(p.x, p.y);
+            if (hit && hit !== "move") return;
         }
         return next(args);
     });
