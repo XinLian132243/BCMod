@@ -54,11 +54,118 @@
     const ALPHA_BBOX = {
         enabled: true,
         threshold: 8,   // alpha 低于此值视为透明，略高于 0 以容忍抗锯齿杂边
-        maxPixels: 4e6  // 超过这个像素量就跳过，避免同步扫描卡顿
+        maxPixels: 4e6, // 超过这个像素量就跳过，避免同步扫描卡顿
+        // 遮罩降采样倍率（每轴）。点击命中不需要逐像素精度，
+        // 4 倍下每轴 ÷4、占用降到 1/16：500x1000 的贴图从 500KB 变成 31KB
+        maskScale: 4
     };
 
-    // alpha 边界缓存，键为贴图 URL。值为 {x, y, w, h} 或 null（整幅皆透明 / 读不到）
-    const alphaBoundsCache = new Map();
+    // 每张贴图的 alpha 信息，键为 URL。值为 null（读不到/全透明）或
+    // { bounds, mask, mw, mh, scale }：bounds 供包围盒用，mask 供命中判定用
+    //
+    // 上限之外按 LRU 淘汰：一次换装会话可能翻过成百上千件衣服，
+    // 无上限缓存会一直涨。Map 的插入顺序天然是 LRU 队列，
+    // 命中时删掉再塞回去就是"移到队尾"。
+    const ALPHA_CACHE_MAX = 500;
+    const alphaDataCache = new Map();
+
+    /** 读缓存并把该项移到队尾（标记为最近使用） */
+    function touchAlphaCache(url) {
+        const v = alphaDataCache.get(url);
+        alphaDataCache.delete(url);
+        alphaDataCache.set(url, v);
+        return v;
+    }
+
+    /** 写缓存，超出上限时淘汰最久未使用的那些 */
+    function putAlphaCache(url, value) {
+        alphaDataCache.delete(url);
+        alphaDataCache.set(url, value);
+        while (alphaDataCache.size > ALPHA_CACHE_MAX) {
+            // Map 迭代按插入顺序，第一个就是最久未使用的
+            const oldest = alphaDataCache.keys().next();
+            if (oldest.done) break;
+            alphaDataCache.delete(oldest.value);
+        }
+    }
+
+    /**
+     * 求角色 canvas 到主画布的线性映射，复现 DrawCharacter 的贴图参数。
+     *
+     * 绘制位置不能写死：换装界面全身图在 (660, 90)，道具调色（Dialog）在 (500, 0)，
+     * 制作与商店又各不相同，所以位置与缩放取自钩子记录的实参。
+     *
+     * @param {Object} C - 角色
+     * @param {{x: number, y: number, zoom: number, heightResize: boolean|undefined}|null} drawAt
+     * @returns {{ox: number, oy: number, sx: number, sy: number, yStart: number}|null}
+     */
+    function computeCanvasToScreen(C, drawAt) {
+        if (!C || !drawAt) return null;
+
+        const { x: X, y: Y, zoom, heightResize } = drawAt;
+
+        // 只有 IsHeightResizeAllowed 明确为 false 时才忽略身高比例
+        const hr = heightResize === false ? 1 : (C.HeightRatio ?? 1);
+        const xOffset = w.CharacterAppearanceXOffset?.(C, hr) ?? 0;
+        const yOffset = w.CharacterAppearanceYOffset?.(C, hr) ?? 0;
+
+        // CanvasUpperOverflow 是 const 声明，不在 window 上
+        const upper = bcGlobal("CanvasUpperOverflow") ?? 700;
+        const yCutOff = yOffset >= 0 || (w.ServerPlayerIsInChatRoom?.() ?? false);
+        const yStart = upper + (yCutOff ? -yOffset / hr : 0);
+        const srcH = 1000 / hr + (yCutOff ? 0 : -yOffset / hr);
+        const destY = yCutOff ? 0 : yOffset;
+
+        const destW = 500 * hr * zoom;
+        const destH = (1000 - destY) * zoom;
+
+        return {
+            ox: X + xOffset * zoom,
+            oy: Y + destY * zoom,
+            sx: destW / 500,
+            sy: destH / srcH,
+            yStart
+        };
+    }
+
+    /** 角色画布坐标 -> 主画布坐标 */
+    function canvasToScreenPoint([x, y], map) {
+        return [map.ox + x * map.sx, map.oy + (y - map.yStart) * map.sy];
+    }
+
+    /** 主画布坐标 -> 角色画布坐标 */
+    function screenToCanvasPoint([x, y], map) {
+        return [(x - map.ox) / map.sx, (y - map.oy) / map.sy + map.yStart];
+    }
+
+    // 轮廓描边用的离屏画布。每帧复用同一块，避免反复分配显存
+    let outlineCanvas = null;
+
+    /**
+     * 取轮廓合成用的离屏画布，尺寸不足时才重新分配。
+     * @param {number} w
+     * @param {number} h
+     * @returns {{cv: HTMLCanvasElement, ctx: CanvasRenderingContext2D}|null}
+     */
+    function getOutlineCanvas(w, h) {
+        const W = Math.max(1, Math.ceil(w));
+        const H = Math.max(1, Math.ceil(h));
+        if (!outlineCanvas) outlineCanvas = document.createElement("canvas");
+        const cv = outlineCanvas;
+        if (cv.width < W || cv.height < H) {
+            // 只增不减，尺寸变化频繁时省掉重新分配
+            cv.width = Math.max(cv.width, W);
+            cv.height = Math.max(cv.height, H);
+        }
+        const ctx = cv.getContext("2d");
+        if (!ctx) return null;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+        ctx.filter = "none";
+        ctx.clearRect(0, 0, W, H);
+        return { cv, ctx };
+    }
 
     /**
      * 求贴图中非透明像素的边界框，返回贴图局部坐标下的矩形。
@@ -74,9 +181,9 @@
      * @param {HTMLImageElement} img - 已加载的图片
      * @returns {{x: number, y: number, w: number, h: number}|null}
      */
-    function getAlphaBounds(url, img) {
+    function getAlphaData(url, img) {
         if (!ALPHA_BBOX.enabled || !url || !img) return null;
-        if (alphaBoundsCache.has(url)) return alphaBoundsCache.get(url);
+        if (alphaDataCache.has(url)) return touchAlphaCache(url);
 
         const W = img.naturalWidth || img.width;
         const H = img.naturalHeight || img.height;
@@ -95,11 +202,19 @@
                 const data = c.getImageData(0, 0, W, H).data;
 
                 const th = ALPHA_BBOX.threshold;
+                const s = ALPHA_BBOX.maskScale;
+                const mw = Math.ceil(W / s), mh = Math.ceil(H / s);
+                // 每个格子 1 字节，够表达"这块有没有像素"。
+                // 用 OR 归约（有一个不透明就算有），避免细线条被降采样抹掉
+                const mask = new Uint8Array(mw * mh);
+
                 let minX = W, minY = H, maxX = -1, maxY = -1;
                 for (let y = 0; y < H; y++) {
                     const row = y * W * 4;
+                    const mrow = (y / s | 0) * mw;
                     for (let x = 0; x < W; x++) {
                         if (data[row + x * 4 + 3] > th) {
+                            mask[mrow + (x / s | 0)] = 1;
                             if (x < minX) minX = x;
                             if (x > maxX) maxX = x;
                             if (y < minY) minY = y;
@@ -108,7 +223,10 @@
                     }
                 }
                 if (maxX >= minX && maxY >= minY) {
-                    result = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+                    result = {
+                        bounds: { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 },
+                        mask, mw, mh, scale: s
+                    };
                 }
             } catch {
                 // 读像素失败（多为跨域），退回整幅尺寸
@@ -116,8 +234,51 @@
             }
         }
 
-        alphaBoundsCache.set(url, result);
+        putAlphaCache(url, result);
         return result;
+    }
+
+    /**
+     * 查询贴图某点是否为不透明像素，坐标为贴图局部像素坐标。
+     * 走降采样遮罩，所以精度是 maskScale 个像素，对点击命中足够。
+     *
+     * @param {Object|null} alpha - getAlphaData 的结果
+     * @param {number} px
+     * @param {number} py
+     * @returns {boolean} 遮罩不可用时返回 true，退化成纯包围盒判定
+     */
+    function isOpaqueAt(alpha, px, py) {
+        if (!alpha?.mask) return true;
+        const mx = px / alpha.scale | 0;
+        const my = py / alpha.scale | 0;
+        if (mx < 0 || my < 0 || mx >= alpha.mw || my >= alpha.mh) return false;
+        return alpha.mask[my * alpha.mw + mx] === 1;
+    }
+
+    /**
+     * 查某个 AssetLayer 在角色身上的层叠次序。
+     *
+     * C.AppearanceLayers 是本体按 Priority 升序排好的绘制序列（见
+     * AssetLayerSort），下标越大越靠上，且已经把 OverridePriority 算进去了。
+     * 资产自己的 Asset.Layer 数组下标不是层叠序，不能拿来比。
+     *
+     * 层级已按 {...layer} 浅拷贝过，比不了引用，只能按资产 + 图层名配对。
+     *
+     * @param {Object} C
+     * @param {Object} asset
+     * @param {string|undefined} layerName - 省略则取该资产最靠上的那层
+     * @returns {number} 找不到时返回 -1
+     */
+    function layerStackOrder(C, asset, layerName) {
+        const layers = C?.AppearanceLayers;
+        if (!Array.isArray(layers) || !asset) return -1;
+        let found = -1;
+        for (let i = 0; i < layers.length; i++) {
+            if (layers[i]?.Asset !== asset) continue;
+            if (layerName !== undefined && (layers[i].Name ?? "") !== layerName) continue;
+            found = i;
+        }
+        return found;
     }
 
     /**
@@ -222,19 +383,33 @@
         outlineW: 4,
         strokeW: 2,
         itemDash: [12, 8],
-        // 悬浮高亮：半透明填充 + 细虚线，与选中框的实心句柄区分开。
-        // 填充压得很淡，避免糊住底下的贴图细节，范围主要靠虚线边框表达
-        hlFill: "rgba(255,179,0,0.07)",
+        // 悬浮高亮的轮廓描边色与文字色
         hlStroke: "rgba(255,179,0,0.95)",
-        hlDash: [8, 6],
         hlLabelBg: "rgba(0,0,0,0.6)",
         hlFont: 26,
-        // 画布上鼠标划过时的预览框。比点击后的提示更淡，
+        // 画布上鼠标划过时的预览。比点击后的提示更淡，
         // 因为它跟着光标持续出现，太显眼会干扰对贴图本身的观察
-        hoverFill: "rgba(255,179,0,0.04)",
-        hoverStroke: "rgba(255,179,0,0.5)",
+        hoverStroke: "rgba(255,179,0,0.62)",
         hoverLabelBg: "rgba(0,0,0,0.38)"
     };
+
+    // 轮廓描边：沿图案本身的 alpha 边缘外扩若干像素，比矩形框精确得多。
+    // 用 Canvas2D 的合成操作实现（drawImage + source-in 染色 + lighter 叠加），
+    // 全程走 GPU 合成，不做逐像素读取。
+    const OUTLINE = {
+        width: 2,    // 外扩宽度，主画布像素
+        // 环向采样数。相邻采样点的弦长要小于 1px 才不会在斜边上漏出缺口，
+        // 弦长 = 2 * width * sin(pi / samples)，width=2 时 16 个方向约 0.78px
+        samples: 16
+    };
+
+    // 换装界面右侧部件列表最左侧按钮的 X。有扩展物品时 Strip 会左移到 1030
+    // （见 AppearanceClick），全身图右缘与它有十几像素重叠，拾取要让在它之前
+    const APPEARANCE_MENU_X = 1030;
+    // Cloth 模式下 3x3 物品预览网格的左边界，全身图完全在它左侧
+    const APPEARANCE_CLOTH_GRID_X = 1250;
+    // 顶部菜单按钮行的下边界（本体 MouseYIn(25, 90)）
+    const APPEARANCE_MENU_BOTTOM = 25 + 90;
 
     // 透明度闪烁的时长。短促一下即可，太长会挡住对颜色的判断
     const HIGHLIGHT_DURATION = 200;
@@ -1617,6 +1792,9 @@
             this.docListeners = []; // 挂在 document 上的临时监听，重建内容前统一解绑
             this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
             this.selectedLayeringId = null; // 当前选中的层级行，选中后才展开变换行
+            // 画布点击定位到的层级行。只做视觉标记，不像 selectedLayeringId
+            // 那样展开变换行、拉起操作句柄
+            this.pickedLayeringId = null;
             this.gizmo = new LayerTransformGizmo(this); // 预览区的变换包围框
             this.deferRefresh = false; // 为 true 时合并角色刷新
             this.refreshPending = false; // 合并期间是否有刷新请求
@@ -3320,8 +3498,9 @@
                                     (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
                                 
                                 if (!isInteractiveElement) {
-                                    // 点击整行与点击选中按钮等效
-                                    this.selectedNodeId = itemLayeringId;
+                                    // 点击整行与点击选中按钮等效。
+                                    // selectedNodeId 匹配 node.id，写父节点才有效果
+                                    this.selectedNodeId = node.id;
                                     this.toggleLayeringSelection(itemLayeringId, -1);
                                 }
                             };
@@ -3352,7 +3531,10 @@
                             const layerName = layer.Name || `Layer ${layerIndex + 1}`;
                             const layeringNodeId = `${node.id}_layering_${layerIndex}`;
                             
-                            const layerSelected = this.selectedLayeringId === layeringNodeId;
+                            // 两种选中：点选中按钮（会展开变换行）或画布点击定位。
+                            // 后者只上色，不展开
+                            const layerSelected = this.selectedLayeringId === layeringNodeId
+                                || this.pickedLayeringId === layeringNodeId;
 
                             // 创建层级节点行
                             const layeringNodeRow = document.createElement('div');
@@ -3732,8 +3914,10 @@
                                     (resetLayeringButton && (e.target === resetLayeringButton || resetLayeringButton.contains(e.target)));
                                 
                                 if (!isInteractiveElement) {
-                                    // 点击整行与点击选中按钮等效
-                                    this.selectedNodeId = layeringNodeId;
+                                    // 点击整行与点击选中按钮等效。
+                                    // selectedNodeId 匹配的是 node.id，要写父节点，
+                                    // 写分层行的 id 对不上任何节点，等于没生效
+                                    this.selectedNodeId = node.id;
                                     this.toggleLayeringSelection(layeringNodeId, layerIndex);
                                 }
                             };
@@ -3875,6 +4059,8 @@
             this.stopAllHighlight();
             // 面板上手动选过之后，画布轮换的基准已经不作数了
             this.resetPickCycle();
+            // 手动选中接管高亮，画布定位的标记让位，避免两处同时上色
+            this.pickedLayeringId = null;
             const willSelect = this.selectedLayeringId !== layeringId;
             this.selectedLayeringId = willSelect ? layeringId : null;
 
@@ -3973,10 +4159,7 @@
                 return;
             }
 
-            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
-            const label = layer?.Name || ItemColorItem?.Asset?.Description
-                || ItemColorItem?.Asset?.Name || "";
-            this.gizmo.setHighlight([layerIndex], label, true);
+            this.gizmo.setHighlight([layerIndex], this.getLayerHighlightLabel(layerIndex), true);
         }
 
         /** 收掉画布悬浮预览框。只清 hover 态的，不影响面板闪烁的提示框 */
@@ -4027,19 +4210,29 @@
             this.expandedLayeringNodes.add(node.id);
 
             const layeringId = `${node.id}_layering_${layerIndex}`;
-            // 只定位到行，不写 selectedLayeringId：那会展开变换行并
-            // 拉起操作句柄。画布点击的意图是"找到这一层"，
-            // 要不要改变换由用户再点该行的选中按钮决定
-            this.selectedNodeId = layeringId;
+            // 拾取到别的图层时，退出旧目标的句柄模式。
+            // 否则句柄还框在上一个图层上，而列表已经跳到新的那一行，
+            // 拖动句柄改的是看不见的那个，很容易误操作
+            if (this.gizmo.isActive() && this.selectedLayeringId !== layeringId) {
+                this.gizmo.clear();
+                this.selectedLayeringId = null;
+            }
 
-            // 展开后闪一下并框住范围，确认点中的是哪一层
-            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
-            const label = layer?.Name || ItemColorItem?.Asset?.Description
-                || ItemColorItem?.Asset?.Name || "";
+            // 上选中态：父节点（部件行）和分层行都要高亮。
+            // selectedNodeId 只匹配 node.id，之前误写成分层行的 id，
+            // 两边都对不上，所以看起来完全没有选中效果。
+            //
+            // 分层行走 pickedLayeringId 而不是 selectedLayeringId：
+            // 后者会展开变换行并拉起操作句柄。画布点击的意图是"找到这一层"，
+            // 要不要改变换由用户再点该行的选中按钮决定
+            this.selectedNodeId = node.id;
+            this.pickedLayeringId = layeringId;
 
             this.updateWindow();
             this.scrollLayeringIntoView(layeringId);
-            this.showHighlightBox([layerIndex], label);
+            // 和悬浮列表行一样闪一次：透明度闪 0.2s、框留 0.5s，
+            // 让人确认点中的确实是这一层
+            this.startLayerHighlight(layerIndex);
         }
 
         /** 把指定层级行滚动到面板可见区域 */
@@ -4253,6 +4446,7 @@
             // 换了物品后图层索引不再对应同一张贴图，清掉旧的选中态
             this.gizmo.clear();
             this.selectedLayeringId = null;
+            this.pickedLayeringId = null;
             this.createWindow();
             this.buildTree();
             this.isVisible = true;
@@ -4296,6 +4490,7 @@
             this.treeNodes = [];
             this.selectedNodeId = null;
             this.selectedLayeringId = null;
+            this.pickedLayeringId = null;
             this.hoveredNodeId = null;
             this.hoveredLayeringNodeId = null;
             this.originalOpacities.clear();
@@ -4378,14 +4573,15 @@
 
             if (!ItemColorState || !ItemColorItem) return;
 
-            // 检查是否应该排除
+            // 框先显示：透明度不可调的图层（MinOpacity 等于 MaxOpacity）
+            // 闪不动，但位置提示照样有用，不该跟着一起被跳过
+            this.showHighlightBox([layerIndex], this.getLayerHighlightLabel(layerIndex));
+
+            // 该图层透明度被锁死，闪烁没有视觉效果，到此为止
             if (this.shouldExcludeLayer(layerIndex)) return;
 
             this.highlightedLayerIndex = layerIndex;
             this.originalOpacities.clear();
-
-            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
-            this.showHighlightBox([layerIndex], layer?.Name || ItemColorItem?.Asset?.Name || "");
 
             // 获取当前透明度
             const currentOpacity = this.getLayerOpacity(layerIndex);
@@ -4436,16 +4632,66 @@
             this.gizmo.clearHighlight();
         }
 
+        /** 道具名，父节点找不到时的兜底 */
+        getAssetName() {
+            return ItemColorItem?.Asset?.Description || ItemColorItem?.Asset?.Name || "";
+        }
+
         /**
-         * 高亮框上方显示的文字。物品整体用资产名，分组用组名，图层用图层名。
+         * 某个图层所属的部件名，即树里承载它的那个节点的名字。
+         *
+         * 这个名字是 buildTree 从颜色分组算出来的，经过
+         * ItemColorGroupNames / ItemColorLayerNames 翻译，
+         * 比道具名更贴近用户在列表里看到的层级结构。
+         *
+         * @param {number} layerIndex
+         * @returns {string}
+         */
+        getPartName(layerIndex) {
+            const node = this.findNodeForLayer(layerIndex);
+            // root 节点的名字是"物品整体"，那是占位不是部件名，退回道具名
+            if (!node || node.type === 'root') return this.getAssetName();
+            return node.name || this.getAssetName();
+        }
+
+        /**
+         * 拼「父类名 - 子名」。子名缺失或与父名相同时只显示父名，
+         * 避免出现「敞夹克 - 敞夹克」这种重复
+         * @param {string} parent
+         * @param {string} [child]
+         * @returns {string}
+         */
+        formatHighlightLabel(parent, child) {
+            if (!child || child === parent) return parent;
+            if (!parent) return child;
+            return `${parent} - ${child}`;
+        }
+
+        /**
+         * 高亮框上方显示的文字，格式为「部件名 - 层级名」。
+         * 物品整体只显示部件名，分组与图层各自附上自己的名字。
          * @param {Object} node
          * @returns {string}
          */
         getHighlightLabel(node) {
-            const assetName = ItemColorItem?.Asset?.Description || ItemColorItem?.Asset?.Name || "";
-            if (!node) return assetName;
-            if (node.type === 'root') return assetName;
-            return node.name || assetName;
+            if (!node || node.type === 'root') return this.getAssetName();
+            // 分组节点自己就是部件层，父级取道具名
+            if (node.type === 'group') return this.formatHighlightLabel(this.getAssetName(), node.name);
+            // 图层节点：父节点名 - 自己的名字
+            const parent = node.parent && node.parent.type !== 'root'
+                ? node.parent.name : this.getAssetName();
+            return this.formatHighlightLabel(parent, node.name);
+        }
+
+        /**
+         * 单个图层的高亮标签，格式为「部件名 - 层级名」。
+         * 部件名取树里承载它的节点名，层级名取贴图图层自己的名字。
+         * @param {number} layerIndex
+         * @returns {string}
+         */
+        getLayerHighlightLabel(layerIndex) {
+            const layer = ItemColorItem?.Asset?.Layer?.[layerIndex];
+            return this.formatHighlightLabel(this.getPartName(layerIndex), layer?.Name);
         }
 
         /**
@@ -4748,11 +4994,17 @@
             if (!size) return null;
             const { width: tw, height: th } = size;
 
-            const img = bcGlobal("GLDrawImageCache")?.get(url) ?? bcGlobal("DrawCacheImage")?.get(url);
-            const ab = getAlphaBounds(url, img);
+            const alpha = this.getAlpha(url);
+            const ab = alpha?.bounds;
             return ab
-                ? { tw, th, x: ab.x, y: ab.y, w: ab.w, h: ab.h }
-                : { tw, th, x: 0, y: 0, w: tw, h: th };
+                ? { tw, th, x: ab.x, y: ab.y, w: ab.w, h: ab.h, alpha }
+                : { tw, th, x: 0, y: 0, w: tw, h: th, alpha: null };
+        }
+
+        /** 取贴图的 alpha 信息（边界 + 降采样遮罩），两条渲染路径的缓存都查 */
+        getAlpha(url) {
+            const img = bcGlobal("GLDrawImageCache")?.get(url) ?? bcGlobal("DrawCacheImage")?.get(url);
+            return getAlphaData(url, img);
         }
         /**
          * 位移倍率。WebGL 路径下 dstX 已含一份 TranslationX，
@@ -4941,40 +5193,9 @@
                 ScaleX: read("ScaleX"), ScaleY: read("ScaleY"), Rotation: read("Rotation")
             };
         }
-        /**
-         * 求角色 canvas 到主画布的线性映射，复现 DrawCharacter 的贴图参数。
-         * 绘制位置不能写死：换装界面在 (660, 90)，道具调色（Dialog）在 (500, 0)，
-         * 制作与商店又各不相同，所以位置与缩放取自 captureDraw 记录的实参。
-         * @returns {{ox: number, oy: number, sx: number, sy: number, yStart: number}|null}
-         */
+        /** 角色 canvas 到主画布的线性映射，见 computeCanvasToScreen */
         getCanvasToScreen() {
-            const C = ItemColorCharacter;
-            if (!C || !this.drawAt) return null;
-
-            const { x: X, y: Y, zoom, heightResize } = this.drawAt;
-
-            // 只有 IsHeightResizeAllowed 明确为 false 时才忽略身高比例
-            const hr = heightResize === false ? 1 : (C.HeightRatio ?? 1);
-            const xOffset = w.CharacterAppearanceXOffset?.(C, hr) ?? 0;
-            const yOffset = w.CharacterAppearanceYOffset?.(C, hr) ?? 0;
-
-            // CanvasUpperOverflow 是 const 声明，不在 window 上
-            const upper = bcGlobal("CanvasUpperOverflow") ?? 700;
-            const yCutOff = yOffset >= 0 || (w.ServerPlayerIsInChatRoom?.() ?? false);
-            const yStart = upper + (yCutOff ? -yOffset / hr : 0);
-            const srcH = 1000 / hr + (yCutOff ? 0 : -yOffset / hr);
-            const destY = yCutOff ? 0 : yOffset;
-
-            const destW = 500 * hr * zoom;
-            const destH = (1000 - destY) * zoom;
-
-            return {
-                ox: X + xOffset * zoom,
-                oy: Y + destY * zoom,
-                sx: destW / 500,
-                sy: destH / srcH,
-                yStart
-            };
+            return computeCanvasToScreen(ItemColorCharacter, this.drawAt);
         }
         /**
          * 包围框在主画布上的几何信息，绘制与命中判定都基于它
@@ -5017,8 +5238,48 @@
          * @param {Object} map - getCanvasToScreen 的结果
          * @returns {number[]}
          */
-        toScreenPoint([x, y], map) {
-            return [map.ox + x * map.sx, map.oy + (y - map.yStart) * map.sy];
+        toScreenPoint(p, map) {
+            return canvasToScreenPoint(p, map);
+        }
+
+        /**
+         * 主画布坐标 -> 角色画布坐标，toScreenPoint 的逆运算
+         * @param {number[]} p - [x, y]
+         * @param {Object} map - getCanvasToScreen 的结果
+         * @returns {number[]}
+         */
+        toCanvasPoint(p, map) {
+            return screenToCanvasPoint(p, map);
+        }
+
+        /**
+         * 把角色画布上的点逆变换回贴图的像素坐标。
+         *
+         * transformRect 的正向链是：以整幅贴图中心为支点，先缩放、再旋转、
+         * 最后整体平移。这里按相反顺序各做一次逆运算。
+         *
+         * @param {number[]} p - 角色画布坐标
+         * @param {{x: number, y: number}} cap - 该图层的绘制原点
+         * @param {{tw: number, th: number}} rect
+         * @param {Object} t - readTransforms 的结果
+         * @returns {number[]|null} 贴图局部像素坐标，缩放为 0 时无法求逆返回 null
+         */
+        toTexturePoint([x, y], cap, rect, t) {
+            if (!t.ScaleX || !t.ScaleY) return null;
+
+            const f = this.getTranslationFactor();
+            const px = cap.x + rect.tw / 2 + t.TranslationX * f;
+            const py = cap.y + rect.th / 2 + t.TranslationY * f;
+
+            // 逆平移：转成相对支点的偏移
+            const dx = x - px, dy = y - py;
+            // 逆旋转
+            const a = -t.Rotation * Math.PI / 180;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            const rx = dx * cos - dy * sin;
+            const ry = dx * sin + dy * cos;
+            // 逆缩放，再换回以贴图左上为原点
+            return [rx / t.ScaleX + rect.tw / 2, ry / t.ScaleY + rect.th / 2];
         }
 
         /**
@@ -5065,10 +5326,11 @@
         }
 
         /**
-         * 找出主画布坐标命中的所有图层，按包围盒面积从小到大排序。
+         * 找出主画布坐标命中的所有图层，按 BC 的层叠顺序自上而下排序。
          *
-         * 小的排前面是因为大图层（衣服主体、遮罩）往往盖住整个躯干，
-         * 若按图层顺序返回，点小配件时总是先选中大的那个。
+         * 上层优先与所见一致：点下去先拿到视觉上盖在最外面的那层。
+         * 层叠序取自 C.AppearanceLayers（本体按 Priority 排好的绘制序列），
+         * 而不是 Asset.Layer 的下标 —— 后者与层叠无关。
          *
          * @param {number} mx
          * @param {number} my
@@ -5085,12 +5347,17 @@
                 const rect = this.getContentRect(cap.url);
                 if (!layer || !rect) continue;
 
-                const q = this.transformRect(cap, rect, this.readTransforms(layer));
+                const t = this.readTransforms(layer);
+                const q = this.transformRect(cap, rect, t);
                 const screen = q.corners.map(p => this.toScreenPoint(p, map));
                 // 极小的图层撑一下再判定，否则贴花之类几乎点不中
                 const center = this.toScreenPoint(q.center, map);
                 const corners = this.padCorners(screen, center);
                 if (!this.pointInQuad(mx, my, corners)) continue;
+
+                // 撑大过的框跳过 alpha 精筛：撑出来的那一圈本来就没有像素，
+                // 检查了小图层就又变回点不中，与撑大的初衷相悖
+                const padded = corners !== screen;
 
                 // 鞋带式的面积：叉积法适用于任意凸四边形
                 let area = 0;
@@ -5099,11 +5366,36 @@
                     const [x2, y2] = corners[(i + 1) % 4];
                     area += x1 * y2 - x2 * y1;
                 }
-                hits.push({ idx, area: Math.abs(area) / 2 });
+                // 二次筛选：光标处是不是真有像素。包围盒是矩形，而衣服
+                // 大多是不规则形状（袖子之间、裙摆缺口都是空的），
+                // 只靠矩形会把一大片空白也算成命中
+                const opaque = padded || this.isLayerOpaqueAt(mx, my, cap, rect, t, map);
+                const order = layerStackOrder(ItemColorCharacter, ItemColorItem?.Asset, layer.Name ?? "");
+                hits.push({ idx, area: Math.abs(area) / 2, opaque, order });
             }
 
-            hits.sort((a, b) => a.area - b.area || a.idx - b.idx);
+            // 有像素的排在前面 —— 不直接丢掉空白命中：贴图跨域读不到像素、
+            // 或用户想选的正好是完全透明的遮罩层时，还得靠包围盒兜底。
+            //
+            // 其次按层叠顺序自上而下，与视觉一致：盖在最外面的先被选中。
+            // 面积只作同层兜底（拿不到层叠序时 order 都是 -1）
+            hits.sort((a, b) =>
+                (b.opaque - a.opaque) || (b.order - a.order) || (a.area - b.area) || (a.idx - b.idx));
             return hits.map(h => h.idx);
+        }
+
+        /**
+         * 判断光标是否落在某图层的不透明像素上。
+         * 把主画布坐标逆变换回贴图坐标，再查降采样的 alpha 遮罩。
+         *
+         * @returns {boolean} 遮罩不可用时返回 true，退化成纯包围盒判定
+         */
+        isLayerOpaqueAt(mx, my, cap, rect, t, map) {
+            if (!rect.alpha?.mask) return true;
+            const canvasPt = this.toCanvasPoint([mx, my], map);
+            const texPt = this.toTexturePoint(canvasPt, cap, rect, t);
+            if (!texPt) return true;
+            return isOpaqueAt(rect.alpha, texPt[0], texPt[1]);
         }
 
         /**
@@ -5357,6 +5649,13 @@
                 return;
             }
 
+            // 先沿图案轮廓描边，标出选中的到底是哪一块。
+            // 句柄仍挂在包围盒上，因为缩放旋转本来就是按矩形定义的
+            const targets = this.itemLevel
+                ? [...this.captures.keys()]
+                : (this.layerIndex !== null ? [this.layerIndex] : []);
+            this.drawOutline(ctx, targets, this.getAccent());
+
             const hover = this.drag ? this.drag.mode : this.hoverHandle;
             ctx.save();
             this.drawFrame(ctx, quad);
@@ -5395,13 +5694,26 @@
             ctx.setLineDash([]);
         }
 
-        /** 框线。物品级用虚线，区别于单图层的实线 */
+        /**
+         * 句柄所在的矩形参照线。轮廓描边已经标明了图案范围，
+         * 这条线只是交代句柄挂在哪儿，所以画成淡虚线不抢视觉。
+         */
         drawFrame(ctx, quad) {
-            this.strokeTwice(ctx, () => {
+            const path = () => {
                 ctx.beginPath();
                 quad.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
                 ctx.closePath();
-            }, this.itemLevel ? GIZMO_STYLE.itemDash : null);
+            };
+            path();
+            ctx.setLineDash(GIZMO_STYLE.itemDash);
+            ctx.strokeStyle = GIZMO_STYLE.outline;
+            ctx.lineWidth = GIZMO_STYLE.strokeW + 1;
+            ctx.stroke();
+            path();
+            ctx.strokeStyle = this.getAccent();
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         /** 旋转句柄，含一条连到框上边的引线 */
@@ -5445,39 +5757,157 @@
             const ctx = bcGlobal("MainCanvas");
             if (!ctx || typeof ctx.save !== "function" || !this.highlight) return;
 
-            const quad = this.getHighlightQuad();
-            if (!quad) return;
+            const drawn = this.drawOutline(ctx, this.highlight.indices,
+                this.highlight.hover ? GIZMO_STYLE.hoverStroke : GIZMO_STYLE.hlStroke);
+            // 轮廓画不出来（贴图跨域、还没加载完）时不退回矩形框：
+            // 那个框大得没有参考意义，不如只留文字标注
+            if (!drawn) return;
 
-            // 画布悬浮的预览框更淡：它跟着光标持续出现，
-            // 和点击后那次确认性的提示要能区分开
-            const hover = this.highlight.hover;
-            const fill = hover ? GIZMO_STYLE.hoverFill : GIZMO_STYLE.hlFill;
-            const stroke = hover ? GIZMO_STYLE.hoverStroke : GIZMO_STYLE.hlStroke;
+            if (this.highlight.label) {
+                const quad = this.getHighlightQuad();
+                if (quad) {
+                    ctx.save();
+                    this.drawHighlightLabel(ctx, quad);
+                    ctx.restore();
+                }
+            }
+        }
+
+        /**
+         * 沿图案自身的 alpha 边缘画一圈外扩描边，替代矩形包围框。
+         *
+         * 做法全部落在 Canvas2D 的合成操作上，由 GPU 执行，不读像素：
+         *   1. 把图层贴图按它当前的变换，向 samples 个环向方向各偏移
+         *      OUTLINE.width 画一次，用 lighter 叠加 —— 并集就是图案
+         *      向外膨胀一圈后的形状
+         *   2. destination-out 扣掉未偏移的原图，只剩外面那一圈
+         *   3. source-in 整体染色
+         *
+         * @param {CanvasRenderingContext2D} ctx - 主画布
+         * @param {number[]} indices - 要描边的图层
+         * @param {string} color
+         * @returns {boolean} 是否成功画出
+         */
+        drawOutline(ctx, indices, color) {
+            const layers = ItemColorItem?.Asset?.Layer;
+            const map = this.getCanvasToScreen();
+            if (!Array.isArray(layers) || !map || this.captures.size === 0) return false;
+
+            // 只处理有贴图可用的图层，顺带算出需要多大的离屏区域
+            const items = [];
+            for (const idx of indices) {
+                const cap = this.captures.get(idx);
+                const layer = layers[idx];
+                const rect = cap && this.getContentRect(cap.url);
+                const img = cap && this.getImage(cap.url);
+                if (!layer || !rect || !img) continue;
+                items.push({ cap, rect, img, t: this.readTransforms(layer) });
+            }
+            if (items.length === 0) return false;
+
+            const pad = OUTLINE.width + 2;
+            const bbox = this.outlineBBox(items, map, pad);
+            if (!bbox) return false;
+
+            const off = getOutlineCanvas(bbox.w, bbox.h);
+            if (!off) return false;
+            const octx = off.ctx;
+
+            // 第一步：环向偏移叠加，得到膨胀形状。
+            // lighter 让 alpha 累加，重叠处不会因为半透明相乘而变淡
+            octx.globalCompositeOperation = "lighter";
+            for (let i = 0; i < OUTLINE.samples; i++) {
+                const a = i / OUTLINE.samples * Math.PI * 2;
+                const dx = Math.cos(a) * OUTLINE.width;
+                const dy = Math.sin(a) * OUTLINE.width;
+                for (const it of items) {
+                    this.blitLayer(octx, it, map, bbox, dx, dy);
+                }
+            }
+
+            // 第二步：扣掉原图，留下外面那一圈
+            octx.globalCompositeOperation = "destination-out";
+            for (const it of items) {
+                this.blitLayer(octx, it, map, bbox, 0, 0);
+            }
+
+            // 第三步：染色。用 source-in 保留刚才的形状、替换颜色
+            octx.globalCompositeOperation = "source-in";
+            octx.fillStyle = color;
+            octx.fillRect(0, 0, bbox.w, bbox.h);
+            octx.globalCompositeOperation = "source-over";
 
             ctx.save();
-            const path = () => {
-                ctx.beginPath();
-                quad.corners.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-                ctx.closePath();
-            };
-            path();
-            ctx.fillStyle = fill;
-            ctx.fill();
-
-            path();
-            ctx.setLineDash(GIZMO_STYLE.hlDash);
-            ctx.strokeStyle = GIZMO_STYLE.outline;
-            // 悬浮框的黑描边也减细，否则淡色线被压得看不出来
-            ctx.lineWidth = hover ? GIZMO_STYLE.strokeW + 1 : GIZMO_STYLE.outlineW;
-            ctx.stroke();
-            path();
-            ctx.strokeStyle = stroke;
-            ctx.lineWidth = GIZMO_STYLE.strokeW;
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            if (this.highlight.label) this.drawHighlightLabel(ctx, quad);
+            // 贴图边缘的抗锯齿会让描边外沿拖出一层很淡的雾，
+            // 压一下整体不透明度反而更干脆
+            ctx.globalAlpha = 1;
+            ctx.drawImage(off.cv, 0, 0, bbox.w, bbox.h, bbox.x, bbox.y, bbox.w, bbox.h);
             ctx.restore();
+            return true;
+        }
+
+        /** 取贴图 Image 对象，两条渲染路径的缓存都查 */
+        getImage(url) {
+            const img = bcGlobal("GLDrawImageCache")?.get(url)
+                ?? bcGlobal("DrawCacheImage")?.get(url);
+            // 宽高为 1 是还没加载完的占位纹理
+            return (img && (img.naturalWidth || img.width) > 1) ? img : null;
+        }
+
+        /**
+         * 求这批图层描边所需的主画布区域，已含外扩留白并夹进画布内
+         * @returns {{x: number, y: number, w: number, h: number}|null}
+         */
+        outlineBBox(items, map, pad) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const it of items) {
+                const q = this.transformRect(it.cap, it.rect, it.t);
+                for (const p of q.corners) {
+                    const [sx, sy] = this.toScreenPoint(p, map);
+                    if (sx < minX) minX = sx;
+                    if (sx > maxX) maxX = sx;
+                    if (sy < minY) minY = sy;
+                    if (sy > maxY) maxY = sy;
+                }
+            }
+            if (!Number.isFinite(minX)) return null;
+
+            const x = Math.max(0, Math.floor(minX - pad));
+            const y = Math.max(0, Math.floor(minY - pad));
+            const w = Math.min(2000, Math.ceil(maxX + pad)) - x;
+            const h = Math.min(1000, Math.ceil(maxY + pad)) - y;
+            return (w > 0 && h > 0) ? { x, y, w, h } : null;
+        }
+
+        /**
+         * 把一个图层按它的变换画到离屏画布上，可附加一个屏幕空间的偏移。
+         *
+         * 变换链与 transformRect 一致：支点是整幅贴图中心，先缩放再旋转，
+         * 最后平移。这里用 ctx 的矩阵表达，省去逐点换算。
+         *
+         * @param {number} dx - 屏幕空间的额外偏移，用于生成膨胀轮廓
+         * @param {number} dy
+         */
+        blitLayer(octx, it, map, bbox, dx, dy) {
+            const { cap, rect, img, t } = it;
+            const f = this.getTranslationFactor();
+            // 支点在角色画布坐标下的位置
+            const px = cap.x + rect.tw / 2 + t.TranslationX * f;
+            const py = cap.y + rect.th / 2 + t.TranslationY * f;
+            const [sx, sy] = this.toScreenPoint([px, py], map);
+
+            octx.save();
+            // 平移到支点（减去 bbox 原点转成离屏坐标），再加膨胀偏移
+            octx.translate(sx - bbox.x + dx, sy - bbox.y + dy);
+            // 顺序必须是 预览缩放 -> 旋转 -> 图层缩放，与正向链一致：
+            // 图层的缩放旋转发生在贴图空间，预览缩放作用在其结果之上。
+            // 把 map.sx/sy 并进旋转内侧的话，非等比预览下会整体错位
+            octx.scale(map.sx, map.sy);
+            octx.rotate(t.Rotation * Math.PI / 180);
+            octx.scale(t.ScaleX, t.ScaleY);
+            // 以支点为原点绘制，所以左上角在 -tw/2, -th/2
+            octx.drawImage(img, -rect.tw / 2, -rect.th / 2);
+            octx.restore();
         }
 
         /** 高亮框上方的文字标注，贴着框顶外侧，超出上边界时改画在框内 */
@@ -5835,6 +6265,560 @@
             itemColorAdjustmentWindow.destroy();
         }
         return result;
+    });
+
+    // ===================================================================================
+    // 换装界面的整件拾取
+    //
+    // 与调色界面的 LayerTransformGizmo 是两套：那边的目标是单个物品内部的图层，
+    // 这边的目标是身上穿的整件装备。共用的是 alpha 遮罩、轮廓描边和坐标换算，
+    // 差别在于捕获按 Asset 归组、拾取结果是 AssetGroup 而不是图层索引。
+    // ===================================================================================
+
+    /**
+     * 换装界面里在角色身上悬浮/点击拾取整件装备。
+     *
+     * 渲染管线的末端（GLDrawImage / DrawImageCanvas）拿不到 Item 上下文，
+     * 只有 URL。所以先从 C.AppearanceLayers 建一张 URL 前缀到 Asset 的索引，
+     * 再按文件名反查 —— 与调色界面里 matchDrawLayerIndex 同一思路。
+     */
+    class AppearancePicker {
+        constructor() {
+            // 本帧捕获的绘制信息，键为 Asset，值为该资产各图层的 {url, x, y}
+            this.captures = new Map();
+            this.frame = new Map();   // 收集中的本帧数据，帧末提交
+            this.archive = new Map(); // groupName -> { asset, list }，跨帧留存
+
+            this.drawAt = null;       // 全身图的绘制参数
+            this.frameDrawAt = null;
+            this.hover = null;        // 画布悬浮 { asset, group, label } 或 null
+            this.listHover = null;    // 右侧列表悬浮，另带 snapshot
+            this.lastPick = null;     // 轮换状态 { x, y, key, groupName }
+            this.suppressClick = false;
+        }
+
+        /**
+         * 拾取在默认模式与物品选择模式（Cloth）下都可用。
+         *
+         * Cloth 模式里左侧角色仍然完整显示，允许直接点身上别的部位跳过去，
+         * 省掉先退回列表再找的来回。Color / Wardrobe 有自己的交互，不介入。
+         */
+        isEnabled() {
+            if (typeof CurrentScreen === 'undefined' || CurrentScreen !== 'Appearance') return false;
+            const mode = typeof CharacterAppearanceMode !== 'undefined' ? CharacterAppearanceMode : "";
+            if (mode !== "" && mode !== "Cloth") return false;
+            // 扩展物品与层级编辑界面覆盖在上面，别抢它们的点击
+            if (typeof DialogFocusItem !== 'undefined' && DialogFocusItem != null) return false;
+            if (w.Layering?.IsActive?.()) return false;
+            return !!(typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection);
+        }
+
+        /** 当前是否处于物品选择模式 */
+        inClothMode() {
+            return typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === "Cloth";
+        }
+
+        /**
+         * 记录全身图的绘制参数。AppearanceRun 同一帧画两次角色：
+         * 先是 zoom=4 的上半身大图，再是全身图。取 zoom 较小的那次。
+         */
+        captureDraw(x, y, zoom, heightResize) {
+            const z = typeof zoom === "number" ? zoom : 1;
+            // 放大预览的 zoom 是 4，全身图是 0.95 或 1
+            if (z > 2) return;
+            this.frameDrawAt = { x, y, zoom: z, heightResize };
+        }
+
+        /** 帧末提交本帧收集到的数据 */
+        commit() {
+            if (this.frameDrawAt) {
+                this.drawAt = this.frameDrawAt;
+                this.frameDrawAt = null;
+            }
+            if (this.frame.size > 0) {
+                this.captures = this.frame;
+                this.frame = new Map();
+                // 按组名存档一份。右侧列表悬浮时该部件正在闪烁，
+                // 隐藏帧的捕获里没有它，靠存档继续描边
+                for (const [asset, list] of this.captures) {
+                    const name = asset?.Group?.Name;
+                    if (name) this.archive.set(name, { asset, list });
+                }
+            }
+        }
+
+        /** 丢弃捕获，角色重建前调用 */
+        invalidate() {
+            this.captures.clear();
+            this.frame.clear();
+
+            // 存档本该一起清（换衣服后旧记录对不上贴图），但闪烁提示自己
+            // 每 0.2s 就重建一次角色，那只是切显隐、贴图没变。若跟着清掉，
+            // 隐藏帧重建的存档里缺这件装备，描边会跟着闪。
+            if (dressOptimizationManager.highlightTimer !== null) return;
+            this.archive.clear();
+            this.listHover = null;
+        }
+
+        /**
+         * 由绘制钩子调用，记录某次图层绘制归属哪个 Asset
+         * @param {Object} asset
+         * @param {string} url
+         * @param {number} x - drawX，已含 TranslationX
+         * @param {number} y
+         * @param {Object} opts
+         */
+        capture(asset, url, x, y, opts) {
+            let list = this.frame.get(asset);
+            if (!list) {
+                list = [];
+                this.frame.set(asset, list);
+            }
+            // 反推未位移时的原点，与 LayerTransformGizmo.capture 一致
+            list.push({
+                url,
+                x: x - (opts?.TranslationX || 0),
+                y: y - (opts?.TranslationY || 0),
+                opts
+            });
+        }
+
+        /** 清除画布悬浮态。列表悬浮独立存放，不受影响 */
+        clearHover() {
+            this.hover = null;
+        }
+
+        /** 当前该画哪个轮廓：画布悬浮优先于右侧列表悬浮 */
+        activeHover() {
+            return this.hover ?? this.listHover;
+        }
+
+        /** 重置轮换，下次点击从最上层开始 */
+        resetCycle() {
+            this.lastPick = null;
+        }
+
+        /** 全身图的坐标映射 */
+        getMap() {
+            return computeCanvasToScreen(CharacterAppearanceSelection, this.drawAt);
+        }
+
+        /**
+         * 这个资产是否属于可拾取范围。
+         * 取换装界面自己筛出来的那份可编辑列表，保证与右侧列表一致。
+         * @param {Object} asset
+         * @returns {Object|null} 对应的 AssetGroup，不可拾取则 null
+         */
+        pickableGroup(asset) {
+            const group = asset?.Group;
+            if (!group) return null;
+            const groups = w.CharacterAppearanceGroups;
+            if (Array.isArray(groups)) {
+                if (!groups.some(g => g.Name === group.Name)) return null;
+            } else if (group.Category !== "Appearance" || group.AllowCustomize === false) {
+                // 列表还没建好时按同样的条件自行判断
+                return null;
+            }
+            // 主人规则可能禁掉某些部位，那些点了也进不去
+            if (w.AppearanceGroupAllowed?.(CharacterAppearanceSelection, group.Name) === false) return null;
+            return group;
+        }
+
+        /**
+         * 找出光标下的所有装备，按 BC 的层叠顺序自上而下排序。
+         * 上层优先与所见一致：点外衣覆盖的位置先拿到外衣，再点才轮换到里层。
+         * @returns {{asset: Object, group: Object}[]}
+         */
+        pickAt(mx, my) {
+            if (!this.isEnabled()) return [];
+            const map = this.getMap();
+            if (!map || this.captures.size === 0) return [];
+
+            // 只认全身图所在的横向范围。左边还有一张 zoom=4 的放大预览，
+            // 右边是列表或预览网格，都不该被这套拾取接管。
+            //
+            // 默认模式下本体的 Use / Strip 按钮从 1030 起，与全身图右缘有
+            // 十几像素重叠，让按钮优先；Cloth 模式的预览网格从 1250 起，
+            // 全身图完全在它左边，不必收窄
+            const bodyW = 500 * map.sx;
+            const limit = this.inClothMode() ? APPEARANCE_CLOTH_GRID_X : APPEARANCE_MENU_X;
+            const right = Math.min(map.ox + bodyW, limit - 4);
+            if (mx < map.ox || mx > right) return [];
+            // 顶部是本体的菜单按钮行（AppearanceClick 的 MouseYIn(25, 90)），
+            // 全身图上缘会伸进去，让按钮优先
+            if (my < APPEARANCE_MENU_BOTTOM) return [];
+
+            const canvasPt = screenToCanvasPoint([mx, my], map);
+            const hits = [];
+
+            for (const [asset, list] of this.captures) {
+                const group = this.pickableGroup(asset);
+                if (!group) continue;
+
+                let area = 0;
+                let opaque = false;
+                for (const cap of list) {
+                    const alpha = getAlphaData(cap.url, pickImage(cap.url));
+                    const b = alpha?.bounds;
+                    // 拿不到 alpha 就用整幅贴图的范围兜底
+                    const size = alpha ? null : textureSize(cap.url);
+                    const rect = b
+                        ? { x: cap.x + b.x, y: cap.y + b.y, w: b.w, h: b.h }
+                        : (size ? { x: cap.x, y: cap.y, w: size.width, h: size.height } : null);
+                    if (!rect) continue;
+
+                    area += rect.w * rect.h;
+                    if (canvasPt[0] < rect.x || canvasPt[0] >= rect.x + rect.w) continue;
+                    if (canvasPt[1] < rect.y || canvasPt[1] >= rect.y + rect.h) continue;
+                    // 包围盒之内再查像素，衣服大多不规则，矩形会把空隙也算进去
+                    if (isOpaqueAt(alpha, canvasPt[0] - cap.x, canvasPt[1] - cap.y)) {
+                        opaque = true;
+                    }
+                }
+                if (opaque) {
+                    hits.push({
+                        asset, group, area,
+                        // 该资产最靠上的那层的层叠序，代表整件的可见高度
+                        order: layerStackOrder(CharacterAppearanceSelection, asset)
+                    });
+                }
+            }
+
+            // 按层叠顺序自上而下：视觉上盖在最外面的先被选中，与所见一致。
+            // 面积只作同层时的兜底，此时两件的前后本来就没有客观答案
+            hits.sort((a, b) => (b.order - a.order) || (a.area - b.area));
+            return hits;
+        }
+
+        /**
+         * 算出此刻点击会选中哪一件，不改变轮换状态。供悬浮预览使用
+         * @returns {{asset: Object, group: Object}|null}
+         */
+        peek(mx, my) {
+            const hits = this.pickAt(mx, my);
+            if (hits.length === 0) return null;
+            return hits[this.cycleIndex(hits, mx, my)];
+        }
+
+        /** 轮换下标，规则与调色界面一致：同一位置连点依次后移 */
+        cycleIndex(hits, mx, my) {
+            const SAME_SPOT = GIZMO_HANDLE_R * 2;
+            const key = hits.map(h => h.group.Name).join(",");
+            const last = this.lastPick;
+            const sameSpot = last
+                && Math.hypot(mx - last.x, my - last.y) <= SAME_SPOT
+                && last.key === key;
+            if (!sameSpot) return 0;
+            const at = hits.findIndex(h => h.group.Name === last.groupName);
+            return (at + 1) % hits.length;
+        }
+
+        /**
+         * 按部件组名设置悬浮态，供右侧列表的悬浮提示复用。
+         * 从本帧捕获里找出属于该组的资产。
+         * @param {string} groupName
+         * @returns {boolean} 是否找到了对应装备
+         */
+        hoverByGroup(groupName) {
+            if (!groupName) {
+                this.listHover = null;
+                return false;
+            }
+            if (this.listHover?.group?.Name === groupName) return true;
+
+            // 查存档而非当前帧：悬浮期间该部件正在闪烁，隐藏帧里查不到
+            const rec = this.archive.get(groupName);
+            if (!rec) {
+                this.listHover = null;
+                return false;
+            }
+            this.listHover = {
+                asset: rec.asset,
+                group: rec.asset.Group,
+                label: pickLabel({ asset: rec.asset, group: rec.asset.Group }),
+                snapshot: rec.list
+            };
+            return true;
+        }
+
+        /** 悬浮时记下目标，供绘制使用 */
+        updateHover(mx, my) {
+            if (!this.isEnabled()) {
+                this.clearHover();
+                return;
+            }
+            const hit = this.peek(mx, my);
+            if (!hit) {
+                this.clearHover();
+                return;
+            }
+            // 同一件重复设置时保留原对象，避免每帧产生垃圾
+            if (this.hover?.group === hit.group) return;
+            this.hover = { asset: hit.asset, group: hit.group, label: pickLabel(hit) };
+        }
+
+        /**
+         * 点击拾取：跳转到该部位的服装编辑界面
+         * @returns {boolean} 是否接管了这次点击
+         */
+        click(mx, my) {
+            const hits = this.pickAt(mx, my);
+            if (hits.length === 0) return false;
+
+            const hit = hits[this.cycleIndex(hits, mx, my)];
+            this.lastPick = {
+                x: mx, y: my,
+                key: hits.map(h => h.group.Name).join(","),
+                groupName: hit.group.Name
+            };
+            this.clearHover();
+
+            // 已经在编辑这个部位了，重建一遍会把翻页位置也重置掉，
+            // 但仍要算作接管，否则这次点击会漏给本体
+            const C = CharacterAppearanceSelection;
+            if (this.inClothMode() && C?.FocusGroup === hit.group) return true;
+
+            return openClothScreen(hit.group);
+        }
+    }
+
+    /** 取贴图 Image，两条渲染路径的缓存都查。未加载完的占位纹理返回 null */
+    function pickImage(url) {
+        const img = bcGlobal("GLDrawImageCache")?.get(url)
+            ?? bcGlobal("DrawCacheImage")?.get(url);
+        return (img && (img.naturalWidth || img.width) > 1) ? img : null;
+    }
+
+    /** 贴图的原始像素尺寸 */
+    function textureSize(url) {
+        const img = pickImage(url);
+        if (!img) return null;
+        return { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+    }
+
+    /**
+     * 换装界面的高亮标签，格式为「分组名 - 服装名」。
+     * 分组名取 AssetGroup.Description（本体已按语言翻译过）。
+     * @param {{asset: Object, group: Object}} hit
+     * @returns {string}
+     */
+    function pickLabel(hit) {
+        const groupName = hit.group?.Description || hit.group?.Name || "";
+        const assetName = hit.asset?.Description || hit.asset?.Name || "";
+        if (!assetName || assetName === groupName) return groupName;
+        if (!groupName) return assetName;
+        return `${groupName} - ${assetName}`;
+    }
+
+    /**
+     * 跳转到某部位的服装编辑界面（Cloth 模式）。
+     *
+     * 本体没有现成的入口函数，这五步是照 AppearanceClick 里点击部位名那段
+     * 抄下来的，缺一步都不行：FocusGroup 决定 DialogInventoryBuild 的目标，
+     * CharacterAppearanceCloth 是取消时的回滚依据。
+     *
+     * @param {Object} group - AssetGroup
+     * @returns {boolean} 是否成功跳转
+     */
+    function openClothScreen(group) {
+        const C = CharacterAppearanceSelection;
+        if (!C || !group) return false;
+        if (typeof w.DialogInventoryBuild !== "function") return false;
+
+        try {
+            C.FocusGroup = group;
+            w.DialogInventoryBuild(C, true, false);
+            w.AppearancePreviewBuild?.(C, true);
+            w.CharacterAppearanceCloth = w.InventoryGet?.(C, group.Name) ?? null;
+            w.CharacterAppearanceMode = "Cloth";
+            // 从一个部位直接切到另一个部位时要重建菜单：可用按钮随部位而变
+            w.AppearanceMenuBuild?.(C);
+            return true;
+        } catch (e) {
+            console.error("[LianDressOptimization] 跳转服装编辑失败", e);
+            // 半途失败会让界面卡在不一致的状态，退回默认模式
+            C.FocusGroup = null;
+            w.CharacterAppearanceMode = "";
+            return false;
+        }
+    }
+
+    const appearancePicker = new AppearancePicker();
+
+    /**
+     * 沿悬浮装备的 alpha 边缘画轮廓描边，做法与调色界面的 drawOutline 相同：
+     * 环向偏移叠加得到膨胀形状、扣掉原图留下外圈、再染色。全走 GPU 合成。
+     */
+    function drawAppearanceHover() {
+        const picker = appearancePicker;
+        const hover = picker.activeHover();
+        if (!hover || !picker.isEnabled()) return;
+
+        const ctx = bcGlobal("MainCanvas");
+        if (!ctx || typeof ctx.save !== "function") return;
+
+        const map = picker.getMap();
+        // 快照用于列表悬浮：闪烁的隐藏帧里当前捕获没有这件装备
+        const list = picker.captures.get(hover.asset) ?? hover.snapshot;
+        if (!map || !list?.length) return;
+
+        // 收集可画的图层，同时求出需要多大的离屏区域
+        const items = [];
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const cap of list) {
+            const img = pickImage(cap.url);
+            if (!img) continue;
+            const tw = img.naturalWidth || img.width;
+            const th = img.naturalHeight || img.height;
+            items.push({ cap, img, tw, th });
+            const [x1, y1] = canvasToScreenPoint([cap.x, cap.y], map);
+            const [x2, y2] = canvasToScreenPoint([cap.x + tw, cap.y + th], map);
+            minX = Math.min(minX, x1); maxX = Math.max(maxX, x2);
+            minY = Math.min(minY, y1); maxY = Math.max(maxY, y2);
+        }
+        if (items.length === 0 || !Number.isFinite(minX)) return;
+
+        const pad = OUTLINE.width + 2;
+        const bx = Math.max(0, Math.floor(minX - pad));
+        const by = Math.max(0, Math.floor(minY - pad));
+        const bw = Math.min(2000, Math.ceil(maxX + pad)) - bx;
+        const bh = Math.min(1000, Math.ceil(maxY + pad)) - by;
+        if (bw <= 0 || bh <= 0) return;
+
+        const off = getOutlineCanvas(bw, bh);
+        if (!off) return;
+        const octx = off.ctx;
+
+        // 换装界面的图层没有额外变换，直接按预览缩放贴图
+        const blit = (dx, dy) => {
+            for (const it of items) {
+                const [sx, sy] = canvasToScreenPoint([it.cap.x, it.cap.y], map);
+                octx.save();
+                octx.translate(sx - bx + dx, sy - by + dy);
+                octx.scale(map.sx, map.sy);
+                octx.drawImage(it.img, 0, 0);
+                octx.restore();
+            }
+        };
+
+        octx.globalCompositeOperation = "lighter";
+        for (let i = 0; i < OUTLINE.samples; i++) {
+            const a = i / OUTLINE.samples * Math.PI * 2;
+            blit(Math.cos(a) * OUTLINE.width, Math.sin(a) * OUTLINE.width);
+        }
+        octx.globalCompositeOperation = "destination-out";
+        blit(0, 0);
+        octx.globalCompositeOperation = "source-in";
+        octx.fillStyle = GIZMO_STYLE.hoverStroke;
+        octx.fillRect(0, 0, bw, bh);
+        octx.globalCompositeOperation = "source-over";
+
+        ctx.save();
+        ctx.drawImage(off.cv, 0, 0, bw, bh, bx, by, bw, bh);
+
+        // 名称标注放在轮廓上方
+        if (hover.label) {
+            ctx.font = `${GIZMO_STYLE.hlFont}px Arial`;
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "center";
+            const h = GIZMO_STYLE.hlFont + 8;
+            const tw = ctx.measureText(hover.label).width + 16;
+            const cx = Math.max(tw / 2, Math.min(2000 - tw / 2, (minX + maxX) / 2));
+            const cy = minY - h / 2 - 4 < h ? minY + h / 2 + 4 : minY - h / 2 - 4;
+            ctx.fillStyle = GIZMO_STYLE.hoverLabelBg;
+            ctx.fillRect(cx - tw / 2, cy - h / 2, tw, h);
+            ctx.fillStyle = GIZMO_STYLE.hoverStroke;
+            ctx.fillText(hover.label, cx, cy);
+        }
+        ctx.restore();
+    }
+
+    /**
+     * 从贴图 URL 反查它属于哪个 Asset。
+     *
+     * 渲染末端只有 URL，但 C.AppearanceLayers 每项都带 .Asset 反向引用，
+     * 而 CommonDraw 拼 URL 时文件名首段固定是 asset.Name，据此匹配。
+     * 与调色界面的 matchDrawLayerIndex 同一思路。
+     *
+     * @param {string} url
+     * @returns {Object|null}
+     */
+    function matchAppearanceAsset(url) {
+        const C = CharacterAppearanceSelection;
+        const layers = C?.AppearanceLayers;
+        if (!Array.isArray(layers) || typeof url !== "string") return null;
+
+        const file = url.slice(url.lastIndexOf("/") + 1).replace(/\.png$/i, "");
+        // 同名前缀可能匹配多个资产（如 Cloth1 与 Cloth10），取最长的那个
+        let best = null;
+        for (const layer of layers) {
+            const asset = layer?.Asset;
+            if (!asset?.Name || !file.startsWith(asset.Name)) continue;
+            if (!best || asset.Name.length > best.Name.length) best = asset;
+        }
+        return best;
+    }
+
+    // 记录全身图的绘制参数
+    mod.hookFunction("DrawCharacter", 0, (args, next) => {
+        const [C, x, y, zoom, heightResize] = args;
+        if (appearancePicker.isEnabled() && C && C === CharacterAppearanceSelection) {
+            appearancePicker.captureDraw(x, y, zoom, heightResize);
+        }
+        return next(args);
+    });
+
+    // 捕获每个图层的贴图与绘制原点
+    for (const fn of ["GLDrawImage", "DrawImageCanvas"]) {
+        if (typeof w[fn] !== "function") continue;
+        mod.hookFunction(fn, 1, (args, next) => {
+            const [src, , x, y, opts] = args;
+            if (opts && appearancePicker.isEnabled()) {
+                const asset = matchAppearanceAsset(src);
+                if (asset) appearancePicker.capture(asset, src, x, y, opts);
+            }
+            return next(args);
+        });
+    }
+
+    // 在换装界面绘制完成后叠画轮廓
+    mod.hookFunction("AppearanceRun", 0, (args, next) => {
+        const result = next(args);
+        if (appearancePicker.isEnabled()) {
+            appearancePicker.commit();
+            // 右侧列表的悬浮提示原本只有闪烁，这里补上同一套描边
+            appearancePicker.hoverByGroup(dressOptimizationManager.hoveredGroupName);
+            drawAppearanceHover();
+        }
+        return result;
+    });
+
+    // 悬浮检测
+    mod.hookFunction("CommonMouseMove", 0, (args, next) => {
+        if (appearancePicker.isEnabled()) {
+            const p = toGameCoords(args[0]);
+            if (p) appearancePicker.updateHover(p.x, p.y);
+        }
+        return next(args);
+    });
+
+    // 点击拾取。挂在 AppearanceClick 之前：命中就接管，不调用本体，
+    // 因为角色区域在换装界面本来没有其他可点内容
+    mod.hookFunction("AppearanceClick", 1, (args, next) => {
+        if (appearancePicker.isEnabled()) {
+            // 优先用事件坐标；AppearanceClick 的实参未必带 event（触屏路径），
+            // 那就退回本体维护的 MouseX / MouseY
+            const p = toGameCoords(args[0])
+                ?? (typeof MouseX === "number" ? { x: MouseX, y: MouseY } : null);
+            if (p && appearancePicker.click(p.x, p.y)) return;
+        }
+        return next(args);
+    });
+
+    // 角色重建后旧的捕获不再对应当前贴图
+    mod.hookFunction("CharacterLoadCanvas", 0, (args, next) => {
+        if (args[0] === CharacterAppearanceSelection) appearancePicker.invalidate();
+        return next(args);
     });
 
     console.log("[LianDressOptimization] 加载成功");
