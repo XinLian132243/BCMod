@@ -4083,6 +4083,36 @@
             this.captureUrl = null;   // 渲染时捕获到的贴图 URL
             this.captureBase = null;  // 渲染时捕获到的绘制原点（已剔除位移）
             this.shiftKey = false;    // 最近一次鼠标事件的 Shift 状态，用于角度吸附
+            this.drawAt = null;       // 角色本帧的绘制位置与缩放，来自 DrawCharacter
+            this.frameDrawAt = null;  // 本帧收集中的候选，帧末提交到 drawAt
+        }
+
+        /**
+         * 记录角色在主画布上的绘制参数。各界面位置不同（换装 660,90；
+         * 道具调色 500,0；制作与商店另有其值），所以不能写死。
+         *
+         * 同一帧可能画多个副本：换装界面有一个放大 4 倍的和一个正常的，
+         * Dialog 给自己上道具时 Player 会被画两次（0,0 与 500,0）。
+         * 取本帧最后一次绘制，因为各界面都是先画背景副本、后画主预览。
+         * @param {number} x - DrawCharacter 的 X
+         * @param {number} y - DrawCharacter 的 Y
+         * @param {number} zoom - 缩放
+         * @param {boolean|undefined} heightResize - IsHeightResizeAllowed
+         */
+        captureDraw(x, y, zoom, heightResize) {
+            this.frameDrawAt = {
+                x, y,
+                zoom: typeof zoom === "number" ? zoom : 1,
+                heightResize
+            };
+        }
+
+        /** 一帧绘制结束，把本帧收集到的角色位置提交为当前值 */
+        commitDraw() {
+            if (this.frameDrawAt) {
+                this.drawAt = this.frameDrawAt;
+                this.frameDrawAt = null;
+            }
         }
 
         /**
@@ -4133,6 +4163,8 @@
             this.hoverHandle = null;
             this.captureUrl = null;
             this.captureBase = null;
+            this.drawAt = null;
+            this.frameDrawAt = null;
         }
         /** 取选中的 AssetLayer，失效时返回 null */
         getLayer() {
@@ -4231,20 +4263,18 @@
         }
         /**
          * 求角色 canvas 到主画布的线性映射，复现 DrawCharacter 的贴图参数。
-         * 换装界面的主预览是 DrawCharacter(C, 660, 90, 0.95)（玩家）或 (660, 0, 1)。
-         * @returns {{ox: number, oy: number, sx: number, sy: number}|null}
+         * 绘制位置不能写死：换装界面在 (660, 90)，道具调色（Dialog）在 (500, 0)，
+         * 制作与商店又各不相同，所以位置与缩放取自 captureDraw 记录的实参。
+         * @returns {{ox: number, oy: number, sx: number, sy: number, yStart: number}|null}
          */
         getCanvasToScreen() {
             const C = ItemColorCharacter;
-            if (!C) return null;
+            if (!C || !this.drawAt) return null;
 
-            const isPlayer = typeof C.IsPlayer === "function" && C.IsPlayer();
-            const X = 660;
-            const Y = isPlayer ? 90 : 0;
-            const zoom = isPlayer ? 0.95 : 1;
+            const { x: X, y: Y, zoom, heightResize } = this.drawAt;
 
-            // DrawCharacter 里 IsHeightResizeAllowed 未传，等价于允许
-            const hr = C.HeightRatio ?? 1;
+            // 只有 IsHeightResizeAllowed 明确为 false 时才忽略身高比例
+            const hr = heightResize === false ? 1 : (C.HeightRatio ?? 1);
             const xOffset = w.CharacterAppearanceXOffset?.(C, hr) ?? 0;
             const yOffset = w.CharacterAppearanceYOffset?.(C, hr) ?? 0;
 
@@ -4288,9 +4318,11 @@
             const topMid = [(nw[0] + ne[0]) / 2, (nw[1] + ne[1]) / 2];
             let ux = topMid[0] - center[0], uy = topMid[1] - center[1];
             const len = Math.hypot(ux, uy) || 1;
+            // 同样夹进画布，否则框顶超出上边界时旋转柄不可见也不可点
+            const rr = GIZMO_HANDLE_R + 4;
             const rotateAt = [
-                topMid[0] + ux / len * GIZMO_ROTATE_DIST,
-                topMid[1] + uy / len * GIZMO_ROTATE_DIST
+                Math.max(rr, Math.min(2000 - rr, topMid[0] + ux / len * GIZMO_ROTATE_DIST)),
+                Math.max(rr, Math.min(1000 - rr, topMid[1] + uy / len * GIZMO_ROTATE_DIST))
             ];
 
             return { corners, center, rotateAt, topMid, map };
@@ -4307,11 +4339,21 @@
             const ay = [(sw[0] - nw[0]) / 2, (sw[1] - nw[1]) / 2];
             const c = quad.center;
 
-            return GIZMO_HANDLES.map(h => ({
-                id: h.id, hx: h.x, hy: h.y,
-                x: c[0] + ax[0] * h.x + ay[0] * h.y,
-                y: c[1] + ax[1] * h.x + ay[1] * h.y
-            }));
+            // 图层放大后句柄会跑到画布外，那里既画不出也点不到。
+            // 夹到边缘内侧，保证始终可操作；缩放语义不受影响，因为
+            // applyScale 用的是拖动位移增量，与句柄绘制位置无关
+            const r = GIZMO_HANDLE_R + 1;
+            const clamp = (v, max) => Math.max(r, Math.min(max - r, v));
+
+            return GIZMO_HANDLES.map(h => {
+                const x = c[0] + ax[0] * h.x + ay[0] * h.y;
+                const y = c[1] + ax[1] * h.x + ay[1] * h.y;
+                return {
+                    id: h.id, hx: h.x, hy: h.y,
+                    x: clamp(x, 2000), y: clamp(y, 1000),
+                    clamped: x !== clamp(x, 2000) || y !== clamp(y, 1000)
+                };
+            });
         }
 
         /**
@@ -4596,21 +4638,39 @@
         return result;
     });
 
-    // 在角色绘制完成后叠画包围框。放在 AppearanceRun 之后，
-    // 这样框会盖在角色上方，且不会写进角色的离屏 canvas
-    mod.hookFunction("AppearanceRun", 0, (args, next) => {
-        const result = next(args);
-        if (itemColorAdjustmentWindow.isVisible &&
-            typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === 'Color') {
-            gizmo.draw();
+    // 记录目标角色的绘制位置。调色界面不止换装一处：道具走 Dialog 的
+    // colorItem 模式、还有制作与商店，各自的角色位置都不同
+    mod.hookFunction("DrawCharacter", 0, (args, next) => {
+        const [C, x, y, zoom, heightResize] = args;
+        if (gizmo.isActive() && C && C === ItemColorCharacter) {
+            gizmo.captureDraw(x, y, zoom, heightResize);
         }
-        return result;
+        return next(args);
     });
 
-    /** 包围框当前是否应该响应交互 */
+    /**
+     * 包围框当前是否应该响应交互。
+     * 覆盖两条调色入口：换装界面的 Color 模式，以及 Dialog 的
+     * colorItem / colorExpression 模式（道具调色走这里）
+     */
     function gizmoInteractive() {
-        return gizmo.isActive() && itemColorAdjustmentWindow.isVisible &&
-            typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === 'Color';
+        if (!gizmo.isActive() || !itemColorAdjustmentWindow.isVisible) return false;
+        // ItemColorState 存在即说明调色界面处于活动状态
+        return !!(typeof ItemColorState !== 'undefined' && ItemColorState && ItemColorItem);
+    }
+
+    // 在角色绘制完成后叠画包围框，盖在角色上方且不写进角色的离屏 canvas。
+    // 挂在各调色界面的 Run 上，覆盖换装 / 聊天室道具 / 制作 / 商店
+    for (const runFn of ["AppearanceRun", "ChatRoomRun", "DialogDraw", "CraftingRun", "Shop2Run"]) {
+        if (typeof w[runFn] !== "function") continue;
+        mod.hookFunction(runFn, 0, (args, next) => {
+            const result = next(args);
+            if (gizmoInteractive()) {
+                gizmo.commitDraw();
+                gizmo.draw();
+            }
+            return result;
+        });
     }
 
     /**
@@ -4634,53 +4694,97 @@
     // 单靠命中判定会让这次点击穿透到底层按钮
     let gizmoSuppressClick = false;
 
-    mod.hookFunction("CommonMouseDown", 0, (args, next) => {
-        if (gizmoInteractive()) {
-            const p = toGameCoords(args[0]);
-            if (p) {
-                gizmo.shiftKey = !!args[0].shiftKey;
-                if (gizmo.startDrag(p.x, p.y)) {
-                    itemColorAdjustmentWindow.stopAllHighlight();
-                    gizmoSuppressClick = true;
-                    return;
-                }
-            }
+    /**
+     * 拖拽期间把移动与松手挂到 document 上。
+     * BC 的指针事件绑在 canvas 元素而非 document（见 GameStart），
+     * 因此指针一旦移出画布、或移到模组面板（z-index 10000）上方，
+     * CommonMouseMove / CommonMouseUp 就再也不会触发，拖拽会中途卡死。
+     * 图层放大后句柄常常正好落在这些区域，所以必须自己接管。
+     */
+    function beginDocDrag() {
+        const onMove = (e) => {
+            if (!gizmo.isDragging()) return;
+            const p = toGameCoords(e);
+            if (!p) return;
+            gizmo.shiftKey = !!e.shiftKey;
+            gizmo.moveDrag(p.x, p.y);
+            // 拖拽时不让浏览器选中页面文字
+            e.preventDefault();
+        };
+        const onUp = () => {
+            document.removeEventListener('pointermove', onMove, true);
+            document.removeEventListener('pointerup', onUp, true);
+            document.removeEventListener('pointercancel', onUp, true);
+            if (!gizmo.isDragging()) return;
+            gizmo.endDrag();
+            // 拖拽期间面板上的数值没跟着变，松手后同步一次
+            itemColorAdjustmentWindow.updateWindow();
+        };
+        // 用捕获阶段，避免被其他元素的 stopPropagation 截断
+        document.addEventListener('pointermove', onMove, true);
+        document.addEventListener('pointerup', onUp, true);
+        document.addEventListener('pointercancel', onUp, true);
+    }
+
+    // 拖拽的唯一起点。不挂 CommonMouseDown，因为 BC 的 pointerdown 绑在
+    // canvas 上，落在模组面板（z-index 10000）下方的句柄收不到事件。
+    // 这里用 document 捕获阶段，画布内外一视同仁。
+    // 监听随脚本常驻：内部用 gizmoInteractive 把作用域限制在调色界面
+    document.addEventListener('pointerdown', (e) => {
+        if (gizmo.isDragging() || !gizmoInteractive()) return;
+
+        // 面板内的可交互元素优先，避免抢掉输入框与按钮的点击
+        if (e.target instanceof Element &&
+            e.target.closest('input, button, select, textarea, label, .lian-color-picker-panel')) {
+            return;
         }
-        return next(args);
-    });
+
+        const p = toGameCoords(e);
+        if (!p) return;
+
+        const hit = gizmo.hitTest(p.x, p.y);
+        if (!hit) return;
+
+        // 框内平移的命中区域很大，若整片都抢过来，面板空白处就没法点了。
+        // 所以平移只在画布上生效；句柄和旋转柄面积小，可以越过面板接管
+        if (hit === "move" && e.target instanceof Element &&
+            e.target.closest('#lian-item-color-adjustment-window')) {
+            return;
+        }
+
+        gizmo.shiftKey = !!e.shiftKey;
+        if (gizmo.startDrag(p.x, p.y)) {
+            itemColorAdjustmentWindow.stopAllHighlight();
+            gizmoSuppressClick = true;
+            beginDocDrag();
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
 
     mod.hookFunction("CommonMouseMove", 0, (args, next) => {
-        if (gizmoInteractive()) {
+        // 拖拽中的移动由 document 监听接管，这里只负责悬浮高亮
+        if (gizmoInteractive() && !gizmo.isDragging()) {
             const p = toGameCoords(args[0]);
             if (p) {
                 gizmo.shiftKey = !!args[0].shiftKey;
-                if (gizmo.isDragging()) {
-                    gizmo.moveDrag(p.x, p.y);
-                    return;
-                }
                 gizmo.hoverHandle = gizmo.hitTest(p.x, p.y);
             }
         }
         return next(args);
     });
 
-    mod.hookFunction("CommonMouseUp", 0, (args, next) => {
-        if (gizmo.isDragging()) {
-            gizmo.endDrag();
-            // 拖拽期间面板上的数值没跟着变，松手后同步一次
-            itemColorAdjustmentWindow.updateWindow();
-            return;
-        }
-        return next(args);
-    });
-
-    // 吞掉落在包围框上的点击，避免误触底层的颜色界面按钮
-    mod.hookFunction("AppearanceClick", 0, (args, next) => {
+    // 吞掉落在包围框上的点击，避免误触底层的颜色界面按钮。
+    // 挂在 CommonClick 这个统一入口上，换装与道具（Dialog）两条路径都能覆盖
+    mod.hookFunction("CommonClick", 0, (args, next) => {
         if (gizmoSuppressClick) {
             gizmoSuppressClick = false;
             return;
         }
-        if (gizmoInteractive() && gizmo.hitTest(MouseX, MouseY)) return;
+        if (gizmoInteractive()) {
+            const p = toGameCoords(args[0]);
+            if (p && gizmo.hitTest(p.x, p.y)) return;
+        }
         return next(args);
     });
 
