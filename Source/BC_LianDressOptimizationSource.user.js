@@ -6369,6 +6369,11 @@
          * @param {Object} opts
          */
         capture(asset, url, x, y, opts) {
+            // 透明度为 0 的层级看不见，不该参与拾取，也不该被描边圈进去。
+            // 用户把某层调成全透明就是想让它消失，拾取还认它会很意外。
+            // 两条渲染路径的字段名都是 Alpha（GLDrawImage 与 DrawImageEx）
+            if (opts?.Alpha === 0) return;
+
             let list = this.frame.get(asset);
             if (!list) {
                 list = [];
