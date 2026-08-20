@@ -436,7 +436,8 @@
         WheelScrollEnabled: true,
         ShowThumbnailEnabled: true,
         ItemHighlightEnabled: true,
-        UseAdjustmentWindow: true
+        UseAdjustmentWindow: true,
+        ClothPickEnabled: true
     };
 
     /**
@@ -1119,6 +1120,17 @@
                 this.setHoverText("鼠标悬浮在部件栏上时，左侧角色身上该部件闪烁提示");
             }
             
+            // 点击服装拾取开关
+            DrawCheckbox(500, 600, 64, 64, 
+                "点击服装拾取", 
+                this.settings.ClothPickEnabled
+            );
+            
+            // 检测鼠标悬停 - 点击服装拾取
+            if (MouseIn(500, 600, 450, 64)) {
+                this.setHoverText("在角色身上悬浮描边高亮所指的服装，点击直接跳转到该部位的编辑；调色界面同样可以悬浮和点选图层");
+            }
+            
             // 退出按钮
             DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
             
@@ -1169,6 +1181,18 @@
                 
                 // 立即应用设置
                 dressOptimizationManager.setItemHighlightEnabled(this.settings.ItemHighlightEnabled);
+            }
+            
+            // 点击服装拾取开关
+            if (MouseXIn(500, 64) && MouseYIn(600, 64)) {
+                this.settings.ClothPickEnabled = !this.settings.ClothPickEnabled;
+                
+                // 立即收掉已有的高亮，否则关掉后残留的描边要等下次重绘才消失
+                if (!this.settings.ClothPickEnabled) {
+                    appearancePicker.clearHover();
+                    appearancePicker.listHover = null;
+                    itemColorAdjustmentWindow.clearHoverPreview();
+                }
             }
             
             // 退出按钮
@@ -4121,6 +4145,7 @@
          * @returns {boolean} 是否命中并定位到了某个图层
          */
         pickLayerAt(mx, my) {
+            if (!clothPickEnabled()) return false;
             const hits = this.gizmo.pickLayersAt(mx, my);
             if (hits.length === 0) return false;
 
@@ -4148,6 +4173,7 @@
          * @param {number} my
          */
         previewPickAt(mx, my) {
+            if (!clothPickEnabled()) return;
             // 已进入句柄操作状态时不预览，避免和选中框叠在一起分不清
             if (this.gizmo.isActive() || this.gizmo.isDragging()) return;
             // 面板侧正在闪烁，让它占用高亮框
@@ -4175,23 +4201,35 @@
         peekPickTarget(mx, my) {
             const hits = this.gizmo.pickLayersAt(mx, my);
             if (hits.length === 0) return null;
-            return hits[this.cycleIndex(hits, mx, my)];
+            const at = this.sameSpotIndex(hits, mx, my);
+            // 停在刚点过的位置时显示当前选中的那层，而不是下一层：
+            // 点完高亮就跳走会让人以为点错了。轮换只在又点一次时推进
+            return hits[at < 0 ? 0 : at];
         }
 
         /**
          * 轮换下标：同一位置连续点击时依次后移，位置或命中集合一变就归零。
-         * @param {number[]} hits - 命中的图层，已按面积升序
+         * @param {number[]} hits - 命中的图层，已按层叠序排好
          * @returns {number}
          */
         cycleIndex(hits, mx, my) {
+            const at = this.sameSpotIndex(hits, mx, my);
+            return at < 0 ? 0 : (at + 1) % hits.length;
+        }
+
+        /**
+         * 上次点击是否落在同一处、且命中集合没变，是则返回它选中的下标。
+         * @returns {number} 不是同一处或找不到时返回 -1
+         */
+        sameSpotIndex(hits, mx, my) {
             // 光标挪动超过这个距离就视为新的一次拾取，不再延续轮换。
             // 取句柄直径量级，容忍点击时的轻微手抖
             const SAME_SPOT = GIZMO_HANDLE_R * 2;
             const last = this.lastPick;
-            const sameSpot = last
-                && Math.hypot(mx - last.x, my - last.y) <= SAME_SPOT
-                && last.key === hits.join(",");
-            return sameSpot ? (hits.indexOf(last.layerIndex) + 1) % hits.length : 0;
+            if (!last) return -1;
+            if (Math.hypot(mx - last.x, my - last.y) > SAME_SPOT) return -1;
+            if (last.key !== hits.join(",")) return -1;
+            return hits.indexOf(last.layerIndex);
         }
 
         /**
@@ -6053,6 +6091,15 @@
         return gizmo.isActive() && inColorScreen();
     }
 
+    /**
+     * 「点击服装拾取」总开关。管住三处：换装界面整件拾取、
+     * 物品选择（Cloth）界面的继续拾取、调色界面的图层悬浮与点选。
+     * 包围框句柄本身不受它管——那是选中之后的编辑操作。
+     */
+    function clothPickEnabled() {
+        return screen.settings.ClothPickEnabled !== false;
+    }
+
     /** 调色界面是否处于活动状态。ItemColorState 存在即可判定 */
     function inColorScreen() {
         if (!itemColorAdjustmentWindow.isVisible) return false;
@@ -6304,6 +6351,7 @@
          * 省掉先退回列表再找的来回。Color / Wardrobe 有自己的交互，不介入。
          */
         isEnabled() {
+            if (!clothPickEnabled()) return false;
             if (typeof CurrentScreen === 'undefined' || CurrentScreen !== 'Appearance') return false;
             const mode = typeof CharacterAppearanceMode !== 'undefined' ? CharacterAppearanceMode : "";
             if (mode !== "" && mode !== "Cloth") return false;
@@ -6502,20 +6550,37 @@
         peek(mx, my) {
             const hits = this.pickAt(mx, my);
             if (hits.length === 0) return null;
-            return hits[this.cycleIndex(hits, mx, my)];
+            return hits[this.peekIndex(hits, mx, my)];
         }
 
-        /** 轮换下标，规则与调色界面一致：同一位置连点依次后移 */
+        /**
+         * 悬浮显示的下标：指针停在刚点过的位置时，显示的就是当前选中的那件。
+         *
+         * 不能直接用 cycleIndex —— 那是"下次点击会选谁"。点完一件后指针没动，
+         * 高亮却跳到下一层，看起来像点错了。轮换只在真的又点一次时推进。
+         */
+        peekIndex(hits, mx, my) {
+            const at = this.sameSpotIndex(hits, mx, my);
+            return at < 0 ? 0 : at;
+        }
+
+        /** 点击轮换下标：同一位置连点依次后移，位置一变回到最上层 */
         cycleIndex(hits, mx, my) {
+            const at = this.sameSpotIndex(hits, mx, my);
+            return at < 0 ? 0 : (at + 1) % hits.length;
+        }
+
+        /**
+         * 上次点击是否落在同一处、且候选集没变，是则返回它选中的下标。
+         * @returns {number} 不是同一处或找不到时返回 -1
+         */
+        sameSpotIndex(hits, mx, my) {
             const SAME_SPOT = GIZMO_HANDLE_R * 2;
-            const key = hits.map(h => h.group.Name).join(",");
             const last = this.lastPick;
-            const sameSpot = last
-                && Math.hypot(mx - last.x, my - last.y) <= SAME_SPOT
-                && last.key === key;
-            if (!sameSpot) return 0;
-            const at = hits.findIndex(h => h.group.Name === last.groupName);
-            return (at + 1) % hits.length;
+            if (!last) return -1;
+            if (Math.hypot(mx - last.x, my - last.y) > SAME_SPOT) return -1;
+            if (last.key !== hits.map(h => h.group.Name).join(",")) return -1;
+            return hits.findIndex(h => h.group.Name === last.groupName);
         }
 
         /**
@@ -6544,6 +6609,15 @@
                 snapshot: rec.list
             };
             return true;
+        }
+
+        /**
+         * 按本体维护的 MouseX / MouseY 重算悬浮，供每帧调用。
+         * 指针没动但画面内容变了（点击跳转、换衣服）时也能跟上。
+         */
+        refreshHover() {
+            if (typeof MouseX !== "number" || typeof MouseY !== "number") return;
+            this.updateHover(MouseX, MouseY);
         }
 
         /** 悬浮时记下目标，供绘制使用 */
@@ -6791,6 +6865,10 @@
         const result = next(args);
         if (appearancePicker.isEnabled()) {
             appearancePicker.commit();
+            // 每帧按当前指针位置重算悬浮，而不是只在 CommonMouseMove 时更新。
+            // 点击跳转后捕获全被重建、悬浮也清了，若只等鼠标移动，
+            // 停在原处就一直没有高亮，得先动一下才回来
+            appearancePicker.refreshHover();
             // 右侧列表的悬浮提示原本只有闪烁，这里补上同一套描边
             appearancePicker.hoverByGroup(dressOptimizationManager.hoveredGroupName);
             drawAppearanceHover();
