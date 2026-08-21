@@ -26,7 +26,6 @@
     const MOD_NAME = "LianChat";
     const MOD_FULL_NAME = "LianChat";
     const MOD_VERSION = "0.1.2";
-    window.LianChat = MOD_VERSION;
 
 
     const mod = bcModSdk.registerMod({
@@ -8190,6 +8189,7 @@
         });
     }
 
+    window.LianChat = MOD_VERSION;
     console.log("[LianChat] Load Success");
 
 })();
