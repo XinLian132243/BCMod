@@ -165,7 +165,9 @@
             'html[data-lc-theme="light"]{',
             '  --bg:#F6F1E7; --bg-sink:#F1EBDE; --panel:#EBE6DA; --panel-dn:#E1DBCC;',
             '  --card:#FBF8F1; --seam:#E4DED0;',
-            '  --ink:#2B2925; --ink-2:#6A645D; --ink-3:#8F8A82;',
+            '  --list-surface:#EBE6DA; --content-surface:rgb(241,235,222);',
+            '  --divider:#C8BDAA;',
+            '  --ink:#11100F; --ink-2:#3F3B36; --ink-3:#67615A;',
             '  --accent:#E8483F; --accent-soft:rgba(232,72,63,.12);',
             '  --line:rgba(43,41,37,.10); --hairline:rgba(43,41,37,.08);',
             '  --shadow:rgba(43,41,37,.08) 0 1px 2px, rgba(43,41,37,.06) 0 6px 20px -6px;',
@@ -173,11 +175,26 @@
             '  --shadow-inset:inset rgba(255,255,255,.55) 0 1px 0;',
             '  --btn-ink:#1A1917; --btn-ink-h:#2D2B28; --btn-sink:#050505; --btn-label:#F6F3EC;',
             '}',
+            /* 经典主题令牌 */
+            'html[data-lc-theme="classic"]{',
+            '  --bg:#FFFFFF; --bg-sink:#F5F5F5; --panel:#FFFFFF; --panel-dn:rgb(237,237,237);',
+            '  --card:#FFFFFF; --seam:#D8D8D8;',
+            '  --list-surface:#FFFFFF; --content-surface:rgb(245,245,245);',
+            '  --divider:#C8C8C8;',
+            '  --ink:#111111; --ink-2:#3F3F3F; --ink-3:#666666;',
+            '  --accent:#1890FF; --accent-soft:#E6F4FF;',
+            '  --line:rgba(0,0,0,.12); --hairline:rgba(0,0,0,.10);',
+            '  --shadow:rgba(0,0,0,.12) 0 2px 8px; --shadow-float:rgba(0,0,0,.18) 0 4px 14px;',
+            '  --shadow-inset:inset rgba(255,255,255,.65) 0 1px 0;',
+            '  --btn-ink:#222222; --btn-ink-h:#000000; --btn-sink:#000000; --btn-label:#FFFFFF;',
+            '}',
             /* 暗色主题令牌 */
             'html[data-lc-theme="dark"]{',
             '  --bg:#211c19; --bg-sink:#2a2420; --panel:#322a25; --panel-dn:#1a1614;',
             '  --card:#2a2420; --seam:rgba(255,255,255,.11);',
-            '  --ink:#f5ede1; --ink-2:#cdc4b6; --ink-3:#9a8f80;',
+            '  --list-surface:rgb(50,42,37); --content-surface:#2A2420;',
+            '  --divider:rgba(255,255,255,.28);',
+            '  --ink:#FFFFFF; --ink-2:#ECE7DF; --ink-3:#C7BEB2;',
             '  --accent:#f0805a; --accent-soft:rgba(240,128,90,.16);',
             '  --line:rgba(255,255,255,.07); --hairline:rgba(255,255,255,.05);',
             '  --shadow:rgba(0,0,0,.2) 0 1px 2px, rgba(0,0,0,.15) 0 6px 20px -6px;',
@@ -204,16 +221,16 @@
             '.lc-td-mark{position:absolute;width:10px;height:10px;color:color-mix(in srgb,var(--ink-2) 78%,var(--bg));transition:color .2s var(--ease)}',
             '.lc-td-mark svg{width:10px;height:10px;display:block}',
             '.lc-td-mark.light{left:11.3px;top:12.2px}',
-            '.lc-td-mark.auto{left:31px;top:2px}',
+            '.lc-td-mark.classic{left:31px;top:2px}',
             '.lc-td-mark.dark{left:50.7px;top:12.2px}',
             '.lc-td-seat{position:absolute;left:23px;top:18px;width:26px;height:26px;border-radius:50%;background:var(--panel);border:1px solid var(--seam);box-shadow:inset 0 1px 2px rgba(43,41,37,.10)}',
             '.lc-td-stem{position:absolute;left:36px;top:31px;width:9px;height:18px;margin:-16px 0 0 -4.5px;transform-origin:4.5px 16px;border-radius:50%;background:var(--card);border:1px solid var(--seam);box-shadow:0 1px 3px rgba(43,41,37,.26);transition:transform .32s var(--ease-spring)}',
             '.lc-td-slot{position:absolute;left:50%;top:3px;width:8px;height:2.5px;margin-left:-4px;border-radius:2px;background:var(--accent)}',
             'html[data-lc-theme-pref="light"] .lc-td-stem{transform:rotate(-55deg)}',
-            'html[data-lc-theme-pref="auto"] .lc-td-stem{transform:rotate(0deg)}',
+            'html[data-lc-theme-pref="classic"] .lc-td-stem{transform:rotate(0deg)}',
             'html[data-lc-theme-pref="dark"] .lc-td-stem{transform:rotate(55deg)}',
             'html[data-lc-theme-pref="light"] .lc-td-mark.light,',
-            'html[data-lc-theme-pref="auto"] .lc-td-mark.auto,',
+            'html[data-lc-theme-pref="classic"] .lc-td-mark.classic,',
             'html[data-lc-theme-pref="dark"] .lc-td-mark.dark{color:var(--ink)}',
             /* reduced-motion 守卫 */
             '@media (prefers-reduced-motion:reduce){',
@@ -227,37 +244,22 @@
     // ── ThemeModule：双属性 data-lc-theme-pref（用户偏好）/ data-lc-theme（实际生效）
     const ThemeModule = (function () {
         const STORAGE_KEY = 'LC_THEME_PREF';
-        const PREF_VALUES = ['light', 'auto', 'dark'];
-        let pref = 'auto';
-        let _mo = null, _mql = null, _onChange = null; // 累积注入清理用
+        const PREF_VALUES = ['classic', 'light', 'dark'];
+        let pref = 'classic';
 
         function readPref() {
             try {
                 const v = localStorage.getItem(STORAGE_KEY);
+                if (v === 'auto') return 'classic';
                 if (PREF_VALUES.indexOf(v) >= 0) return v;
             } catch (e) { console.warn('[LianChat-UI] localStorage 不可用，主题偏好仅本次生效', e); }
-            return 'auto';
+            return 'classic';
         }
         function writePref(v) {
             try { localStorage.setItem(STORAGE_KEY, v); }
             catch (e) { console.warn('[LianChat-UI] 主题偏好保存失败', e); }
         }
-        function systemDark() {
-            try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); }
-            catch (e) { return false; }
-        }
-        function bcDark() {
-            // 优先采 BC 房间明暗（bc-script-dev §9.4 ColorAPI），失败回退系统偏好
-            try {
-                const api = window.Liko && window.Liko.__Sys_ColorAPI__;
-                if (api && typeof api.getThemeColor === 'function') {
-                    const c = api.getThemeColor();
-                    if (c && typeof api.isDark === 'function') return !!api.isDark(c);
-                }
-            } catch (e) { /* ColorAPI 异常走回退 */ }
-            return systemDark();
-        }
-        function effective() { return pref === 'auto' ? (bcDark() ? 'dark' : 'light') : pref; }
+        function effective() { return pref; }
 
         function apply() {
             const eff = effective();
@@ -265,9 +267,9 @@
             root.setAttribute('data-lc-theme-pref', pref);
             root.setAttribute('data-lc-theme', eff);
             const dial = document.getElementById('lcThemeDial');
-            if (dial) dial.setAttribute('aria-label', '主题模式：' + ({ light: '白天', auto: '跟随房间', dark: '夜间' }[pref]));
+            if (dial) dial.setAttribute('aria-label', '主题模式：' + ({ classic: '经典', light: '亮色', dark: '暗色' }[pref]));
             const chip = document.getElementById('lcThemeChip');
-            if (chip) chip.textContent = eff === 'dark' ? '夜间' : '白天';
+            if (chip) chip.textContent = ({ classic: '经典', light: '亮色', dark: '暗色' }[eff]);
         }
 
         function renderDial() {
@@ -279,7 +281,7 @@
             host.innerHTML =
                 '<button class="lc-theme-dial" id="lcThemeDial" type="button" aria-label="主题模式">' +
                 '<span class="lc-td-mark light" aria-hidden="true">' + LC_ICONS.sun + '</span>' +
-                '<span class="lc-td-mark auto" aria-hidden="true">' + LC_ICONS.half + '</span>' +
+                '<span class="lc-td-mark classic" aria-hidden="true">' + LC_ICONS.half + '</span>' +
                 '<span class="lc-td-mark dark" aria-hidden="true">' + LC_ICONS.moon + '</span>' +
                 '<span class="lc-td-seat"></span>' +
                 '<span class="lc-td-stem"><span class="lc-td-slot"></span></span>' +
@@ -298,38 +300,9 @@
             pref = readPref();
             renderDial();
             apply();
-            try {
-                _mql = window.matchMedia('(prefers-color-scheme: dark)');
-                _onChange = function () { if (pref === 'auto') apply(); };
-                if (_mql.addEventListener) _mql.addEventListener('change', _onChange);
-                else if (_mql.addListener) _mql.addListener(_onChange);
-            } catch (e) { console.warn('[LianChat-UI] matchMedia 监听失败', e); }
-            // 对话框打开时重采一次 BC 房间主题（auto 模式跟随房间明暗）
-            try {
-                _mo = new MutationObserver(function (muts) {
-                    for (let i = 0; i < muts.length; i++) {
-                        const m = muts[i];
-                        for (let j = 0; j < m.addedNodes.length; j++) {
-                            const n = m.addedNodes[j];
-                            if (n.nodeType === 1 && (n.id === 'LC-Message-SenderList' || (n.querySelector && n.querySelector('#LC-Message-SenderList')))) {
-                                if (pref === 'auto') apply();
-                                return;
-                            }
-                        }
-                    }
-                });
-                _mo.observe(document.body, { childList: true, subtree: true });
-            } catch (e) { console.warn('[LianChat-UI] 房间主题监听失败', e); }
         }
 
         function dispose() {
-            try { if (_mo) _mo.disconnect(); } catch (e) {}
-            try {
-                if (_mql && _onChange) {
-                    if (_mql.removeEventListener) _mql.removeEventListener('change', _onChange);
-                    else if (_mql.removeListener) _mql.removeListener(_onChange);
-                }
-            } catch (e) {}
         }
 
         return { init: init, apply: apply, dispose: dispose, getPref: function () { return pref; } };
@@ -387,7 +360,7 @@
     // ── 悬浮按钮 CSS（附加进 #lc-ui-style；幂等：检测 lc-fab 指纹避免重复追加）
     const LC_FAB_CSS = [
         /* 本体：58px 圆、卡片底、发丝边、内高光、浮层阴影 */
-        '.lc-fab{position:fixed;z-index:100001;width:58px;height:58px;border-radius:50%;',
+        '.lc-fab{position:fixed;z-index:100001;width:58px;height:58px;border-radius:50%;isolation:isolate;overflow:visible;',
         '  display:flex;align-items:center;justify-content:center;cursor:pointer;',
         '  background:var(--card);border:1px solid var(--hairline);',
         '  box-shadow:var(--shadow-inset),var(--shadow-float);',
@@ -404,24 +377,20 @@
         /* 图标（currentColor，零色值） */
         '.lc-fab .lc-ico{width:24px;height:24px;color:var(--ink)}',
         /* 未读徽标 */
-        '.lc-fab-badge{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;',
+        '.lc-fab-badge{position:absolute;z-index:3;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;',
         '  display:flex;align-items:center;justify-content:center;box-sizing:border-box;',
         '  border-radius:999px;background:var(--accent);color:var(--btn-label);',
         '  font:700 11px/1 var(--lc-font);box-shadow:0 2px 6px rgba(0,0,0,.25);border:1px solid var(--card);}',
-        /* 呼吸光环（1.8s 提示在线，有未读时加速至 0.9s） */
-        '.lc-fab-ring{position:absolute;inset:0;border-radius:50%;pointer-events:none;',
-        '  box-shadow:0 0 0 0 var(--accent-soft);animation:lcFabRing 1.8s var(--ease) infinite;}',
-        '@keyframes lcFabRing{0%{box-shadow:0 0 0 0 var(--accent-soft)}70%{box-shadow:0 0 0 12px transparent}100%{box-shadow:0 0 0 0 transparent}}',
-        /* 未读态：光环加速 + 徽标弹入 */
-        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingFast .9s var(--ease) infinite}',
-        '@keyframes lcFabRingFast{0%{box-shadow:0 0 0 0 var(--accent-soft)}50%{box-shadow:0 0 0 16px var(--accent-soft)}100%{box-shadow:0 0 0 24px transparent}}',
+        /* 未讀通知光圈 */
+        '.lc-fab-ring{position:absolute;z-index:0;inset:0;border-radius:50%;pointer-events:none;box-shadow:none}',
+        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingFast 1.2s ease-out infinite}',
+        '@keyframes lcFabRingFast{0%{box-shadow:0 0 2px 0 var(--accent);opacity:.65}100%{box-shadow:0 0 18px 22px var(--accent);opacity:0}}',
         '.lc-fab--unread .lc-fab-badge{animation:lcBadgePop .36s var(--ease-spring) both}',
         /* 来消息：按钮级呼吸光晕 + 加速光环，辨识度拉满 */
-        '.lc-fab--unread{animation:lcFabUnread 1.4s var(--ease) infinite}',
-        '@keyframes lcFabUnread{0%,100%{box-shadow:var(--shadow-inset),var(--shadow-float),0 0 0 0 var(--accent)}50%{box-shadow:var(--shadow-inset),var(--shadow-float),0 0 0 14px var(--accent-soft)}}',
+        '.lc-fab--unread{animation:none}',
         '@keyframes lcBadgePop{0%{transform:scale(0);opacity:0}60%{transform:scale(1.35)}100%{transform:scale(1);opacity:1}}',
         /* 入场 */
-        '.lc-fab--rise{animation:lcFabRise .42s var(--ease-spring) both}',
+        '.lc-fab-ico{position:relative;z-index:2}.lc-fab--rise{animation:lcFabRise .42s var(--ease-spring) both}',
         '@keyframes lcFabRise{from{opacity:0;transform:translateY(14px) scale(.8)}to{opacity:1;transform:translateY(0) scale(1)}}',
         /* reduced-motion 守卫 */
         '@media (prefers-reduced-motion:reduce){',
@@ -615,6 +584,13 @@
         '@keyframes lcMsgInR{from{opacity:0;transform:translateX(12px) scale(.98)}to{opacity:1;transform:translateX(0) scale(1)}}',
         '@keyframes lcMsgInL{from{opacity:0;transform:translateX(-12px) scale(.98)}to{opacity:1;transform:translateX(0) scale(1)}}',
         '.lc-panel-head{background:var(--panel-dn);border-bottom:1px solid var(--seam);padding:6px 10px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-shrink:0}',
+        '.lc-chat-header{background:var(--content-surface)!important;color:var(--ink)!important;border-bottom:1px solid var(--seam)!important}',
+        '.lc-chat-header h3,.lc-chat-header span{color:inherit}',
+        '.lc-room-info-btn{border:1px solid var(--accent)!important;background:var(--accent-soft)!important;color:var(--accent)!important}',
+        '#roomInfoPopup{background:var(--list-surface)!important;color:var(--ink)!important;border:1px solid var(--divider)!important;border-radius:12px!important;box-shadow:var(--shadow-float)!important}',
+        '#roomInfoPopup .lc-room-description{color:var(--ink-2)!important}',
+        '.lc-panel input,.lc-panel textarea,.lc-panel button{color:var(--ink)}',
+        '.lc-panel h1,.lc-panel h2,.lc-panel h3,.lc-panel strong{color:var(--ink)}',
         /* 头部按钮（16px SVG） */
         '.lc-head-btn{width:32px;height:32px;border:1px solid var(--seam);border-radius:10px;background:var(--card);color:var(--ink-2);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;transition:background .15s var(--ease),color .15s var(--ease),transform .15s var(--ease)}',
         '.lc-head-btn:hover{background:var(--accent-soft);color:var(--accent)}',
@@ -630,12 +606,14 @@
         '.lc-mini-btn{height:28px;min-width:28px;padding:0 8px;border:1px solid var(--seam);border-radius:8px;background:var(--card);color:var(--ink-2);display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;font-size:12px;transition:background .15s var(--ease),color .15s var(--ease)}',
         '.lc-mini-btn:hover{background:var(--accent-soft);color:var(--accent)}',
         '.lc-mini-btn .lc-ico{width:14px;height:14px}',
+        '.lc-save-btn{background:var(--accent)!important;color:var(--btn-label)!important;border-color:var(--accent)!important}',
+        '.lc-save-btn:hover{filter:brightness(1.08)}',
         /* 搜索框包裹 */
-        '.lc-search-wrap{display:flex;align-items:center;gap:8px;padding:0 0 10px 0;border-bottom:1px solid var(--seam);margin-bottom:10px}',
+        '.lc-search-wrap{display:flex;align-items:center;gap:8px;padding:0 0 10px 0;border-bottom:1px solid var(--divider);margin-bottom:10px}',
         '.lc-search-wrap input{flex:1;width:100%;padding:8px 10px;border:1px solid var(--seam);border-radius:10px;background:var(--bg-sink);color:var(--ink);box-sizing:border-box;font-family:var(--lc-font);font-size:13px;outline:none;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}',
         '.lc-search-wrap input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}',
         /* 输入区 */
-        '.lc-input{flex:1;padding:10px 12px;border:1px solid var(--seam);border-radius:12px;background:var(--bg-sink);color:var(--ink);font-family:var(--lc-font);font-size:14px;outline:none;resize:none;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}',
+        '.lc-input{flex:1;padding:10px 12px;border:1px solid var(--seam);border-radius:12px;background:var(--content-surface);color:var(--ink);font-family:var(--lc-font);font-size:14px;outline:none;resize:none;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}',
         '.lc-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}',
         /* 发送按钮（糖果） */
         '.lc-ico-send{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border:none;border-radius:12px;background:var(--accent);color:var(--btn-label);font-weight:600;font-size:14px;cursor:pointer;font-family:var(--lc-font);transition:filter .15s var(--ease),transform .15s var(--ease)}',
@@ -643,11 +621,12 @@
         '.lc-ico-send:active{transform:scale(.96)}',
         '.lc-ico-send .lc-ico{width:16px;height:16px}',
         /* 会话列表项 */
-        '.lc-conv-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-row);cursor:pointer;transition:background .15s var(--ease);background:var(--card)!important;color:var(--ink)!important}',
+        '.lc-conv-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-row);cursor:pointer;transition:background .15s var(--ease);background:var(--list-surface)!important;color:var(--ink)!important}',
         '.lc-conv-item:hover{background:var(--bg-sink)!important}',
         '.lc-conv-item.is-active{background:var(--accent-soft)!important}',
         '.lc-conv-item > div{background:transparent!important;color:inherit!important}',
-        '.lc-conv-list{background:var(--bg-sink);border-right:1px solid var(--seam)}',
+        '.lc-conv-list,.lc-message-log{background:var(--list-surface)!important;color:var(--ink)!important}',
+        '.lc-conv-list{border-right:1px solid var(--seam)}',
         '.lc-av{width:36px;height:36px;border-radius:50%;flex:none;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--panel);color:var(--ink-2);font-size:13px;font-weight:600}',
         '.lc-av.a1{background:linear-gradient(135deg,#ffd3c2,#ff9a76)} .lc-av.a2{background:linear-gradient(135deg,#c2e9ff,#76b6ff)} .lc-av.a3{background:linear-gradient(135deg,#d8ffc2,#9bff76)} .lc-av.a4{background:linear-gradient(135deg,#e7c2ff,#b876ff)} .lc-av.a5{background:linear-gradient(135deg,#ffe9c2,#ffce76)} .lc-av.a6{background:linear-gradient(135deg,#c2fff0,#76ffd9)}',
         '.lc-conv-main{flex:1;min-width:0}',
@@ -659,14 +638,21 @@
         '.lc-msg-self,.lc-msg-other{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}',
         '.lc-msg-self{justify-content:flex-end}',
         '.lc-bubble{position:relative;max-width:80%;min-width:50px;padding:8px 10px;border-radius:12px;font-size:14px;line-height:1.45;word-break:break-word;color:var(--ink)!important}',
-        /* !important 压制原内联紫色背景（self=#e1f5fe / other=#f9f9f9） */
-        '.lc-msg-other .lc-bubble{background:var(--bg-sink)!important;color:var(--ink)!important;border:1px solid var(--seam)!important;border-top-left-radius:4px!important}',
-        '.lc-msg-self .lc-bubble{background:var(--accent-soft)!important;color:var(--ink)!important;border-top-right-radius:4px!important}',
+        '.lc-msg-other .lc-bubble,.lc-msg-self .lc-bubble{color:var(--ink)!important;border:1px solid var(--seam)!important}',
+        '.lc-msg-other .lc-bubble{background:var(--panel-dn)!important;border-left:3px solid var(--divider)!important;border-top-left-radius:4px!important}',
+        '.lc-msg-self .lc-bubble{background:var(--panel-dn)!important}',
+        '.lc-msg-self .lc-bubble{border-left:3px solid var(--accent)!important;border-top-right-radius:4px!important}',
+        '.lc-avatar,.lc-av{width:40px!important;height:40px!important;min-width:40px!important;max-width:40px!important;flex:0 0 40px!important;padding:0!important;border:0!important;border-radius:50%!important;box-shadow:none!important;overflow:hidden!important;background:transparent!important}',
+        '.lc-avatar img,.lc-av img{width:100%!important;height:100%!important;border-radius:50%!important;object-fit:cover!important}',
+        '.lc-message-type-selector{gap:6px;color:var(--ink)}',
+        '.lc-message-type-selector label{padding:4px 8px;border-radius:8px;transition:background .15s var(--ease),color .15s var(--ease)}',
+        '.lc-message-type-selector input[type="radio"]{accent-color:var(--accent)}',
+        '.lc-message-type-selector label:has(input:checked){background:var(--accent-soft);color:var(--accent);font-weight:600}',
         /* 系统/状态行（如“现在在线/离线”“悄悄话来自 …”）无气泡子元素时的兜底归类 */
         '.lc-msg-system{padding:6px 10px;color:var(--ink-2);font-size:12px;text-align:center;opacity:.85}',
         '.lc-msg-footer{font-size:11px;color:var(--ink-3);margin-top:2px;opacity:.85}',
         /* 时间分隔（复用现有 .message-time-divider 类，!important 压制内联） */
-        '.message-time-divider{background:var(--panel-dn)!important;color:var(--ink-2)!important;border:1px solid var(--seam)!important}',
+        '.message-time-divider{background:var(--panel-dn)!important;color:var(--ink-2)!important;border:1px solid var(--divider)!important}',
         /* 设置浮层 */
         '.lc-settings{background:var(--panel)!important;border:1px solid var(--seam)!important;border-radius:var(--r-card)!important;box-shadow:var(--shadow-float)!important;color:var(--ink)!important;font-family:var(--lc-font)!important}',
         /* reduced-motion 守卫 */
@@ -744,17 +730,8 @@
         return true;
     }
 
-    let _dlgObs = null, _convObs = null, _bubbleObs = null, _dlgWaitObs = null;
+    let _dlgObs = null, _bubbleObs = null, _dlgWaitObs = null;
 
-    function reskinConvItem(row) {
-        if (!row || row.classList.contains('lc-conv-item')) return;
-        row.classList.add('lc-conv-item');
-        _strip(row, ['backgroundColor', 'color']);
-        const kids = row.children;
-        for (let i = 0; i < kids.length; i++) {
-            if (kids[i].tagName === 'DIV') _strip(kids[i], ['backgroundColor', 'color']);
-        }
-    }
     function reskinBubble(item) {
         if (!item || item.classList.contains('lc-msg-self') || item.classList.contains('lc-msg-other') || item.classList.contains('lc-msg-system')) return;
         // 输入框容器（含 #LC-Message-InputField）不是消息行，跳过
@@ -763,7 +740,7 @@
         item.classList.add(self ? 'lc-msg-self' : 'lc-msg-other');
         _strip(item, ['justifyContent']);
         const bubble = [].slice.call(item.children).find(function (c) {
-            return c.style && (c.style.backgroundColor || c.style.maxWidth === '80%' || c.style.borderLeft);
+            return !c.classList.contains('lc-avatar') && c.style && (c.style.maxWidth === '80%' || c.style.borderLeft);
         });
         if (bubble) {
             _strip(bubble, ['backgroundColor', 'borderLeft', 'borderRadius', 'padding', 'color']);
@@ -879,7 +856,8 @@
             toolbar.classList.add('lc-right-head');
             _strip(toolbar, ['borderTop', 'borderBottom', 'padding', 'marginBottom']);
             if (qb && !qb.classList.contains('lc-mini-btn')) { qb.classList.add('lc-mini-btn'); _strip(qb, ['background', 'border', 'borderRadius', 'color', 'padding']); _swapBtnIcon(qb, 'plus', 'sm'); }
-            if (db && !db.classList.contains('lc-mini-btn')) { db.classList.add('lc-mini-btn'); _strip(db, ['background', 'border', 'borderRadius', 'color', 'padding']); _swapBtnIcon(db, 'disk', 'sm'); }
+            if (db) db.classList.add('lc-save-btn');
+            if (db && !db.classList.contains('lc-mini-btn')) { db.classList.add('lc-mini-btn', 'lc-save-btn'); _strip(db, ['background', 'border', 'borderRadius', 'color', 'padding']); _swapBtnIcon(db, 'disk', 'sm'); }
         }
 
         // 设置浮层
@@ -887,15 +865,6 @@
         if (settings) settings.classList.add('lc-settings');
 
         // 持久化：会话项 + 气泡 观察器
-        const sl = document.getElementById('LC-Message-SenderList');
-        if (sl && !_convObs) {
-            _convObs = new MutationObserver(function () {
-                [].slice.call(sl.querySelectorAll(':scope > * *')).forEach(function (el) {
-                    if (el.querySelector && el.querySelector('img,div[style*="border-radius: 50%"]')) reskinConvItem(el);
-                });
-            });
-            _convObs.observe(sl, { childList: true, subtree: true });
-        }
         const rm = document.getElementById('LC-Message-RightMessageContainer');
         if (rm) {
             // 初始扫描：消息行可能已渲染（如打开即带历史）
@@ -965,7 +934,6 @@
         window.__LC_UI_CLEANUP__ = window.__LC_UI_CLEANUP__ || [];
         window.__LC_UI_CLEANUP__.push(function () {
             if (_dlgObs) _dlgObs.disconnect();
-            if (_convObs) _convObs.disconnect();
             if (_bubbleObs) _bubbleObs.disconnect();
             if (_dlgWaitObs) _dlgWaitObs.disconnect();
         });
@@ -1094,13 +1062,13 @@
             '.lc-theme-dial{width:56px!important;height:38px!important;border-radius:10px!important}',
             '.lc-td-mark svg{width:9px!important;height:9px!important}',
             '.lc-td-mark.light{left:9px!important;top:10px!important}',
-            '.lc-td-mark.auto{left:24px!important;top:2px!important}',
+            '.lc-td-mark.classic{left:24px!important;top:2px!important}',
             '.lc-td-mark.dark{left:39px!important;top:10px!important}',
             '.lc-td-seat{left:19px!important;top:15px!important;width:20px!important;height:20px!important}',
             '.lc-td-stem{left:29px!important;top:25px!important;width:7px!important;height:14px!important;margin:-12px 0 0 -3.5px!important;transform-origin:3.5px 12px!important}',
             '.lc-td-slot{width:6px!important;height:2px!important;margin-left:-3px!important}',
             'html[data-lc-theme-pref="light"] .lc-td-stem{transform:rotate(-55deg)}',
-            'html[data-lc-theme-pref="auto"] .lc-td-stem{transform:rotate(0deg)}',
+            'html[data-lc-theme-pref="classic"] .lc-td-stem{transform:rotate(0deg)}',
             'html[data-lc-theme-pref="dark"] .lc-td-stem{transform:rotate(55deg)}',
             /* 隐藏模式文字 chip */
             '.lc-theme-chip{display:none!important}',
@@ -1165,7 +1133,7 @@
             '.lc-add-sender .search-container>div:nth-of-type(1) button{background:transparent!important;color:var(--ink-2)!important;border-radius:8px!important;transition:background .2s var(--ease),color .2s var(--ease)!important}',
             '.lc-add-sender .search-container>div:nth-of-type(1) button[style*="rgb(230, 244, 255)"]{background:var(--accent-soft)!important;color:var(--accent)!important}',
             '.lc-add-sender .search-container>div:nth-of-type(1) button[style*="rgb(255, 255, 255)"]{background:transparent!important;color:var(--ink-2)!important}',
-            '.lc-add-sender .search-container>div:nth-of-type(1) button:hover{background:var(--bg-sink)!important;color:var(--ink)!important}',
+            '.lc-add-sender .search-container>div:nth-of-type(1) button:hover{background:var(--accent-soft)!important;color:var(--accent)!important;box-shadow:0 0 0 1px var(--accent-soft)}',
 
             /* === 在线人数按钮（lc-online-btn，SVG 人像 + 数字胶囊徽标）=== */
             '.lc-online-btn{width:40px;height:36px;border:1px solid var(--hairline);border-radius:12px;background:linear-gradient(180deg,var(--card),var(--bg-sink));color:var(--accent);cursor:pointer;flex:none;box-shadow:var(--shadow-inset);transition:background .15s var(--ease),color .15s var(--ease),transform .15s var(--ease),box-shadow .15s var(--ease)}',
@@ -1194,11 +1162,12 @@
             '.lc-offline-item::after{content:"";position:absolute;left:6px;top:5px;width:10px;height:10px;border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 2px var(--card);z-index:2}',
 
             /* === 搜索行重排：输入框 flex:1 + 在线按钮等高同排（大厅标签页下对齐/尺寸协调）=== */
-            '#LC-Message-SenderList .lc-search-wrap{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--seam);margin-bottom:6px}',
+            '#LC-Message-SenderList .lc-search-wrap{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--divider);margin-bottom:6px}',
             '#LC-Message-SenderList .lc-search-wrap input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--seam);border-radius:10px;background:var(--bg-sink);color:var(--ink);box-sizing:border-box;font-family:var(--lc-font);font-size:13px;outline:none;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}',
             '#LC-Message-SenderList .lc-search-wrap input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}',
+            'html[data-lc-theme="dark"] #LC-Message-SenderSearchInput,html[data-lc-theme="dark"] #LC-Message-AddSenderSearchInput{border-color:var(--seam)!important}',
             '#LC-Message-SenderList .lc-online-btn{height:34px;min-width:54px;padding:0 10px;border:none;border-radius:10px;background:var(--accent);color:var(--btn-label)!important;cursor:pointer;flex:none;display:inline-flex;align-items:center;justify-content:center;gap:4px;box-sizing:border-box;box-shadow:0 2px 6px rgba(0,0,0,.18);transition:filter .15s var(--ease),transform .15s var(--ease),box-shadow .15s var(--ease)}',
-            '#LC-Message-SenderList .lc-online-btn:hover{filter:brightness(1.1);box-shadow:0 3px 10px rgba(0,0,0,.25)}',
+            '#LC-Message-SenderList .lc-online-btn:hover{background:var(--accent-soft);color:var(--accent)!important;filter:none;box-shadow:0 0 0 1px var(--accent-soft)}',
             '#LC-Message-SenderList .lc-online-btn:active{transform:scale(.94)}',
             '#LC-Message-SenderList .lc-online-btn .lc-online-count{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--btn-label);color:var(--accent);font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1}',
 
@@ -1211,13 +1180,36 @@
             /* === 左侧最近聊天列表重设计：分组感 + 分隔 + active 高亮条 === */
             '.lc-conv-list{padding:6px 8px;gap:2px}',
             '.lc-conv-item{position:relative;border-radius:12px;padding:9px 10px;margin-bottom:2px;border:1px solid transparent;transition:background .18s var(--ease),border-color .18s var(--ease),transform .12s var(--ease)}',
-            '.lc-conv-item:hover{background:var(--bg-sink)!important;transform:translateX(2px)}',
+            '.lc-conv-item:hover{background:var(--accent-soft)!important;border-color:var(--accent-soft)!important;transform:translateX(2px)}',
             '.lc-conv-item.is-active,.lc-conv-item[style*="background-color: rgb(230, 247, 255)"]{background:var(--accent-soft)!important;border-color:var(--accent-soft)!important}',
             '.lc-conv-item.is-active::before,.lc-conv-item[style*="background-color: rgb(230, 247, 255)"]::before{content:"";position:absolute;left:0;top:22%;bottom:22%;width:3px;border-radius:3px;background:var(--accent)}',
             '.lc-conv-item .lc-av{width:38px;height:38px;border-radius:50%;border:2px solid var(--card);box-shadow:0 1px 3px var(--line);object-fit:cover;flex-shrink:0;background:var(--bg-sink)}',
             '.lc-conv-item .lc-conv-name{font-size:13px;font-weight:600;color:var(--ink)}',
             '.lc-conv-item .lc-conv-time{font-size:11px;color:var(--ink-3);font-weight:400}',
             '.lc-conv-item .lc-conv-preview{font-size:12px;color:var(--ink-2)}',
+            'html[data-lc-theme="classic"] .lc-conv-name,html[data-lc-theme="classic"] .lc-conv-preview,html[data-lc-theme="classic"] .lc-conv-time,html[data-lc-theme="light"] .lc-conv-name,html[data-lc-theme="light"] .lc-conv-preview,html[data-lc-theme="light"] .lc-conv-time{color:rgb(92,92,92)!important}',
+            'html[data-lc-theme="classic"] .lc-conv-name--strong,html[data-lc-theme="light"] .lc-conv-name--strong{color:rgb(0,0,0)!important}',
+            'html[data-lc-theme="dark"] .lc-conv-name,html[data-lc-theme="dark"] .lc-conv-preview,html[data-lc-theme="dark"] .lc-conv-time{color:rgb(210,210,210)!important}',
+            'html[data-lc-theme="dark"] .lc-conv-name--strong{color:rgb(255,255,255)!important}',
+
+            /* 触控设备不保留模拟 hover，只在按下期间显示反馈。 */
+            '@media (hover:none), (pointer:coarse){',
+            '  .lc-head-btn:hover,.lc-mini-btn:hover{background:var(--card);color:var(--ink-2)}',
+            '  .lc-head-btn--active:hover{background:var(--accent-soft)!important;color:var(--accent)!important}',
+            '  .lc-conv-item:hover{background:var(--list-surface)!important;transform:none}',
+            '  .lc-conv-item:active{background:var(--accent-soft)!important;border-color:var(--accent-soft)!important}',
+            '  .lc-conv-item:hover .lc-av{transform:none}',
+            '  .lc-conv-item.is-active:hover{background:var(--accent-soft)!important}',
+            '  .lc-add-sender .add-sender-content-container>div:hover{background:var(--card)!important}',
+            '  .lc-add-sender .search-container>div:nth-of-type(1) button:hover{background:transparent!important;color:var(--ink-2)!important;box-shadow:none}',
+            '  .lc-add-sender .search-container>div:nth-of-type(1) button.lc-tab-active:hover{color:var(--btn-label)!important}',
+            '  .lc-add-sender .search-container>div:nth-of-type(1) button:active{background:var(--accent-soft)!important;color:var(--accent)!important;transform:scale(.96)}',
+            '  .lc-online-btn:hover{background:linear-gradient(180deg,var(--card),var(--bg-sink));color:var(--accent);box-shadow:var(--shadow-inset)}',
+            '  #LC-Message-SenderList .lc-online-btn:hover{background:var(--accent);color:var(--btn-label)!important;box-shadow:0 2px 6px rgba(0,0,0,.18)}',
+            '  .lc-head-btn:active,.lc-mini-btn:active,.lc-online-btn:active,.lc-conv-item:active{background:var(--accent-soft)!important;color:var(--accent)!important;transform:scale(.94)}',
+            '  .lc-ico-send:hover,#lianChatSettingsDialog button:hover{filter:none!important}',
+            '  .lc-fab:hover{transform:none;box-shadow:var(--shadow-inset),var(--shadow-float)}',
+            '}',
 
             /* === 切换聊天窗口过渡：右侧消息区淡入+轻微上滑 === */
             '.lc-msg-switch{animation:lcMsgSwitch .32s var(--ease-spring) both}',
@@ -1274,20 +1266,27 @@
             // ⚠️ 必须用版本号短路：cloneNode + replaceChild 会触发 MutationObserver 再次进入本函数，
             // 若不加短路会无限 clone 循环，占满主线程导致页面点不动。
             const pencil = [...dlg.querySelectorAll('button.lc-head-btn')].find(function (b) {
-                return b.title === '切换单双页模式' || b.title === '收起/展开右侧标签';
+                return b.title === '切换单双页模式' || b.title === '收起/展开右侧标签' || b.title === '切换联系人/对话';
             });
-            if (!pencil || pencil.dataset.lcPatched === 'pencil-v2') return;
-            pencil.title = '收起/展开右侧标签';
-            pencil.setAttribute('aria-label', '收起/展开右侧标签');
+            if (!pencil || pencil.dataset.lcPatched === 'pencil-v3') return;
+            const headButtonLabel = CommonIsMobile ? '切换联系人/对话' : '收起/展开右侧标签';
+            pencil.title = headButtonLabel;
+            pencil.setAttribute('aria-label', headButtonLabel);
             // 替换图标为「侧边栏切换」：外框 + 竖线 + 折叠箭头（告别"书写"铅笔）
             pencil.innerHTML = lcIcon('panelToggle', 'lc-ico--md');
             // clone 掉原 click 监听（cloneNode 不复制 addEventListener，天然丢弃旧 handler）
             const clone = pencil.cloneNode(true);
-            clone.dataset.lcPatched = 'pencil-v2';   // 新版本标记：短路生效，杜绝无限 clone
+            clone.dataset.lcPatched = 'pencil-v3';
             pencil.parentElement.replaceChild(clone, pencil);
             clone.addEventListener('click', function (e) {
                 e.stopPropagation();
                 if (MessageModule.isPageMode) {
+                    if (MessageModule.isRightPageActive) {
+                        MessageModule.switchToSenderListPage(true);
+                    } else if (MessageModule.hasSelectedSender()) {
+                        MessageModule.switchToRightPage();
+                    }
+                    clone.classList.toggle('lc-head-btn--active', MessageModule.isRightPageActive);
                     return;
                 }
                 const rightContainer = document.getElementById('LC-Message-RightContainer');
@@ -2933,6 +2932,7 @@
             constructor() {
                 // 创建DOM元素
                 this.element = document.createElement('div');
+                this.element.className = 'lc-conv-item';
                 this.element.style.display = 'flex';
                 this.element.style.flexDirection = 'row';
                 this.element.style.padding = '8px 5px';
@@ -2943,13 +2943,18 @@
                 // 创建子元素
                 this.avatarContainer = null;
                 this.contentContainer = document.createElement('div');
+                this.contentContainer.className = 'lc-conv-main';
                 this.firstRow = document.createElement('div');
                 this.secondRow = document.createElement('div');
                 this.nameContainer = document.createElement('div');
                 this.nameSpan = document.createElement('span');
+                this.nameSpan.className = 'lc-conv-name';
                 this.timeContainer = document.createElement('div');
+                this.timeContainer.className = 'lc-conv-time';
                 this.previewContainer = document.createElement('div');
+                this.previewContainer.className = 'lc-conv-preview';
                 this.unreadIndicator = document.createElement('div');
+                this.unreadIndicator.className = 'lc-unread';
 
                 // 初始化样式
                 this.initializeStyles();
@@ -3133,9 +3138,11 @@
                 if (canInteract) {
                     this.nameSpan.style.color = '#000000';
                     this.nameSpan.style.fontWeight = 'bold';
+                    this.nameSpan.classList.add('lc-conv-name--strong');
                 } else {
                     this.nameSpan.style.color = '#888888';
                     this.nameSpan.style.fontWeight = 'normal';
+                    this.nameSpan.classList.remove('lc-conv-name--strong');
                 }
 
                 // 更新消息时间和预览
@@ -3717,6 +3724,7 @@
 
             // 创建新的avatarContainer
             const avatarContainer = document.createElement('div');
+            avatarContainer.className = 'lc-avatar';
             avatarContainer.style.width = '36px';
             avatarContainer.style.height = '36px';
             avatarContainer.style.borderRadius = '50%';
@@ -3926,10 +3934,10 @@
             }
 
             // 切换到发送者列表页面的共用函数
-            function switchToSenderListPage() {
+            function switchToSenderListPage(preserveSelection) {
                 if (MessageModule.isPageMode) {
                     MessageModule.isRightPageActive = false;
-                    selectedSenderNum = 0;
+                    if (!preserveSelection) selectedSenderNum = 0;
                     // 隐藏返回发送者按钮
                     MessageModule.backToSenderButton.style.display = 'none';
 
@@ -4225,9 +4233,11 @@
 
             // 消息标题区域
             const headerContainer = document.createElement('div');
-            headerContainer.style.backgroundColor = 'white';
+            headerContainer.className = 'lc-chat-header';
+            headerContainer.style.backgroundColor = 'var(--card)';
+            headerContainer.style.color = 'var(--ink)';
             headerContainer.style.padding = '10px 15px';
-            headerContainer.style.borderBottom = '1px solid #ddd';
+            headerContainer.style.borderBottom = '1px solid var(--seam)';
 
             const header = document.createElement('h3');
             header.style.margin = '0';
@@ -4236,6 +4246,7 @@
 
             // 消息内容区域
             const messageContent = document.createElement('div');
+            messageContent.className = 'lc-message-log';
             messageContent.style.flexGrow = '1';
             messageContent.style.padding = '15px';
             messageContent.style.overflowY = 'auto';
@@ -4325,6 +4336,7 @@
 
             // 消息类型选择器
             const messageTypeSelector = document.createElement('div');
+            messageTypeSelector.className = 'lc-message-type-selector';
             messageTypeSelector.style.display = 'flex';
             messageTypeSelector.style.alignItems = 'center';
 
@@ -5268,6 +5280,7 @@
 
                     // 保存按钮
                     const saveButton = document.createElement('button');
+                    saveButton.className = 'lc-save-btn';
                     saveButton.textContent = I18nModule.getText('save');
                     saveButton.style.padding = '6px 12px';
                     saveButton.style.backgroundColor = '#4CAF50';
@@ -6837,6 +6850,7 @@
 
                     // 创建按钮
                     const infoBtn = document.createElement('button');
+                    infoBtn.className = 'lc-room-info-btn';
                     infoBtn.textContent = `(${room.MemberCount}/${room.MemberLimit})`;
                     infoBtn.style.marginLeft = '4px';  // 减小左边距
                     infoBtn.style.padding = '0 4px';   // 减小内边距
@@ -6866,10 +6880,11 @@
                         popup.style.position = 'fixed';
                         popup.style.left = (e.clientX + 10 - 220) + 'px';
                         popup.style.top = (e.clientY + 10) + 'px';
-                        popup.style.background = 'white';
-                        popup.style.border = '1px solid #ddd';
-                        popup.style.borderRadius = '6px';
-                        popup.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+                        popup.style.background = 'var(--list-surface)';
+                        popup.style.color = 'var(--ink)';
+                        popup.style.border = '1px solid var(--divider)';
+                        popup.style.borderRadius = '12px';
+                        popup.style.boxShadow = 'var(--shadow-float)';
                         popup.style.padding = '14px 18px';
                         popup.style.zIndex = FloatZindex;
                         popup.style.minWidth = '220px';
@@ -6891,7 +6906,7 @@
                             <span>${room.Name}</span>
                             <span>(${room.MemberCount}/${room.MemberLimit})</span>
                         </div>
-                        <div style="color:#666;margin-bottom:6px;">${room.Description || ''}</div>
+                        <div class="lc-room-description" style="margin-bottom:6px;">${room.Description || ''}</div>
                         <div>${I18nModule.getText('friends')}：${friendsNames}</div>
                         `;
 
@@ -7051,10 +7066,7 @@
                     if (friend && friend.MemberNumber) {
                         const oldFriend = onlineFriendsCache?.find(f => f.MemberNumber === friend.MemberNumber);
                         if (!oldFriend) {
-                            // 新上线的好友，检查EnableLianChat
-                            if (playerCache[friend.MemberNumber]?.EnableLianChat) {
-                                syncPlayerInfoToFriend(friend.MemberNumber);
-                            }
+                            syncPlayerInfoToFriend(friend.MemberNumber);
                         }
                     }
                 });
@@ -7219,16 +7231,16 @@
         function handlePlayerInfoMessage(data) {
             try {
                 const messageSetting = JSON.parse(data.Message);
-                if (messageSetting && data.MemberNumber) {
-                    // 更新角色缓存
-                    const cacheResult = getAndUpdateCharacterCache(data.MemberNumber);
-                    if (cacheResult && cacheResult.cache) {
-                        playerCache[data.MemberNumber] = {
-                            ...messageSetting,
-                            UpdateTime: Date.now()
-                        };
-                        LCDataStorage.updatePlayerCache(data.MemberNumber, playerCache[data.MemberNumber]);
-                    }
+                if (messageSetting && typeof messageSetting === 'object' && data.MemberNumber) {
+                    playerCache[data.MemberNumber] = {
+                        Name: typeof messageSetting.Name === 'string' ? messageSetting.Name : '',
+                        Nickname: typeof messageSetting.Nickname === 'string' ? messageSetting.Nickname : '',
+                        Avatar: typeof messageSetting.Avatar === 'string' ? messageSetting.Avatar : '',
+                        Signature: typeof messageSetting.Signature === 'string' ? messageSetting.Signature : '',
+                        EnableLianChat: messageSetting.EnableLianChat !== false,
+                        UpdateTime: Date.now()
+                    };
+                    LCDataStorage.updatePlayerCache(data.MemberNumber, playerCache[data.MemberNumber]);
                 }
             } catch (e) {
                 console.error("处理LCPlayerInfo消息时出错:", e);
@@ -7238,8 +7250,7 @@
         // 同步给所有在线好友
         function syncPlayerInfoToAllOnlineFriends() {
             onlineFriendsCache?.forEach(friend => {
-                if (friend && friend.MemberNumber &&
-                    playerCache[friend.MemberNumber]?.EnableLianChat) {
+                if (friend && friend.MemberNumber) {
                     syncPlayerInfoToFriend(friend.MemberNumber);
                 }
             });
@@ -7355,6 +7366,10 @@
 
             isMessageDialogVisible: function() {
                 return !!messageDialog && isDialogVisibleState;
+            },
+
+            hasSelectedSender: function() {
+                return !!selectedSenderNum;
             },
 
             // 暴露发送悄悄话函数，以便其他模块可以使用
@@ -8131,14 +8146,15 @@
 
     function CheckOnlineLCSetting()
     {
-        if (!Player.OnlineSharedSettings.LCData || Player.OnlineSharedSettings.LCData.MessageSetting == null)
-        {
-            Player.OnlineSharedSettings.LCData = {
-                MessageSetting: {
-                    EnableLianChat: true
-                }
-            };
+        Player.OnlineSharedSettings ??= {};
+        Player.OnlineSharedSettings.LCData ??= {};
+        Player.OnlineSharedSettings.LCData.MessageSetting ??= {};
+        if (Player.OnlineSharedSettings.LCData.MessageSetting.EnableLianChat == null) {
+            Player.OnlineSharedSettings.LCData.MessageSetting.EnableLianChat = true;
+            ServerAccountUpdate.QueueData({ OnlineSharedSettings: Player.OnlineSharedSettings });
         }
+
+        Player.ExtensionSettings ??= {};
 
         // 从旧位置 OnlineSettings 迁移数据到 ExtensionSettings
         if (Player.OnlineSettings?.LCData?.MessageSetting && !Player.ExtensionSettings.LCData) {
