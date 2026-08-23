@@ -273,6 +273,132 @@
         return alpha.mask[my * alpha.mw + mx] === 1;
     }
 
+    // =========================== 缩略图渲染 ===========================
+
+    // 缩略图的最长边（CSS 像素）。贴图动辄 500x1000，直接塞进网格太大
+    const THUMB_MAX = 108;
+
+    // 缩略图底衬的棋盘格。悬停时会临时换成深灰实底，
+    // 移开再换回来，所以要单独拎出来复用
+    const CHECKER_IMAGE =
+        'linear-gradient(45deg, #DDD 25%, transparent 25%, transparent 75%, #DDD 75%),'
+        + 'linear-gradient(45deg, #DDD 25%, transparent 25%, transparent 75%, #DDD 75%)';
+
+    /**
+     * 复现本体的染色算法，把灰度母版染成指定颜色。
+     *
+     * 磁盘上的贴图是灰度的，颜色是绘制时算出来的（见 Drawing.js 的
+     * DrawImageEx）：按像素亮度 trans = (r+g+b)/383 缩放目标色。
+     * FullAlpha 为假时只染 trans 落在 0.8~1.2 的像素，那是本体用来
+     * 保护高光与暗部不被染色的手段，这里一并照搬，否则缩略图的
+     * 明暗关系会和角色身上看到的不一致。
+     *
+     * @param {CanvasRenderingContext2D} ctx - 已画好灰度图的上下文
+     * @param {number} w
+     * @param {number} h
+     * @param {string} hex - 目标色
+     * @param {boolean} fullAlpha - 对应 layer.FullAlpha
+     */
+    function colorizeCanvas(ctx, w, h, hex, fullAlpha) {
+        const rgb = parseHex(hex);
+        if (!rgb || w <= 0 || h <= 0) return;
+        let imageData;
+        try {
+            imageData = ctx.getImageData(0, 0, w, h);
+        } catch {
+            // 跨域贴图读不到像素，保持原样（灰度）比整块空白好
+            return;
+        }
+        const data = imageData.data;
+        for (let p = 0; p < data.length; p += 4) {
+            if (data[p + 3] === 0) continue;
+            const trans = (data[p] + data[p + 1] + data[p + 2]) / 383;
+            if (!fullAlpha && (trans < 0.8 || trans > 1.2)) continue;
+            data[p] = rgb.r * trans;
+            data[p + 1] = rgb.g * trans;
+            data[p + 2] = rgb.b * trans;
+        }
+        ctx.putImageData(imageData, 0, 0);
+    }
+
+    /**
+     * 按 alpha 紧包围盒裁切并缩放，得到一张贴合内容的小图。
+     *
+     * 紧包很重要：同组贴图共用 500x1000 画布，实际图案常只占 1%~8%，
+     * 不裁切的话缩略图里就是一个几像素的小点。
+     *
+     * @param {HTMLCanvasElement} src - 源画布（整幅贴图尺寸）
+     * @param {{x: number, y: number, w: number, h: number}} box - 内容框
+     * @param {number} max - 输出最长边
+     * @returns {HTMLCanvasElement|null}
+     */
+    function cropToThumb(src, box, max = THUMB_MAX) {
+        if (!box || box.w <= 0 || box.h <= 0) return null;
+        const k = Math.min(max / box.w, max / box.h, 1);
+        const dw = Math.max(1, Math.round(box.w * k));
+        const dh = Math.max(1, Math.round(box.h * k));
+        const out = document.createElement("canvas");
+        out.width = dw;
+        out.height = dh;
+        const c = out.getContext("2d");
+        // 缩小时用高质量重采样，衣物花纹缩完才不至于糊成噪点
+        c.imageSmoothingEnabled = true;
+        c.imageSmoothingQuality = "high";
+        c.drawImage(src, box.x, box.y, box.w, box.h, 0, 0, dw, dh);
+        return out;
+    }
+
+    /**
+     * 扫描一张画布的非透明像素边界。
+     *
+     * 已染色的图层无法复用 getAlphaData 的缓存（那个按贴图 URL 存的是
+     * 原始贴图的框），但染色不改变 alpha，所以直接拿 URL 的 bounds 即可，
+     * 这个函数只用于合成图那种没有对应 URL 的情况。
+     *
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {number} w
+     * @param {number} h
+     * @returns {{x: number, y: number, w: number, h: number}|null}
+     */
+    /**
+     * 画布是否可读像素。跨域贴图会污染画布，此时 getImageData 抛安全错误。
+     * 用来区分"这层是空的"和"这层读不了"，两者处理方式不同。
+     * @param {CanvasRenderingContext2D} ctx
+     * @returns {boolean}
+     */
+    function canReadPixels(ctx) {
+        try {
+            ctx.getImageData(0, 0, 1, 1);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function scanOpaqueBounds(ctx, w, h) {
+        let data;
+        try {
+            data = ctx.getImageData(0, 0, w, h).data;
+        } catch {
+            return null;
+        }
+        const th = ALPHA_BBOX.threshold;
+        let minX = w, minY = h, maxX = -1, maxY = -1;
+        for (let y = 0; y < h; y++) {
+            const row = y * w * 4;
+            for (let x = 0; x < w; x++) {
+                if (data[row + x * 4 + 3] > th) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) return null;
+        return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+    }
+
     // =========================== 颜色换算工具 ===========================
     // 批量改色要在 HSL 空间做偏移，本体与现有代码都只有 hex/rgb，这里补齐。
 
@@ -1402,7 +1528,10 @@
             })
         },
         // 诊断拷贝面板为什么没列出某个槽位。需先进入调色界面
-        diagnoseCopy: (wide) => itemColorAdjustmentWindow.diagnoseCopyTargets(wide)
+        diagnoseCopy: (wide) => itemColorAdjustmentWindow.diagnoseCopyTargets(wide),
+        // 诊断某件衣服的缩略图为什么缺图 / 404。需先进入调色界面。
+        // 不传参数则诊断当前槽位全部可选衣服，传名字只看那一件
+        diagnoseThumb: (assetName) => itemColorAdjustmentWindow.diagnoseThumbs(assetName)
     };
 
     // =======================================================================================
@@ -1424,6 +1553,10 @@
             this.iroLoaded = false; // iro.js 是否已加载
             this.rgbInputs = null; // RGB输入框引用
             this.onReset = null; // 重置回调函数
+            // "点击外部关闭"的监听状态
+            this.outsideHandler = null;
+            this.outsideTimer = null;
+            this.outsideAttached = false;
         }
         
         /**
@@ -1709,24 +1842,34 @@
                 this.panelElement.appendChild(resetButton);
             }
 
-            // 点击外部关闭
+            // 点击外部关闭。
+            //
+            // 用捕获阶段的 mousedown，不能用冒泡阶段的 click：取色器常常浮在
+            // 工具面板（改色/拷贝）之上，而那些面板为了不让点击漏到
+            // MainCanvas，在自己的 onclick 里就 stopPropagation 了 ——
+            // 冒泡的 click 永远到不了 document，点面板空白处就关不掉取色器。
+            // 捕获阶段先于目标元素触发，不受下游 stopPropagation 影响。
             const clickOutsideHandler = (e) => {
-                // 检查元素是否存在，避免null引用错误
                 if (!this.panelElement || !triggerElement) {
-                    document.removeEventListener('click', clickOutsideHandler);
+                    this.detachOutside();
                     return;
                 }
-                
-                if (!this.panelElement.contains(e.target) && 
-                    e.target !== triggerElement && 
+                if (!this.panelElement.contains(e.target) &&
+                    e.target !== triggerElement &&
                     !triggerElement.contains(e.target)) {
                     this.hide();
-                    document.removeEventListener('click', clickOutsideHandler);
                 }
             };
-            setTimeout(() => {
-                document.addEventListener('click', clickOutsideHandler);
-            }, 100);
+            // 先撤掉上一次的，避免连开两次取色器时留下野监听
+            this.detachOutside();
+            this.outsideHandler = clickOutsideHandler;
+            // 延迟挂载：本次打开取色器的这一下 mousedown 还没走完，
+            // 立刻挂上会被自己的点击关掉
+            this.outsideTimer = setTimeout(() => {
+                if (this.outsideHandler !== clickOutsideHandler) return;
+                document.addEventListener('mousedown', clickOutsideHandler, true);
+                this.outsideAttached = true;
+            }, 0);
 
             document.body.appendChild(this.panelElement);
         }
@@ -1903,10 +2046,24 @@
             }
         }
 
+        /** 撤掉"点击外部关闭"的监听与待挂载定时器 */
+        detachOutside() {
+            if (this.outsideTimer) {
+                clearTimeout(this.outsideTimer);
+                this.outsideTimer = null;
+            }
+            if (this.outsideHandler && this.outsideAttached) {
+                document.removeEventListener('mousedown', this.outsideHandler, true);
+            }
+            this.outsideHandler = null;
+            this.outsideAttached = false;
+        }
+
         /**
          * 隐藏颜色选择器面板
          */
         hide() {
+            this.detachOutside();
             if (this.iroInstance) {
                 // 销毁 iro.js 实例
                 if (this.iroInstance.el && this.iroInstance.el.parentNode) {
@@ -1946,6 +2103,7 @@
             this.toastTimer = null;
             // 句柄操作模式下待确认的切换目标 { layerIndex, at }
             this.switchConfirm = null;
+            this.browser = null;        // 部件浏览器的 DOM 状态
             this.hoveredNodeId = null; // 当前悬浮的节点ID
             this.hoveredLayeringNodeId = null; // 当前悬浮的层级节点ID
             this.highlightTimer = null; // 透明度闪烁定时器
@@ -2999,6 +3157,7 @@
             const bar = document.createElement('div');
             bar.style.cssText = `display: flex; align-items: center; gap: 6px; flex-shrink: 0;`;
             const tools = [
+                { icon: '📁', title: '部件浏览器：分层缩略图，点选定位；可切换浏览其他可选衣服', open: () => this.showBrowser() },
                 { icon: '🎨', title: '改色：统一调整色相/饱和度/亮度，或整体染色', open: (btn) => this.showRecolorPanel(btn) },
                 { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) }
             ];
@@ -3478,6 +3637,138 @@
         }
 
         /**
+         * 诊断缩略图为什么缺图或 404。
+         *
+         * 报告分三段，对应三个可能出错的环节：
+         *   1. 图层筛选 —— 本体挑出几层？被 AllowTypes / HideAs / 姿势过滤掉几层？
+         *      "只显示整件"就是这里筛成了 0。
+         *   2. URL 生成 —— 每层算出的路径，以及是否被自定义资产插件重写。
+         *   3. 实际加载 —— 逐个发请求验证，把 404 的列出来。
+         *
+         * @param {string} [assetName] - 只诊断这一件；省略则诊断当前槽位全部
+         */
+        diagnoseThumbs(assetName) {
+            const C = ItemColorCharacter;
+            const curGroup = ItemColorItem?.Asset?.Group;
+            if (!C || !curGroup) {
+                console.warn('[缩略图诊断] 需要先进入某件衣服的调色界面');
+                return { ok: false, reason: 'not-in-color-screen' };
+            }
+
+            let assets = this.listGroupAssets(C, curGroup);
+            if (assetName) {
+                assets = assets.filter(
+                    a => a.Name === assetName
+                        || (a.Description || a.Name) === assetName);
+                if (assets.length === 0) {
+                    console.warn(`[缩略图诊断] 当前槽位没有名为「${assetName}」的衣服`);
+                    return { ok: false, reason: 'asset-not-found' };
+                }
+            }
+
+            console.group(`[缩略图诊断] 部位 ${curGroup.Name}，共 ${assets.length} 件`);
+            const report = [];
+            const probes = [];
+
+            for (const asset of assets) {
+                const total = (asset.Layer || []).length;
+                const draws = this.collectItemDraws(asset, C);
+                const row = {
+                    衣服: asset.Description || asset.Name,
+                    Name: asset.Name,
+                    扩展: !!asset.Extended,
+                    定义层数: total,
+                    取到层数: draws.length,
+                    结论: draws.length === 0
+                        ? '图层被全部过滤 → 只会显示"整件"'
+                        : (draws.length < total ? '部分图层被过滤' : '正常')
+                };
+                report.push(row);
+                for (const d of draws) {
+                    probes.push({ asset, d });
+                }
+                // 一层都没取到时，把过滤原因逐层查清楚
+                if (draws.length === 0 && total > 0) {
+                    console.group(`「${row.衣服}」为何一层都没取到`);
+                    console.table(this.explainLayerFilter(asset, C));
+                    console.groupEnd();
+                }
+            }
+
+            console.log('各衣服图层筛选结果：');
+            console.table(report);
+
+            // 逐个验证能否真的加载，把 404 挑出来
+            console.log(`正在验证 ${probes.length} 个贴图地址…`);
+            return Promise.all(probes.map(({ asset, d }) => new Promise((resolve) => {
+                const started = Date.now();
+                const h = this.loadImage(d.url, (img) => resolve({
+                    衣服: asset.Description || asset.Name,
+                    图层: d.label,
+                    结果: img ? 'OK' : '失败/404',
+                    尺寸: img ? `${img.naturalWidth}x${img.naturalHeight}` : '-',
+                    耗时ms: Date.now() - started,
+                    内部路径: d.url,
+                    实际地址: this.probeResolvedSrc(d.url)
+                }));
+                // 诊断不该卡住，超时就当失败
+                setTimeout(() => { try { h.cancel(); } catch { /* 忽略 */ } }, 20000);
+            }))).then((rows) => {
+                const bad = rows.filter(r => r.结果 !== 'OK');
+                if (bad.length) {
+                    console.log(`加载失败 ${bad.length} / ${rows.length}：`);
+                    console.table(bad);
+                    console.log(
+                        '若"实际地址"仍是 Assets/... 开头，说明自定义资产插件没有'
+                        + '为它登记映射（或插件未加载）；若已是外部地址却仍失败，'
+                        + '那是网络或该 CDN 上确实没有这个文件。'
+                    );
+                } else {
+                    console.log(`全部 ${rows.length} 个贴图均可加载。`);
+                }
+                console.groupEnd();
+                return { ok: true, layers: report, images: rows, failed: bad };
+            });
+        }
+
+        /** 逐层列出被本体过滤的原因，用于解释"一层都没取到" */
+        explainLayerFilter(asset, C) {
+            const probe = this.getThumbProbe(asset, C);
+            let visible = [];
+            try {
+                visible = (w.CharacterAppearanceSortLayers?.(probe) || [])
+                    .filter(l => l.Asset === asset);
+            } catch { /* 排序失败则视作全不可见 */ }
+            const visibleNames = new Set(visible.map(l => l.Name ?? null));
+
+            return (asset.Layer || []).map((layer, i) => {
+                const shown = visibleNames.has(layer.Name ?? null);
+                const reasons = [];
+                if (layer.TextureMask) reasons.push('是贴图遮罩层');
+                if (layer.HasImage === false) reasons.push('HasImage=false');
+                if (layer.AllowTypes) reasons.push(`限定款式 AllowTypes=${JSON.stringify(layer.AllowTypes)}`);
+                if (layer.HideAs) reasons.push('HideAs 代理被隐藏');
+                if (layer.HideForAttribute?.length) reasons.push('HideForAttribute 命中');
+                if (layer.ShowForAttribute?.length) reasons.push('ShowForAttribute 未命中');
+                return {
+                    序号: i,
+                    图层: layer.Name ?? '(无名)',
+                    可见: shown,
+                    可疑原因: reasons.join('；') || (shown ? '-' : '未知'),
+                    当前TypeRecord: JSON.stringify(
+                        probe?.Appearance?.find(a => a.Asset === asset)?.Property?.TypeRecord ?? null)
+                };
+            });
+        }
+
+        /** 查一个内部路径最终会打到哪个地址，供诊断展示 */
+        probeResolvedSrc(url) {
+            const cached = this.gizmo.getImageRaw?.(url);
+            if (cached?.src) return cached.src;
+            return this.resolveImageUrl(url);
+        }
+
+        /**
          * 把颜色与透明度从一件搬到另一件。
          *
          * 按下标逐个搬而不是整体赋值：两件的可着色槽位数可能不等
@@ -3787,6 +4078,1138 @@
                 if (this.toastEl === el) this.toastEl = null;
                 el.remove();
             }, 2600);
+        }
+
+        /**
+         * 部件浏览器：分层缩略图的全屏浏览。
+         *
+         * 当前模式列本件：首位是整套合成图，之后是各分层，点选即关闭并
+         * 定位到对应部件。全部模式再往下列其他槽位的可选衣服，点别的衣服
+         * 会先问一句是否更换。
+         */
+        showBrowser() {
+            this.closeToolPanel();
+            this.closeBrowser();
+            if (!ItemColorState || !ItemColorItem) return;
+
+            const mask = document.createElement('div');
+            mask.style.cssText = `
+                position: fixed; inset: 0;
+                background: rgba(0,0,0,0.55);
+                z-index: 10008;
+                display: flex; align-items: center; justify-content: center;
+            `;
+
+            const box = document.createElement('div');
+            box.style.cssText = `
+                background: #fff; border: 2px solid #000; border-radius: 6px;
+                width: min(880px, 92vw); height: min(680px, 88vh);
+                display: flex; flex-direction: column;
+                box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+                font-size: ${UI.fontSm}px;
+            `;
+
+            const head = document.createElement('div');
+            head.style.cssText = `
+                display: flex; align-items: center; gap: 10px;
+                padding: 8px 12px; background: #E0E0E0;
+                border-bottom: 1px solid #000; flex-shrink: 0;
+            `;
+            const title = document.createElement('span');
+            title.textContent = '部件浏览器';
+            title.style.cssText = `font-weight: bold; font-size: ${UI.fontLg}px;`;
+            head.appendChild(title);
+
+            // 当前 / 全部 切换
+            const tabs = document.createElement('div');
+            tabs.style.cssText = 'display: flex; gap: 4px; margin-left: 8px;';
+            const tabBtns = {};
+            for (const [key, label] of [['current', '当前'], ['all', '全部']]) {
+                const b = document.createElement('button');
+                b.textContent = label;
+                b.style.cssText = `
+                    padding: 3px 14px; border: 1px solid #000;
+                    cursor: pointer; font-size: ${UI.fontSm}px;
+                `;
+                b.onclick = (e) => { e.stopPropagation(); this.setBrowserMode(key); };
+                tabBtns[key] = b;
+                tabs.appendChild(b);
+            }
+            head.appendChild(tabs);
+
+            const spacer = document.createElement('div');
+            spacer.style.cssText = 'flex: 1;';
+            head.appendChild(spacer);
+
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = '关闭';
+            closeBtn.style.cssText = `
+                padding: 3px 14px; border: 1px solid #000;
+                background: #fff; cursor: pointer; font-size: ${UI.fontSm}px;
+            `;
+            closeBtn.onclick = (e) => { e.stopPropagation(); this.closeBrowser(); };
+            head.appendChild(closeBtn);
+            box.appendChild(head);
+
+            const body = document.createElement('div');
+            body.style.cssText = `
+                flex: 1; overflow-y: auto; padding: 12px;
+                background: #fff; min-height: 0;
+            `;
+            box.appendChild(body);
+
+            // 面板内的点击不能漏到 MainCanvas：Color 模式下本体会当成
+            // 退出点击并回滚颜色
+            box.onclick = (e) => e.stopPropagation();
+            box.onmousedown = (e) => e.stopPropagation();
+            mask.onmousedown = (e) => {
+                e.stopPropagation();
+                if (e.target === mask) this.closeBrowser();
+            };
+
+            mask.appendChild(box);
+            document.body.appendChild(mask);
+
+            // loaders 收集在途的加载句柄，groups 是各衣服分组的骨架，
+            // 两者在关闭/切换时都要清理
+            this.browser = {
+                mask, body, tabBtns, mode: null,
+                loaders: [], groups: [], observer: null,
+                // wrap 元素 -> 骨架，供观察器回调快速定位
+                shellOf: new WeakMap(),
+                chunkTimer: null, onScroll: null
+            };
+            this.browser.observer = this.makeBrowserObserver(this.browser, body);
+            // 滚动时顺带回收滚远的分组
+            this.browser.onScroll = () => this.pruneBrowserGroups(this.browser);
+            body.addEventListener('scroll', this.browser.onScroll, { passive: true });
+            this.setBrowserMode('current');
+        }
+
+        /** 关闭部件浏览器 */
+        closeBrowser() {
+            if (!this.browser) return;
+            const b = this.browser;
+            this.resetBrowserContent(b);
+            b.observer?.disconnect();
+            if (b.onScroll) b.body.removeEventListener('scroll', b.onScroll);
+            b.mask.remove();
+            this.browser = null;
+            // 替身角色留在 Character 数组里会被本体一起遍历渲染
+            try {
+                const probe = w.Character?.find?.(c => c.CharacterID === 'LianThumbProbe');
+                if (probe) w.CharacterDelete?.(probe);
+            } catch { /* 删不掉也不影响使用 */ }
+        }
+
+        /**
+         * 清空面板内容并释放相关资源：在途加载、分批定时器、观察目标。
+         * 关闭与切换模式都要走这里，漏掉任一项都会留下写向已弃 DOM 的回调。
+         */
+        resetBrowserContent(b) {
+            if (!b) return;
+            for (const h of b.loaders || []) {
+                try { h?.cancel?.(); } catch { /* 取消失败无妨 */ }
+            }
+            b.loaders = [];
+            if (b.chunkTimer) { clearTimeout(b.chunkTimer); b.chunkTimer = null; }
+            for (const shell of b.groups || []) {
+                try { b.observer?.unobserve(shell.wrap); } catch { /* 已移除 */ }
+                shell.loaders = [];
+                shell.render = null;
+            }
+            b.groups = [];
+        }
+
+        /** 切换浏览器的当前/全部模式并重绘内容 */
+        setBrowserMode(mode) {
+            const b = this.browser;
+            if (!b || b.mode === mode) return;
+            // 切换会清空内容，在途的加载与观察都得停掉，
+            // 否则回调会往已移除的卡片里写
+            this.resetBrowserContent(b);
+            b.mode = mode;
+            for (const k in b.tabBtns) {
+                const on = k === mode;
+                b.tabBtns[k].style.background = on ? '#000' : '#fff';
+                b.tabBtns[k].style.color = on ? '#fff' : '#000';
+            }
+            b.body.textContent = '';
+            if (mode === 'current') this.renderBrowserCurrent(b.body);
+            else this.renderBrowserAll(b.body);
+        }
+
+        /**
+         * 列出某件衣服的各可见图层及其贴图路径。
+         *
+         * URL 一律由本体算，我们不自己拼。真实规则是
+         *   AssetBaseURL(...) + 表情段 + [资产名, 父件名, 图层类型, 颜色段, 图层名]
+         * 其中还夹着 BodyStyle 覆盖、姿势映射、CreateLayerTypes 编号等分支，
+         * 自己复现必然漏段而 404。
+         *
+         * 做法：拿一个真角色当替身（必须是 CharacterLoadSimple 造的真对象，
+         * 展开成普通字面量会丢掉 IsInverted / IsGhosted 这些方法），把
+         * AppearanceLayers 临时设成"只有这一层"，跑一遍 CommonDrawAppearanceBuild
+         * 并只记录不绘制。这样每次拿到的 URL 必然属于当前这一层，
+         * 层与图的对应关系不用猜。
+         *
+         * 替身身上保留角色的其余装备与姿势，父部件名和姿势段才解析得对，
+         * 也保证贴图确实存在（就是正在渲染的那些）。
+         *
+         * @param {Object} asset - Asset（不必是穿着中的）
+         * @param {Object} host - 提供身体与姿势上下文的角色
+         * @returns {Array<{url: string, layerIndex: number, layer: Object, label: string}>}
+         */
+        collectItemDraws(asset, host) {
+            if (!asset || !Array.isArray(asset.Layer)) return [];
+            if (typeof w.CommonDrawAppearanceBuild !== 'function') return [];
+            if (typeof w.CharacterAppearanceSortLayers !== 'function') return [];
+
+            const probe = this.getThumbProbe(asset, host);
+            if (!probe) return [];
+
+            // 本体挑出的可见层：已过滤 TextureMask 与不可见层，
+            // 且 Alpha / Priority 都已按物品属性解析好
+            let drawLayers;
+            try {
+                drawLayers = w.CharacterAppearanceSortLayers(probe) || [];
+            } catch (e) {
+                console.warn('[LianDressOptimization] 图层排序失败', e);
+                return [];
+            }
+            const mine = drawLayers.filter(l => l.Asset === asset && l.HasImage);
+            if (mine.length === 0) return [];
+
+            // 原始下标：点选后要用它定位到面板对应行
+            const indexOf = new Map();
+            for (let i = 0; i < asset.Layer.length; i++) {
+                indexOf.set(asset.Layer[i].Name ?? null, i);
+            }
+
+            const out = [];
+            const noop = () => {};
+            for (const layer of mine) {
+                let url = null, dx = 0, dy = 0;
+                const rec = (u, x, y) => {
+                    if (url !== null || typeof u !== 'string') return;
+                    url = u;
+                    // 各层贴图尺寸与绘制原点可能不同，合成图要按这个偏移对齐
+                    dx = typeof x === 'number' ? x : 0;
+                    dy = typeof y === 'number' ? y : 0;
+                };
+                try {
+                    // 一次只放一层，记到的就是这层的图
+                    probe.AppearanceLayers = [layer];
+                    w.CommonDrawAppearanceBuild(probe, {
+                        clearRect: noop, clearRectBlink: noop,
+                        drawImage: rec, drawImageBlink: noop,
+                        drawImageColorize: rec, drawImageColorizeBlink: noop,
+                        // 文字之类的动态层没有静态贴图，跳过
+                        drawCanvas: noop, drawCanvasBlink: noop
+                    });
+                } catch (e) {
+                    console.warn('[LianDressOptimization] 取图层 URL 失败', layer?.Name, e);
+                    continue;
+                }
+                if (!url) continue;
+                out.push({
+                    url, x: dx, y: dy,
+                    layerIndex: indexOf.get(layer.Name ?? null) ?? 0,
+                    layer,
+                    label: layer.Name || asset.Description || asset.Name
+                });
+            }
+            return out;
+        }
+
+        /**
+         * 造/复用缩略图用的替身角色，并把目标衣服穿上去。
+         *
+         * 颜色取资产默认色。Property 只清掉变换相关的键，不能整个清空 ——
+         * 扩展物品（Extended，如可选款式的衣服）的贴图文件名里带
+         * layerType 段，那段由 Property.TypeRecord 算出；TypeRecord 缺失时
+         * 拼出的路径不存在（404），带 AllowTypes 的图层还会被整个过滤掉，
+         * 于是只剩"整件"一格且加载失败。
+         *
+         * @returns {Object|null}
+         */
+        getThumbProbe(asset, host) {
+            const group = asset?.Group;
+            if (!group || !host || typeof w.CharacterLoadSimple !== 'function') return null;
+
+            let probe;
+            try {
+                probe = w.CharacterLoadSimple('LianThumbProbe');
+            } catch (e) {
+                console.warn('[LianDressOptimization] 创建替身角色失败', e);
+                return null;
+            }
+            if (!probe) return null;
+
+            const item = { Asset: asset, Color: 'Default', Property: {} };
+            try {
+                if (typeof w.ItemColorSanitizeColor === 'function') {
+                    item.Color = w.ItemColorSanitizeColor(item);
+                }
+            } catch { item.Color = 'Default'; }
+
+            // 保留其余装备：父部件名与姿势段要靠它们解析
+            const rest = (host.Appearance || []).filter(
+                a => a?.Asset?.Group?.Name !== group.Name);
+            probe.Appearance = [...rest, item];
+            probe.DrawAppearance = probe.Appearance;
+            probe.PoseMapping = { ...(host.PoseMapping || {}) };
+            probe.DrawPoseMapping = { ...(host.DrawPoseMapping || host.PoseMapping || {}) };
+            probe.AppearanceLayers = [];
+
+            // 扩展物品要走本体的初始化，把 TypeRecord 等默认值填上。
+            // 必须在装上之后：部分 Init 实现会用 InventoryGet 反查这件物品。
+            // 不 Push 不 Refresh：这是离屏替身，不该碰服务器与真身渲染
+            if (asset.Extended && typeof w.ExtendedItemInit === 'function') {
+                try {
+                    w.ExtendedItemInit(probe, item, false, false);
+                } catch (e) {
+                    console.warn('[LianDressOptimization] 扩展物品初始化失败',
+                        asset.Name, e);
+                }
+            }
+            // 去掉变换与自定义透明度：缩略图要的是本来的样子。
+            // TypeRecord 之类影响贴图选择的键必须留着
+            for (const k of ['TranslationX', 'TranslationY', 'ScaleX', 'ScaleY',
+                             'Rotation', 'LayerTranslationX', 'LayerTranslationY',
+                             'LayerScaleX', 'LayerScaleY', 'LayerRotation',
+                             'Opacity', 'OverridePriority']) {
+                delete item.Property[k];
+            }
+            return probe;
+        }
+
+        /**
+         * 取某图层的默认颜色。
+         *
+         * 用资产定义里的 DefaultColor 而不是当前调色状态：缩略图是
+         * 「这件衣服本来长什么样」的索引，跟着当前配色反而不好认。
+         *
+         * @returns {string|null} 不可着色或非 hex 时返回 null（不染色）
+         */
+        defaultLayerColor(asset, layer) {
+            if (!layer?.AllowColorize) return null;
+            const ci = layer.ColorIndex;
+            const c = typeof ci === 'number' ? asset.DefaultColor?.[ci] : null;
+            return parseHex(c) ? c : null;
+        }
+
+        /**
+         * 把一条图层记录渲染成紧包缩略图。
+         *
+         * 不套任何变换（缩放/旋转/位移）：那些是用户对当前这件的调整，
+         * 缩略图要的是原始形态。也因此内容框可以直接用 alpha 缓存里的
+         * bounds，不必重新扫描。
+         *
+         * @param {{url: string, layer: Object}} d
+         * @param {Object} asset
+         * @param {HTMLImageElement} img - 已加载完成的贴图
+         * @returns {HTMLCanvasElement|null}
+         */
+        thumbFromDraw(d, asset, img, max = THUMB_MAX) {
+            // 尺寸一律取自这张图本身，不查 alpha 缓存：那份缓存按 URL 存，
+            // 而这里的图可能是我们自己新加载的，两边尺寸未必对得上
+            const tw = img.naturalWidth || img.width;
+            const th = img.naturalHeight || img.height;
+            if (!(tw > 1 && th > 1)) return null;
+
+            const cv = document.createElement('canvas');
+            cv.width = tw;
+            cv.height = th;
+            const c = cv.getContext('2d', { willReadFrequently: true });
+            c.drawImage(img, 0, 0);
+
+            const hex = this.defaultLayerColor(asset, d.layer);
+            if (hex) colorizeCanvas(c, tw, th, hex, !!d.layer.FullAlpha);
+
+            const box = scanOpaqueBounds(c, tw, th);
+            if (!box) {
+                // 读不到像素（跨域污染）时退回整幅，别当成空图丢掉；
+                // 真的全透明才不给卡片，免得占一格空白
+                return canReadPixels(c) ? null
+                    : cropToThumb(cv, { x: 0, y: 0, w: tw, h: th }, max);
+            }
+            return cropToThumb(cv, box, max);
+        }
+
+        /**
+         * 把一组图层叠成整件的合成缩略图。
+         * 各层贴图尺寸与绘制原点不一定相同，按记录到的偏移对齐。
+         * @param {Array} draws
+         * @param {Map<string, HTMLImageElement>} images
+         */
+        thumbFromDrawList(draws, asset, images, max = 132) {
+            const usable = draws.filter(d => images.get(d.url));
+            if (usable.length === 0) return null;
+
+            let tw = 0, th = 0;
+            for (const d of usable) {
+                const img = images.get(d.url);
+                tw = Math.max(tw, (d.x || 0) + (img.naturalWidth || img.width));
+                th = Math.max(th, (d.y || 0) + (img.naturalHeight || img.height));
+            }
+            if (tw <= 1 || th <= 1) return null;
+
+            const cv = document.createElement('canvas');
+            // 角色画布是 500x1000 量级，给个上限防止异常偏移把内存撑爆
+            cv.width = Math.min(2000, Math.ceil(tw));
+            cv.height = Math.min(2000, Math.ceil(th));
+            const c = cv.getContext('2d', { willReadFrequently: true });
+
+            // 按 Priority 从低到高叠，与渲染的层叠顺序一致
+            const sorted = [...usable].sort(
+                (a, b) => (a.layer.Priority ?? 0) - (b.layer.Priority ?? 0));
+            for (const d of sorted) {
+                const img = images.get(d.url);
+                const one = document.createElement('canvas');
+                one.width = img.naturalWidth || img.width;
+                one.height = img.naturalHeight || img.height;
+                const oc = one.getContext('2d', { willReadFrequently: true });
+                oc.drawImage(img, 0, 0);
+                const hex = this.defaultLayerColor(asset, d.layer);
+                if (hex) colorizeCanvas(oc, one.width, one.height, hex, !!d.layer.FullAlpha);
+                c.drawImage(one, d.x || 0, d.y || 0);
+            }
+
+            // 读不到像素时退回整幅（跨域污染），裁不准也比没有好
+            const box = scanOpaqueBounds(c, cv.width, cv.height)
+                || { x: 0, y: 0, w: cv.width, h: cv.height };
+            return cropToThumb(cv, box, max);
+        }
+
+        /**
+         * 加载一张贴图，好了就回调。
+         *
+         * 每张独立回调而不是等整批：一批里只要有一张慢，等齐了才填图会让
+         * 已经好了的那些一直显示占位，看着像"没贴图"。
+         *
+         * 失败会重试。ERR_CERT_VERIFIER_CHANGED、连接中断这类瞬时网络错误
+         * 很常见（尤其自定义资产走外部 CDN），第一次 error 就放弃会留下
+         * 一堆假的"无贴图"。重试用退避间隔，且换新的 Image 对象 ——
+         * 复用同一个并重设 src 在部分浏览器上不会重新发起请求。
+         *
+         * @param {string} url
+         * @param {(img: HTMLImageElement|null) => void} onDone - 失败时传 null
+         * @returns {{cancel: () => void}} 取消句柄（面板关闭时用）
+         */
+        loadImage(url, onDone) {
+            let settled = false;
+            let timer = null;
+            let tries = 0;
+            const MAX_TRIES = 3;
+
+            const finish = (img) => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                onDone(img);
+            };
+            const valid = (img) => img && (img.naturalWidth || img.width || 0) > 1;
+
+            const attempt = () => {
+                if (settled) return;
+                tries++;
+
+                // 已在本体缓存里且加载完成，直接用
+                const cached = this.gizmo.getImage(url);
+                if (valid(cached) && cached.complete) return finish(cached);
+
+                const img = tries === 1
+                    ? this.getGameImage(url)
+                    : this.reloadImage(url);
+                if (!img) return finish(null);
+
+                if (img.complete) {
+                    // complete 为真但尺寸无效 = 加载失败过
+                    if (valid(img)) return finish(img);
+                    return retry();
+                }
+
+                const onLoad = () => { cleanup(); valid(img) ? finish(img) : retry(); };
+                const onErr = () => { cleanup(); retry(); };
+                const cleanup = () => {
+                    img.removeEventListener('load', onLoad);
+                    img.removeEventListener('error', onErr);
+                    if (timer) { clearTimeout(timer); timer = null; }
+                };
+                img.addEventListener('load', onLoad);
+                img.addEventListener('error', onErr);
+                // 注册监听的间隙里可能已经加载完，事件就不会再来了
+                if (img.complete) { cleanup(); return valid(img) ? finish(img) : retry(); }
+                timer = setTimeout(() => { cleanup(); retry(); }, 10000);
+            };
+
+            const retry = () => {
+                if (settled) return;
+                if (tries >= MAX_TRIES) return finish(null);
+                timer = setTimeout(attempt, 400 * tries);
+            };
+
+            attempt();
+            return {
+                cancel: () => { settled = true; if (timer) clearTimeout(timer); },
+                done: () => settled
+            };
+        }
+
+        /**
+         * 重新发起一次加载，绕过本体那份可能已失败的缓存。
+         *
+         * 路径仍需经映射解析（自定义资产在外部 CDN），但不能复用本体
+         * DrawCacheImage 里那个已经 error 过的 Image —— 它不会自己重试。
+         *
+         * @param {string} url
+         * @returns {HTMLImageElement|null}
+         */
+        reloadImage(url) {
+            try {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                // 优先沿用本体缓存里那张图已解析好的 src：它是被插件钩子
+                // 改写过的真实地址。查映射表只是退路，取不到表的话直接用
+                // 内部路径会打到官方服务器，自定义资产必然还是 404
+                const prev = this.gizmo.getImageRaw?.(url);
+                const resolved = (prev && prev.src) || this.resolveImageUrl(url);
+                // 加时间戳绕开浏览器对失败结果的负缓存
+                const sep = resolved.includes('?') ? '&' : '?';
+                img.src = `${resolved}${sep}_lianretry=${Date.now()}`;
+                return img;
+            } catch (e) {
+                console.warn('[LianDressOptimization] 重新加载贴图失败', url, e);
+                return null;
+            }
+        }
+
+        /**
+         * 取一张贴图，走本体的 DrawGetImage。
+         *
+         * 必须走这个函数而不是自己 new Image()：自定义服装插件（Echo 等）
+         * 用 @sugarch/bc-image-mapping 在 DrawGetImage / GLDrawImage 上挂了
+         * 钩子，把 `Assets/...` 这类内部路径重写到它们自己的 CDN。自己发
+         * 请求会绕过映射，那些衣服的贴图在官方服务器上并不存在，必然 404。
+         *
+         * 顺带还蹭到两个好处：命中本体的 DrawCacheImage 少发请求，
+         * 以及它会设好 crossOrigin，我们后面 getImageData 才不会被污染。
+         *
+         * @param {string} url - 内部路径
+         * @returns {HTMLImageElement|null}
+         */
+        getGameImage(url) {
+            if (typeof w.DrawGetImage === 'function') {
+                try {
+                    const img = w.DrawGetImage(url);
+                    if (img) return img;
+                } catch (e) {
+                    console.warn('[LianDressOptimization] DrawGetImage 失败', url, e);
+                }
+            }
+            // 兜底：本体没这个函数就自己来，顺手查一下映射表
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.src = this.resolveImageUrl(url);
+            return img;
+        }
+
+        /**
+         * 尽力把内部路径解析成真实地址。
+         *
+         * 只在 DrawGetImage 不可用时兜底。映射表挂在自定义资产库的全局
+         * 命名空间里，键带版本号，所以这里按前缀找而不是写死版本。
+         *
+         * @param {string} url
+         * @returns {string}
+         */
+        resolveImageUrl(url) {
+            try {
+                const ns = w.__BC_LUZI_GLOBALS__ || w.__ECHO_MOD_GLOBALS__;
+                if (!ns) return url;
+                for (const key of Object.keys(ns)) {
+                    if (!key.startsWith('ImageMapping')) continue;
+                    const mapped = ns[key]?.storage?.mapImgSrc?.(url);
+                    if (typeof mapped === 'string' && mapped) return mapped;
+                }
+            } catch { /* 解析不了就用原路径 */ }
+            return url;
+        }
+
+        /** 分组标题栏 */
+        browserGroupTitle(text, note) {
+            const h = document.createElement('div');
+            h.style.cssText = `
+                display: flex; align-items: baseline; gap: 8px;
+                margin: 4px 0 8px; padding-bottom: 4px;
+                border-bottom: 1px solid #CCC;
+            `;
+            const t = document.createElement('span');
+            t.textContent = text;
+            t.style.cssText = `font-weight: bold; font-size: ${UI.fontLg}px;`;
+            h.appendChild(t);
+            if (note) {
+                const n = document.createElement('span');
+                n.textContent = note;
+                n.style.cssText = 'color: #666;';
+                h.appendChild(n);
+            }
+            return h;
+        }
+
+        /** 缩略图网格容器 */
+        browserGrid() {
+            const g = document.createElement('div');
+            g.style.cssText = `
+                display: grid; gap: 10px; margin-bottom: 16px;
+                grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            `;
+            return g;
+        }
+
+        /**
+         * 一张缩略图卡片。图先留空，加载好后由 fillCard 填入。
+         * @param {string} label
+         * @param {Function} onClick
+         * @param {boolean} [primary] - 是否强调显示（整套图 / 当前穿着）
+         */
+        browserCard(label, onClick, primary = false) {
+            const card = document.createElement('div');
+            card.style.cssText = `
+                border: ${primary ? '2px solid #000' : '1px solid #AAA'};
+                border-radius: 4px; padding: 6px;
+                display: flex; flex-direction: column; align-items: center; gap: 5px;
+                cursor: pointer; background: ${primary ? '#F5F5F5' : '#fff'};
+                /* 网格项默认 min-width:auto，内容比轨道宽时会溢出 */
+                min-width: 0; overflow: hidden;
+            `;
+            const holder = document.createElement('div');
+            holder.style.cssText = `
+                height: ${THUMB_MAX}px; width: 100%;
+                /* min-width:0 让 flex 子项可以被压缩，否则大位图会顶开容器 */
+                min-width: 0; flex-shrink: 0;
+                display: flex; align-items: center; justify-content: center;
+                /* 棋盘底衬出透明区域，否则白底上看不出图层边界 */
+                background-color: transparent;
+                background-image: ${CHECKER_IMAGE};
+                background-size: 12px 12px;
+                background-position: 0 0, 6px 6px;
+                overflow: hidden;
+            `;
+
+            // 悬停时把棋盘换成深灰实底：浅色/白色的衣服在浅棋盘上几乎看不见，
+            // 深底一衬就出来了。移开再换回棋盘，好继续看透明区域
+            card.onmouseenter = () => {
+                card.style.background = '#E8F4FD';
+                holder.style.backgroundImage = 'none';
+                holder.style.backgroundColor = '#4A4A4A';
+            };
+            card.onmouseleave = () => {
+                card.style.background = primary ? '#F5F5F5' : '#fff';
+                // 只还原这两项，不重写整个 cssText：那样会连带抹掉
+                // 别处设的内联样式（如释放分组时固定的高度）
+                holder.style.backgroundColor = 'transparent';
+                holder.style.backgroundImage = CHECKER_IMAGE;
+            };
+            // 图是异步填进来的，先占位
+            const ph = document.createElement('span');
+            ph.textContent = '…';
+            // 中灰在浅棋盘和悬停的深灰底上都还能看清
+            ph.style.cssText = 'color: #999;';
+            holder.appendChild(ph);
+            card.appendChild(holder);
+
+            const cap = document.createElement('div');
+            cap.textContent = label;
+            cap.title = label;
+            cap.style.cssText = `
+                width: 100%; text-align: center;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                font-weight: ${primary ? 'bold' : 'normal'};
+            `;
+            card.appendChild(cap);
+
+            card.onclick = (e) => { e.stopPropagation(); onClick(); };
+            return card;
+        }
+
+        /** 当前模式：整套合成图 + 各分层 */
+        renderBrowserCurrent(body) {
+            const asset = ItemColorItem?.Asset;
+            const layers = asset?.Layer;
+            if (!Array.isArray(layers)) {
+                body.appendChild(this.hintText('读不到图层信息'));
+                return;
+            }
+
+            // 与全部模式共用同一套渲染，只是只列这一件，无需懒加载
+            const shell = this.browserGroupShell(asset, true);
+            body.appendChild(shell.wrap);
+            shell.grid.style.minHeight = '';
+            this.browser?.groups?.push(shell);
+            shell.active = true;
+            this.renderAssetGroup(
+                shell.grid, asset, asset.Group, true, ItemColorCharacter, shell);
+        }
+
+        /**
+         * 全部模式：仍在当前槽位内，按"衣服"分组。
+         *
+         * 每个分组的结构与当前模式一致：首位是整件合成图，之后是它的
+         * 各个分层部件。当前穿着的那件排第一。
+         *
+         * 没穿在身上的衣服也能出真实分层图：贴图路径由资产定义直接拼
+         * （默认姿势、默认色），需要时自行加载，不依赖渲染缓存。
+         */
+        renderBrowserAll(body) {
+            const C = ItemColorCharacter;
+            const curItem = ItemColorItem;
+            const curGroup = curItem?.Asset?.Group;
+            if (!C || !curGroup) {
+                body.appendChild(this.hintText('读不到角色信息'));
+                return;
+            }
+
+            const assets = this.listGroupAssets(C, curGroup);
+            if (assets.length === 0) {
+                body.appendChild(this.hintText('该部位没有其他可选衣服'));
+                return;
+            }
+
+            const wornName = curItem.Asset?.Name;
+            const note = document.createElement('div');
+            note.textContent = `部位：${curGroup.Description || curGroup.Name}`
+                + `　共 ${assets.length} 件可选`;
+            note.style.cssText = `color: #666; margin-bottom: 10px;`;
+            body.appendChild(note);
+
+            // 一次性铺完几百件会明显卡住主线程：每件都要跑一遍
+            // CharacterAppearanceSortLayers + 逐层 CommonDrawAppearanceBuild。
+            // 改成先分批铺骨架，滚到眼前才真正渲染
+            this.buildBrowserShells(body, assets, wornName, curGroup, C);
+        }
+
+        /**
+         * 分批铺出各衣服的骨架（标题 + 空网格），并挂上可见性观察器。
+         *
+         * 分批是为了首屏尽快出来：每帧只建少量节点，中间让浏览器喘口气。
+         * 观察器负责滚到眼前才渲染内容、滚远了就释放，这样长列表的开销
+         * 与可见范围有关，而不是与总件数有关。
+         */
+        buildBrowserShells(body, assets, wornName, group, C) {
+            const token = this.browser;
+            if (!token) return;
+            const CHUNK = 6;
+            let i = 0;
+
+            const step = () => {
+                if (this.browser !== token) return;
+                const end = Math.min(i + CHUNK, assets.length);
+                for (; i < end; i++) {
+                    const asset = assets[i];
+                    const isCur = asset.Name === wornName;
+                    const shell = this.browserGroupShell(asset, isCur);
+                    body.appendChild(shell.wrap);
+                    shell.render = () => this.renderAssetGroup(
+                        shell.grid, asset, group, isCur, C, shell);
+                    token.groups.push(shell);
+                    token.shellOf.set(shell.wrap, shell);
+                    // 首件（当前穿着）立刻渲染，别让用户先看到一片空白。
+                    // 它同样要被观察：滚远释放后还得能滚回来重画
+                    if (i === 0) this.activateGroup(shell);
+                    token.observer?.observe(shell.wrap);
+                }
+                token.chunkTimer = i < assets.length
+                    ? setTimeout(step, 0) : null;
+            };
+            step();
+        }
+
+        /** 一个衣服分组的骨架：标题 + 空网格，内容延后填 */
+        browserGroupShell(asset, isCur) {
+            const wrap = document.createElement('div');
+            wrap.appendChild(this.browserGroupTitle(
+                asset.Description || asset.Name,
+                isCur ? '当前穿着（点分层可直接定位）' : '点任意图可换成这件'
+            ));
+            const grid = this.browserGrid();
+            // 占位高度让滚动条长度稳定，不然渲染时会来回跳
+            grid.style.minHeight = `${THUMB_MAX + 34}px`;
+            wrap.appendChild(grid);
+            return { wrap, grid, active: false, render: null };
+        }
+
+        /** 渲染某分组的内容（幂等） */
+        activateGroup(shell) {
+            if (!shell || shell.active) return;
+            shell.active = true;
+            try {
+                shell.render?.();
+            } catch (e) {
+                console.warn('[LianDressOptimization] 渲染分组失败', e);
+            }
+        }
+
+        /**
+         * 释放某分组已渲染的内容，回到骨架状态。
+         *
+         * 缩略图是 canvas，每张约 46KB（108x108x4）。几百件衣服各十来层
+         * 全留着能到近百 MB，所以滚远了就丢掉，滚回来再画。贴图本身在
+         * 本体缓存里，重画只是画布操作，不再走网络。
+         */
+        releaseGroup(shell) {
+            if (!shell || !shell.active) return;
+            shell.active = false;
+            for (const h of shell.loaders || []) {
+                try { h?.cancel?.(); } catch { /* 取消失败无妨 */ }
+            }
+            shell.loaders = [];
+            // 先固定住高度再清空：否则网格塌缩会让下方内容整体上移，
+            // 正在看的位置就跳了
+            const h = shell.grid.offsetHeight;
+            if (h > 0) shell.grid.style.minHeight = `${h}px`;
+            shell.grid.textContent = '';
+        }
+
+        /**
+         * 可见性观察器：进入视野附近就渲染，离开很远才释放。
+         *
+         * 两个阈值不同（渲染 200px、释放 1200px）是刻意的：留出滞后区间，
+         * 否则在边界上来回滚会反复建/毁，比不做懒加载还卡。
+         */
+        makeBrowserObserver(token, root) {
+            if (typeof IntersectionObserver !== 'function') return null;
+            return new IntersectionObserver((entries) => {
+                if (this.browser !== token) return;
+                for (const e of entries) {
+                    if (!e.isIntersecting) continue;
+                    // Map 查找而不是遍历 groups：几百件时每次回调都扫一遍太浪费
+                    const shell = token.shellOf.get(e.target);
+                    if (shell) this.activateGroup(shell);
+                }
+            }, { root, rootMargin: '200px 0px' });
+        }
+
+        /**
+         * 释放滚出很远的分组。IntersectionObserver 只给"是否相交"，
+         * 滞后释放要自己按距离判断，所以挂在滚动事件上。
+         */
+        pruneBrowserGroups(token) {
+            if (this.browser !== token) return;
+            // 读 offsetTop 会强制布局，不能每个滚动事件都做。
+            // 合并到下一帧，滚动期间最多一次
+            if (token.pruneScheduled) return;
+            token.pruneScheduled = true;
+            requestAnimationFrame(() => {
+                if (this.browser !== token) return;
+                token.pruneScheduled = false;
+                const body = token.body;
+                const top = body.scrollTop;
+                const bottom = top + body.clientHeight;
+                const KEEP = 1200;
+                for (const shell of token.groups) {
+                    if (!shell.active) continue;
+                    const y = shell.wrap.offsetTop;
+                    const h = shell.wrap.offsetHeight;
+                    if (y + h < top - KEEP || y > bottom + KEEP) this.releaseGroup(shell);
+                }
+            });
+        }
+
+        /**
+         * 往给定网格里填一件衣服的内容：整件图 + 各分层。
+         *
+         * 贴图要异步加载（没穿在身上的不在缓存里），所以先摆好占位卡片
+         * 再逐张填，到货即填不等整批。
+         *
+         * @param {HTMLElement} grid - 目标网格（由骨架提供）
+         * @param {boolean} isCur - 是否正是当前编辑的这件
+         * @param {Object} [shell] - 所属骨架，用于登记加载句柄以便释放
+         */
+        renderAssetGroup(grid, asset, group, isCur, C, shell) {
+            const draws = this.collectItemDraws(asset, C);
+
+            // 整件
+            const wholeCard = this.browserCard('整件', () => {
+                if (isCur) {
+                    this.closeBrowser();
+                    this.focusItemLevel();
+                } else {
+                    this.requestBrowserSwap(asset, group, C);
+                }
+            }, true);
+            grid.appendChild(wholeCard);
+
+            // 各分层
+            const layerCards = draws.map((d) => {
+                const hidden = isCur && this.getLayerOpacity(d.layerIndex) === 0 ? '（隐藏）' : '';
+                const card = this.browserCard(d.label + hidden, () => {
+                    if (isCur) {
+                        this.closeBrowser();
+                        this.selectLayerRow(d.layerIndex);
+                    } else {
+                        this.requestBrowserSwap(asset, group, C);
+                    }
+                });
+                grid.appendChild(card);
+                return { d, card };
+            });
+
+            // 逐张到货逐张填，不等整批。面板可能在加载途中被关掉，
+            // 用 token 判断回调是否还有效
+            const token = this.browser;
+            const images = new Map();
+            let left = draws.length;
+
+            // 重试成功后也要把整件图补上
+            const ctx = {
+                images,
+                redrawWhole: () => {
+                    if (this.browser !== token || images.size === 0) return;
+                    this.fillCard(wholeCard, this.thumbFromDrawList(draws, asset, images));
+                }
+            };
+
+            const onOne = (d, card, img) => {
+                if (this.browser !== token) return;
+                if (img) {
+                    images.set(d.url, img);
+                    this.fillCard(card, this.thumbFromDraw(d, asset, img));
+                } else {
+                    this.markCardFailed(card,
+                        () => this.retryCard(d, card, asset, token, ctx, shell));
+                }
+                // 整件图要等这组都到齐才画得全。部分失败也照画，
+                // 有几层就合几层，比一片空白有用
+                if (--left > 0) return;
+                if (images.size > 0) {
+                    this.fillCard(wholeCard, this.thumbFromDrawList(draws, asset, images));
+                } else {
+                    this.markCardFailed(wholeCard, null);
+                }
+            };
+
+            if (draws.length === 0) {
+                // 一层都没取到（图层被 AllowTypes 之类全过滤）时退回官方预览图。
+                // 它也走同一套映射，自定义衣服同样有，总比一格"加载失败"有用
+                this.fillWithPreview(wholeCard, asset, token, shell);
+                return;
+            }
+            for (const { d, card } of layerCards) {
+                const h = this.loadImage(d.url, (img) => onOne(d, card, img));
+                this.trackLoader(token, shell, h);
+            }
+        }
+
+        /**
+         * 用官方预览图填卡片。
+         *
+         * 逐层渲染失败时的兜底：预览图路径规则简单（Preview/资产名.png），
+         * 且自定义资产插件也会为它登记映射，命中率比逐层贴图高。
+         */
+        fillWithPreview(card, asset, token, shell) {
+            const group = asset.DynamicGroupName || asset.Group?.Name;
+            const family = asset.Group?.Family;
+            if (!group || !family) {
+                this.markCardFailed(card, null);
+                return;
+            }
+            const url = `Assets/${family}/${group}/Preview/${asset.Name}.png`;
+            const h = this.loadImage(url, (img) => {
+                if (this.browser !== token) return;
+                if (!img) return this.markCardFailed(card, null);
+                const cv = document.createElement('canvas');
+                const tw = img.naturalWidth || img.width;
+                const th = img.naturalHeight || img.height;
+                cv.width = tw;
+                cv.height = th;
+                cv.getContext('2d').drawImage(img, 0, 0);
+                this.fillCard(card, cropToThumb(cv, { x: 0, y: 0, w: tw, h: th }, 132));
+            });
+            this.trackLoader(token, shell, h);
+        }
+
+        /**
+         * 登记一个在途加载句柄。
+         * 记在骨架上是为了释放该分组时能单独取消；同时记在面板上，
+         * 保证关闭面板一定能全部取消（骨架可能已经被丢掉）。
+         */
+        trackLoader(token, shell, handle) {
+            if (!handle) return;
+            if (shell) (shell.loaders ||= []).push(handle);
+            if (!token?.loaders) return;
+            token.loaders.push(handle);
+            // 反复滚动会不断新建句柄，不清理的话这个数组只增不减。
+            // 已结束的句柄没有取消的必要，攒够一批就筛一次
+            if (token.loaders.length > 400) {
+                token.loaders = token.loaders.filter(h => !h.done());
+            }
+        }
+
+        /**
+         * 重试单张缩略图（点"重试"时触发）。
+         *
+         * ctx 经参数传进来而不是存在 this 上：全部模式下每件衣服都会调一次
+         * renderAssetGroup，存字段会被后面的分组覆盖，重试就会画到别人的
+         * 整件图上。
+         *
+         * @param {{images: Map, redrawWhole: Function}} ctx - 所属分组的上下文
+         */
+        retryCard(d, card, asset, token, ctx, shell) {
+            if (this.browser !== token) return;
+            this.setCardPlaceholder(card, '…');
+            const h = this.loadImage(d.url, (img) => {
+                if (this.browser !== token) return;
+                if (!img) {
+                    this.markCardFailed(card,
+                        () => this.retryCard(d, card, asset, token, ctx, shell));
+                    return;
+                }
+                this.fillCard(card, this.thumbFromDraw(d, asset, img));
+                ctx?.images?.set(d.url, img);
+                ctx?.redrawWhole?.();
+            });
+            this.trackLoader(token, shell, h);
+        }
+
+        /** 卡片占位文字 */
+        setCardPlaceholder(card, text) {
+            const holder = card?.firstChild;
+            if (!holder) return;
+            holder.textContent = '';
+            const ph = document.createElement('span');
+            ph.textContent = text;
+            ph.style.cssText = 'color: #999; font-size: 12px; text-align: center;';
+            holder.appendChild(ph);
+        }
+
+        /**
+         * 标记加载失败，并给一个重试入口。
+         * 重试过后仍失败才是真的没图，这样"无贴图"不会误导。
+         */
+        markCardFailed(card, onRetry) {
+            const holder = card?.firstChild;
+            if (!holder) return;
+            holder.textContent = '';
+            const box = document.createElement('div');
+            box.style.cssText = 'text-align: center; color: #999; font-size: 12px;';
+            const t = document.createElement('div');
+            t.textContent = '加载失败';
+            box.appendChild(t);
+            if (onRetry) {
+                const b = document.createElement('button');
+                b.textContent = '重试';
+                b.style.cssText = `
+                    margin-top: 4px; padding: 1px 8px;
+                    border: 1px solid #888; background: #fff;
+                    cursor: pointer; font-size: 12px;
+                `;
+                b.onclick = (e) => { e.stopPropagation(); onRetry(); };
+                box.appendChild(b);
+            }
+            holder.appendChild(box);
+        }
+
+        /** 把渲染好的缩略图填进卡片的占位区 */
+        fillCard(card, canvas) {
+            const holder = card?.firstChild;
+            if (!holder) return;
+            holder.textContent = '';
+            if (canvas) {
+                // 必须逐项覆盖本体 CSS/Styles.css 里的全局 canvas 规则：
+                // 它给所有 canvas 设了 position:absolute + inset:0 + margin:auto
+                // + width:100%，不覆盖的话缩略图会被拽出网格、全叠到屏幕正中
+                canvas.style.cssText = `
+                    position: static; inset: auto; margin: 0;
+                    display: block;
+                    width: ${canvas.width}px; height: ${canvas.height}px;
+                    max-width: 100%; max-height: 100%;
+                `;
+                holder.appendChild(canvas);
+            } else {
+                const ph = document.createElement('span');
+                ph.textContent = '无贴图';
+                ph.style.cssText = 'color: #999;';
+                holder.appendChild(ph);
+            }
+        }
+
+        /** 某部位可用的衣服，当前穿着排第一 */
+        listGroupAssets(C, group) {
+            const list = Array.isArray(group.Asset) ? group.Asset : [];
+            const worn = w.InventoryGet?.(C, group.Name)?.Asset?.Name;
+            const out = list.filter(a => {
+                if (!a) return false;
+                if (a.Name === worn) return true;
+                // 未启用的衣服在本体的列表里也不出现（见 DialogInventoryAdd）
+                if (!a.Enable) return false;
+                return w.InventoryAvailable?.(C, a.Name, group.Name) !== false;
+            });
+            out.sort((a, b) => {
+                const ca = a.Name === worn ? 0 : 1;
+                const cb = b.Name === worn ? 0 : 1;
+                return (ca - cb) || String(a.Description || a.Name)
+                    .localeCompare(String(b.Description || b.Name));
+            });
+            return out;
+        }
+
+        /**
+         * 点了别的衣服：确认后换装。
+         *
+         * 换装会让本体的 ItemColorItem 指向旧物品，所以不能只换衣服 ——
+         * 必须退出当前调色，让窗口跟着新物品重新打开
+         */
+        requestBrowserSwap(asset, group, C) {
+            const name = asset.Description || asset.Name;
+            const gname = group.Description || group.Name;
+            const worn = w.InventoryGet?.(C, group.Name);
+            const cur = worn ? (worn.Asset?.Description || worn.Asset?.Name) : null;
+
+            const msg = cur
+                ? `把「${gname}」从「${cur}」换成「${name}」？`
+                : `给「${gname}」穿上「${name}」？`;
+            this.confirmDialog(msg, '更换', () => {
+                this.closeBrowser();
+                this.doBrowserSwap(asset, group);
+            });
+        }
+
+        /**
+         * 实际执行换装。
+         *
+         * 换掉的正是当前在调色的那件，ItemColorItem 会变成悬空引用，
+         * 所以先按本体的流程退出调色（save 传 true 保留已做的改动），
+         * 再换衣服。退出后本体回到物品选择界面，用户可再进新衣服的调色。
+         */
+        doBrowserSwap(asset, group) {
+            const C = ItemColorCharacter;
+            if (!C || typeof w.InventoryWear !== 'function') return;
+            const isCurrentSlot = group.Name === ItemColorItem?.Asset?.Group?.Name;
+            const label = asset.Description || asset.Name;
+
+            try {
+                if (isCurrentSlot) w.ItemColorFireExit?.(true);
+                w.InventoryWear(C, asset.Name, group.Name);
+                if (typeof w.CharacterRefresh === 'function') w.CharacterRefresh(C, true, false);
+                if (C.IsPlayer?.() && typeof w.ChatRoomCharacterUpdate === 'function') {
+                    w.ChatRoomCharacterUpdate(C);
+                }
+                console.log(`[LianDressOptimization] 已换成 ${label}`);
+            } catch (e) {
+                console.error('[LianDressOptimization] 换装失败', e);
+            }
+        }
+
+        /** 选中"物品整体"那一行 */
+        focusItemLevel() {
+            const root = this.treeNodes.find(n => n.type === 'root');
+            if (!root) return;
+            this.selectedNodeId = root.id;
+            this.expandedNodes.add(root.id);
+            this.expandedLayeringNodes.add(root.id);
+            this.updateWindow();
         }
 
         /** 灰色小字提示 */
@@ -5636,6 +7059,7 @@
             }
             this.colorPickerPanel.hide();
             this.closeToolPanel();
+            this.closeBrowser();
             this.gizmo.endDrag();
             this.hideHighlightBox();
         }
@@ -5657,6 +7081,7 @@
             }
             this.colorPickerPanel.hide();
             this.closeToolPanel();
+            this.closeBrowser();
             clearTimeout(this.toastTimer);
             this.toastEl = null;
             this.gizmo.reset();
@@ -7026,6 +8451,21 @@
                 ?? bcGlobal("DrawCacheImage")?.get(url);
             // 宽高为 1 是还没加载完的占位纹理
             return (img && (img.naturalWidth || img.width) > 1) ? img : null;
+        }
+
+        /**
+         * 取缓存里的 Image 对象本身，不管加载成功与否。
+         *
+         * 用途是读它的 src —— 那是被自定义资产插件的钩子改写过的真实地址。
+         * 重试时沿用它，才不会又打回官方服务器上并不存在的路径。
+         *
+         * @param {string} url
+         * @returns {HTMLImageElement|null}
+         */
+        getImageRaw(url) {
+            return bcGlobal("GLDrawImageCache")?.get(url)
+                ?? bcGlobal("DrawCacheImage")?.get(url)
+                ?? null;
         }
 
         /**
