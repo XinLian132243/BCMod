@@ -6574,20 +6574,28 @@
                 let area = 0;
                 let opaque = false;
                 for (const cap of list) {
+                    const tex = textureSize(cap.url);
+                    if (!tex) continue;
                     const alpha = getAlphaData(cap.url, pickImage(cap.url));
-                    const b = alpha?.bounds;
                     // 拿不到 alpha 就用整幅贴图的范围兜底
-                    const size = alpha ? null : textureSize(cap.url);
-                    const rect = b
-                        ? { x: cap.x + b.x, y: cap.y + b.y, w: b.w, h: b.h }
-                        : (size ? { x: cap.x, y: cap.y, w: size.width, h: size.height } : null);
-                    if (!rect) continue;
+                    const b = alpha?.bounds ?? { x: 0, y: 0, w: tex.width, h: tex.height };
+                    // 变换支点是整幅贴图中心，不是内容框中心
+                    const size = { tw: tex.width, th: tex.height };
 
-                    area += rect.w * rect.h;
-                    if (canvasPt[0] < rect.x || canvasPt[0] >= rect.x + rect.w) continue;
-                    if (canvasPt[1] < rect.y || canvasPt[1] >= rect.y + rect.h) continue;
+                    const t = capTransform(cap.opts);
+                    // 把光标逆变换回贴图空间，再和内容框比。反过来（变换内容框）
+                    // 遇到旋转就得做四边形判定，逆变换只需一次矩阵求逆
+                    const local = t.plain
+                        ? [canvasPt[0] - cap.x, canvasPt[1] - cap.y]
+                        : canvasToCap(canvasPt, cap, size, t);
+
+                    // 面积按变换后算，排序才反映画面上的实际大小
+                    area += b.w * b.h * Math.abs(t.sx * t.sy);
+                    if (!local) continue;
+                    if (local[0] < b.x || local[0] >= b.x + b.w) continue;
+                    if (local[1] < b.y || local[1] >= b.y + b.h) continue;
                     // 包围盒之内再查像素，衣服大多不规则，矩形会把空隙也算进去
-                    if (isOpaqueAt(alpha, canvasPt[0] - cap.x, canvasPt[1] - cap.y)) {
+                    if (isOpaqueAt(alpha, local[0], local[1])) {
                         opaque = true;
                     }
                 }
@@ -6724,6 +6732,67 @@
         }
     }
 
+    /**
+     * 从绘制选项里取出该图层的自带变换。
+     *
+     * 头发、部分道具的资产定义里就带着 ScaleX/Y 或 Rotation，CommonDraw 把
+     * 合成结果塞进 opts 一路传到渲染末端。忽略它们的话，拾取判定和描边都会
+     * 按未变换的原始贴图算，缩放过的头发轮廓明显对不上。
+     *
+     * @param {Object} opts
+     * @returns {{sx: number, sy: number, rot: number, plain: boolean}}
+     */
+    function capTransform(opts) {
+        const num = (v, dft) => (typeof v === "number" && !Number.isNaN(v)) ? v : dft;
+        const sx = num(opts?.ScaleX, 1);
+        const sy = num(opts?.ScaleY, 1);
+        const rot = num(opts?.Rotation, 0);
+        // 绝大多数图层没有变换，标记出来好走快路径
+        return { sx, sy, rot, plain: sx === 1 && sy === 1 && rot === 0 };
+    }
+
+    /**
+     * 把贴图上的一点按自带变换映射到角色画布坐标。
+     *
+     * 与 GLDrawImage 的矩阵链一致：支点是整幅贴图中心，先缩放再旋转。
+     * cap.x/y 已经是剔除过位移的原点（见 AppearancePicker.capture），
+     * 所以这里不再处理平移。
+     *
+     * @param {number} ux - 贴图局部 X
+     * @param {number} uy - 贴图局部 Y
+     * @param {{x: number, y: number}} cap
+     * @param {{tw: number, th: number}} size - 整幅贴图尺寸
+     * @param {{sx: number, sy: number, rot: number}} t
+     * @returns {number[]}
+     */
+    function capToCanvas(ux, uy, cap, size, t) {
+        const px = cap.x + size.tw / 2;
+        const py = cap.y + size.th / 2;
+        const dx = (ux - size.tw / 2) * t.sx;
+        const dy = (uy - size.th / 2) * t.sy;
+        if (!t.rot) return [px + dx, py + dy];
+        const a = t.rot * Math.PI / 180;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        return [px + dx * cos - dy * sin, py + dx * sin + dy * cos];
+    }
+
+    /**
+     * capToCanvas 的逆变换：角色画布坐标 -> 贴图局部像素坐标。
+     * @returns {number[]|null} 缩放为 0 时无法求逆
+     */
+    function canvasToCap([x, y], cap, size, t) {
+        if (!t.sx || !t.sy) return null;
+        const px = cap.x + size.tw / 2;
+        const py = cap.y + size.th / 2;
+        let dx = x - px, dy = y - py;
+        if (t.rot) {
+            const a = -t.rot * Math.PI / 180;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            [dx, dy] = [dx * cos - dy * sin, dx * sin + dy * cos];
+        }
+        return [dx / t.sx + size.tw / 2, dy / t.sy + size.th / 2];
+    }
+
     /** 取贴图 Image，两条渲染路径的缓存都查。未加载完的占位纹理返回 null */
     function pickImage(url) {
         const img = bcGlobal("GLDrawImageCache")?.get(url)
@@ -6812,11 +6881,16 @@
             if (!img) continue;
             const tw = img.naturalWidth || img.width;
             const th = img.naturalHeight || img.height;
-            items.push({ cap, img, tw, th });
-            const [x1, y1] = canvasToScreenPoint([cap.x, cap.y], map);
-            const [x2, y2] = canvasToScreenPoint([cap.x + tw, cap.y + th], map);
-            minX = Math.min(minX, x1); maxX = Math.max(maxX, x2);
-            minY = Math.min(minY, y1); maxY = Math.max(maxY, y2);
+            const t = capTransform(cap.opts);
+            items.push({ cap, img, tw, th, t });
+            // 变换后的四角都要算进去：旋转过的图层轴对齐范围会比原始的大
+            const size = { tw, th };
+            for (const [ux, uy] of [[0, 0], [tw, 0], [tw, th], [0, th]]) {
+                const [cx, cy] = capToCanvas(ux, uy, cap, size, t);
+                const [px, py] = canvasToScreenPoint([cx, cy], map);
+                minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+                minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+            }
         }
         if (items.length === 0 || !Number.isFinite(minX)) return;
 
@@ -6831,14 +6905,20 @@
         if (!off) return;
         const octx = off.ctx;
 
-        // 换装界面的图层没有额外变换，直接按预览缩放贴图
+        // 以支点（整幅贴图中心）为原点贴图，才能套上图层自带的缩放与旋转。
+        // 头发一类资产在定义里就带 ScaleX/Y，忽略的话轮廓明显偏出去。
+        // 矩阵顺序与 gizmo 的 blitLayer 一致：预览缩放 -> 旋转 -> 图层缩放
         const blit = (dx, dy) => {
             for (const it of items) {
-                const [sx, sy] = canvasToScreenPoint([it.cap.x, it.cap.y], map);
+                const { cap, t, tw, th } = it;
+                const [cx, cy] = canvasToScreenPoint(
+                    [cap.x + tw / 2, cap.y + th / 2], map);
                 octx.save();
-                octx.translate(sx - bx + dx, sy - by + dy);
+                octx.translate(cx - bx + dx, cy - by + dy);
                 octx.scale(map.sx, map.sy);
-                octx.drawImage(it.img, 0, 0);
+                if (t.rot) octx.rotate(t.rot * Math.PI / 180);
+                if (t.sx !== 1 || t.sy !== 1) octx.scale(t.sx, t.sy);
+                octx.drawImage(it.img, -tw / 2, -th / 2);
                 octx.restore();
             }
         };
