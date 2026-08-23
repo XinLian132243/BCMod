@@ -2316,6 +2316,25 @@
         }
 
         /**
+         * OverridePriority 里图层的键名。
+         *
+         * 注意与 getTransformLayerName 不同：本体这两类属性的键约定不一样。
+         * 变换在 CommonDraw.getTransform 里按 `layer.Name ?? asset.Name` 读，
+         * 而优先级在 CharacterAppearanceSortLayers 里按 `layer.Name ?? ""` 读。
+         *
+         * 无名图层若跟着变换那套用资产名，写进去的值本体永远查不到，
+         * 表现就是子层级怎么调都不生效、只有改根节点（走 number 分支、
+         * 不看键名）才有反应。本体自己的 Layering 界面也踩了这个坑，
+         * 但这里以能生效为准，对齐读取侧。
+         *
+         * @param {Object} layer - 图层对象
+         * @returns {string}
+         */
+        getPriorityLayerName(layer) {
+            return layer.Name ?? "";
+        }
+
+        /**
          * 该物品是否允许图层变换。规则对齐本体 Layering._GetTabContents：
          * 非 AllowNone 的组（Pussy 除外）与 DynamicAfterDraw 资产禁止变换
          * @returns {{allowed: boolean, reason: string}}
@@ -2538,16 +2557,21 @@
                 this.stopLayerHighlight();
             }
             
-            const asset = ItemColorItem.Asset;
-            const layerName = layer.Name ?? asset.Name;
-            
+            const layerName = this.getPriorityLayerName(layer);
+
             // 初始化 OverridePriority 对象（如果不存在或不是对象）
             if (typeof ItemColorItem.Property.OverridePriority !== 'object' || ItemColorItem.Property.OverridePriority === null) {
                 ItemColorItem.Property.OverridePriority = {};
             }
             
             const defaultPriority = layer.Priority ?? 0;
-            
+
+            // 清掉旧版按资产名写入的无效键，否则它会一直挂在存档里占位。
+            // 只对无名图层做：有名字的图层两套键名本来就一致
+            if (layerName === "") {
+                delete ItemColorItem.Property.OverridePriority[ItemColorItem.Asset?.Name];
+            }
+
             // 如果优先级等于默认值，删除覆盖
             if (priority === defaultPriority) {
                 delete ItemColorItem.Property.OverridePriority[layerName];
@@ -2608,12 +2632,15 @@
         resetLayerPriority(node, layerIndex, layer) {
             if (!ItemColorItem || !ItemColorItem.Property) return;
             
-            const asset = ItemColorItem.Asset;
-            const layerName = layer.Name ?? asset.Name;
-            
+            const layerName = this.getPriorityLayerName(layer);
+
             // 如果 OverridePriority 是对象，删除该图层的覆盖
             if (typeof ItemColorItem.Property.OverridePriority === 'object' && ItemColorItem.Property.OverridePriority !== null) {
                 delete ItemColorItem.Property.OverridePriority[layerName];
+                // 顺带清掉旧版按资产名写入的无效键
+                if (layerName === "") {
+                    delete ItemColorItem.Property.OverridePriority[ItemColorItem.Asset?.Name];
+                }
                 // 如果对象为空，设置为 undefined
                 if (Object.keys(ItemColorItem.Property.OverridePriority).length === 0) {
                     ItemColorItem.Property.OverridePriority = undefined;
@@ -3614,7 +3641,7 @@
                             const getLayerPriority = () => {
                                 if (!ItemColorItem || !ItemColorItem.Property) return layer.Priority ?? 0;
                                 if (typeof overridePriority === 'object' && overridePriority !== null) {
-                                    const layerName = layer.Name ?? asset.Name;
+                                    const layerName = this.getPriorityLayerName(layer);
                                     return overridePriority[layerName] ?? layer.Priority ?? 0;
                                 }
                                 return layer.Priority ?? 0;
@@ -3644,7 +3671,7 @@
                                     // 将OverridePriority从整数转换为对象，并设置当前图层的优先级
                                     if (!ItemColorItem || !ItemColorItem.Property) return;
                                     ItemColorItem.Property.OverridePriority = {};
-                                    const layerName = layer.Name ?? asset.Name;
+                                    const layerName = this.getPriorityLayerName(layer);
                                     ItemColorItem.Property.OverridePriority[layerName] = defaultPriority;
                                     if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
                                         CharacterLoadCanvas(ItemColorCharacter);
@@ -6361,6 +6388,21 @@
             return !!(typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection);
         }
 
+        /**
+         * 是否收集绘制数据。比 isEnabled 宽：只要还在换装界面就一直收。
+         *
+         * 不能跟着 isEnabled 走。角色贴图只在 CharacterLoadCanvas 时重画一次，
+         * 之后各帧都是直接贴那张离屏 canvas，不再走 GLDrawImage。而进出单独
+         * 编辑（Color）界面时的那次重绘，恰好发生在 mode 还是 "Color" 的时候
+         * （见 ItemColorExitClick：先 CharacterLoadCanvas，后 FireExit），
+         * 若那时不收集，退回物品选择界面后 captures 就一直是空的，
+         * 拾取整个失效，得等下次换衣服才恢复。
+         */
+        isCapturing() {
+            if (typeof CurrentScreen === 'undefined' || CurrentScreen !== 'Appearance') return false;
+            return !!(typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection);
+        }
+
         /** 当前是否处于物品选择模式 */
         inClothMode() {
             return typeof CharacterAppearanceMode !== 'undefined' && CharacterAppearanceMode === "Cloth";
@@ -6841,7 +6883,7 @@
     // 记录全身图的绘制参数
     mod.hookFunction("DrawCharacter", 0, (args, next) => {
         const [C, x, y, zoom, heightResize] = args;
-        if (appearancePicker.isEnabled() && C && C === CharacterAppearanceSelection) {
+        if (appearancePicker.isCapturing() && C && C === CharacterAppearanceSelection) {
             appearancePicker.captureDraw(x, y, zoom, heightResize);
         }
         return next(args);
@@ -6852,7 +6894,7 @@
         if (typeof w[fn] !== "function") continue;
         mod.hookFunction(fn, 1, (args, next) => {
             const [src, , x, y, opts] = args;
-            if (opts && appearancePicker.isEnabled()) {
+            if (opts && appearancePicker.isCapturing()) {
                 const asset = matchAppearanceAsset(src);
                 if (asset) appearancePicker.capture(asset, src, x, y, opts);
             }
@@ -6863,8 +6905,10 @@
     // 在换装界面绘制完成后叠画轮廓
     mod.hookFunction("AppearanceRun", 0, (args, next) => {
         const result = next(args);
+        // 提交与门控分开：Color 模式下也要把捕获落地，
+        // 否则那批数据卡在 frame 里，退回来时 captures 还是空的
+        if (appearancePicker.isCapturing()) appearancePicker.commit();
         if (appearancePicker.isEnabled()) {
-            appearancePicker.commit();
             // 每帧按当前指针位置重算悬浮，而不是只在 CommonMouseMove 时更新。
             // 点击跳转后捕获全被重建、悬浮也清了，若只等鼠标移动，
             // 停在原处就一直没有高亮，得先动一下才回来
