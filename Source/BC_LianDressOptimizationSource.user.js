@@ -48,6 +48,24 @@
         }
     }
 
+    /**
+     * 当前正在被 CharacterAppearanceBuildCanvas 重建贴图的角色。
+     *
+     * 渲染末端（GLDrawImage / DrawImageCanvas）只有 URL，认不出是给谁画的。
+     * 而换装界面的物品选择模式会给预览网格里每件衣服建一个临时角色
+     * （AppearancePreviewBuild → CharacterLoadSimple + CharacterRefresh），
+     * 那些角色是裸模、姿势与真身不同，画出的 URL 带着别的 pose 段。
+     * 若不加区分，它们会覆盖真身的捕获，描边就成了别的姿势的轮廓。
+     *
+     * @type {Object|null}
+     */
+    let drawingCharacter = null;
+
+    /** 本次绘制是否属于指定角色。拿不到追踪信息时放行，避免误伤 */
+    function isDrawingFor(C) {
+        return drawingCharacter === null || drawingCharacter === C;
+    }
+
     // alpha 紧包围盒：扫描贴图剔除全透明边缘，得到贴合内容的框。
     // 实测衣物贴图内容只占全幅的 1%~8%（同组共用 500x1000 画布，其余是留白），
     // 不剔除的话框大得几乎等于整个角色轮廓，句柄也离图案很远。
@@ -6033,6 +6051,9 @@
      */
     function matchDrawLayerIndex(url) {
         if (!gizmo.isCapturing() || typeof url !== "string") return -1;
+        // 别把其他角色的贴图收进来：换装界面的预览网格会用临时裸模
+        // 重画同名资产，姿势不同，包围框会跟着错位
+        if (!isDrawingFor(ItemColorCharacter)) return -1;
         const asset = ItemColorItem?.Asset;
         const layers = asset?.Layer;
         if (!Array.isArray(layers)) return -1;
@@ -6894,7 +6915,10 @@
         if (typeof w[fn] !== "function") continue;
         mod.hookFunction(fn, 1, (args, next) => {
             const [src, , x, y, opts] = args;
-            if (opts && appearancePicker.isCapturing()) {
+            // 只收真身的贴图：物品选择模式下预览网格的临时角色也走这条路，
+            // 它们是裸模、姿势不同，收进来会让描边错成别的姿势
+            if (opts && appearancePicker.isCapturing()
+                && isDrawingFor(CharacterAppearanceSelection)) {
                 const asset = matchAppearanceAsset(src);
                 if (asset) appearancePicker.capture(asset, src, x, y, opts);
             }
@@ -6946,6 +6970,18 @@
     mod.hookFunction("CharacterLoadCanvas", 0, (args, next) => {
         if (args[0] === CharacterAppearanceSelection) appearancePicker.invalidate();
         return next(args);
+    });
+
+    // 标记贴图正在为谁重建，供两套捕获钩子甄别。
+    // 可能嵌套（预览角色的构建发生在其他流程里），所以保存并恢复上一层的值
+    mod.hookFunction("CharacterAppearanceBuildCanvas", 0, (args, next) => {
+        const prev = drawingCharacter;
+        drawingCharacter = args[0] ?? null;
+        try {
+            return next(args);
+        } finally {
+            drawingCharacter = prev;
+        }
     });
 
     console.log("[LianDressOptimization] 加载成功");
