@@ -273,6 +273,115 @@
         return alpha.mask[my * alpha.mw + mx] === 1;
     }
 
+    // =========================== 颜色换算工具 ===========================
+    // 批量改色要在 HSL 空间做偏移，本体与现有代码都只有 hex/rgb，这里补齐。
+
+    /** hex 转 rgb，接受 #RGB 与 #RRGGBB。非法输入返回 null */
+    function parseHex(hex) {
+        if (typeof hex !== "string") return null;
+        let s = hex.trim().replace(/^#/, "");
+        if (/^[0-9a-f]{3}$/i.test(s)) s = s.split("").map(c => c + c).join("");
+        if (!/^[0-9a-f]{6}$/i.test(s)) return null;
+        return {
+            r: parseInt(s.slice(0, 2), 16),
+            g: parseInt(s.slice(2, 4), 16),
+            b: parseInt(s.slice(4, 6), 16)
+        };
+    }
+
+    /** rgb 转 #RRGGBB，分量自动夹到 0-255 并取整 */
+    function toHex({ r, g, b }) {
+        const p = (v) => Math.max(0, Math.min(255, Math.round(v)))
+            .toString(16).padStart(2, "0");
+        return `#${p(r)}${p(g)}${p(b)}`;
+    }
+
+    /**
+     * rgb(0-255) 转 hsl。h 为 0-360，s / l 为 0-1。
+     * 灰色（max === min）的色相无意义，统一取 0。
+     */
+    function rgbToHsl({ r, g, b }) {
+        const rr = r / 255, gg = g / 255, bb = b / 255;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const l = (max + min) / 2;
+        const d = max - min;
+        if (d === 0) return { h: 0, s: 0, l };
+        const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        let h;
+        if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0));
+        else if (max === gg) h = (bb - rr) / d + 2;
+        else h = (rr - gg) / d + 4;
+        return { h: h * 60, s, l };
+    }
+
+    /** hsl 转 rgb(0-255)。h 会先归一到 0-360 */
+    function hslToRgb({ h, s, l }) {
+        const hh = ((h % 360) + 360) % 360 / 360;
+        if (s === 0) {
+            const v = l * 255;
+            return { r: v, g: v, b: v };
+        }
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        const conv = (t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        return {
+            r: conv(hh + 1 / 3) * 255,
+            g: conv(hh) * 255,
+            b: conv(hh - 1 / 3) * 255
+        };
+    }
+
+    /**
+     * 在 HSL 空间对一个颜色做相对偏移。
+     *
+     * 色相是环形的，绕圈即可；饱和度与亮度是有界量，超出就夹住。
+     * 纯灰色（s === 0）偏移色相不会有任何变化，这符合直觉：
+     * 灰色没有色相可转，想让它上色应该用染色功能。
+     *
+     * @param {string} hex - 原色
+     * @param {{h: number, s: number, l: number}} d - 偏移量，h 单位为度，s/l 为 -1~1
+     * @returns {string} 偏移后的 hex，原色非法时原样返回
+     */
+    function shiftHsl(hex, d) {
+        const rgb = parseHex(hex);
+        if (!rgb) return hex;
+        const c = rgbToHsl(rgb);
+        return toHex(hslToRgb({
+            h: c.h + (d.h || 0),
+            s: Math.max(0, Math.min(1, c.s + (d.s || 0))),
+            l: Math.max(0, Math.min(1, c.l + (d.l || 0)))
+        }));
+    }
+
+    /**
+     * 把一个颜色朝目标色插值。
+     *
+     * 在 RGB 空间做线性插值：HSL 插值遇到色相环会绕远路（红到青会
+     * 途经黄绿或蓝紫，取决于方向），RGB 直线过渡更符合"染色"的预期。
+     *
+     * @param {string} hex - 原色
+     * @param {string} target - 目标色
+     * @param {number} ratio - 0~1，0 为不变，1 为完全变成目标色
+     * @returns {string}
+     */
+    function mixHex(hex, target, ratio) {
+        const a = parseHex(hex), b = parseHex(target);
+        if (!a || !b) return hex;
+        const t = Math.max(0, Math.min(1, ratio));
+        return toHex({
+            r: a.r + (b.r - a.r) * t,
+            g: a.g + (b.g - a.g) * t,
+            b: a.b + (b.b - a.b) * t
+        });
+    }
+
     /**
      * 查某个 AssetLayer 在角色身上的层叠次序。
      *
@@ -433,6 +542,11 @@
     const HIGHLIGHT_DURATION = 200;
     // 高亮框的时长。比闪烁久一些，闪烁过去后还能再看清一会儿范围
     const HIGHLIGHT_BOX_DURATION = 500;
+
+    // 句柄操作模式下，切换到其他图层要求双击确认的时间窗（毫秒）。
+    // 单击就切走太容易误触：句柄区域之外的空白处很宽，稍微点偏一下
+    // 正在调的那个变换目标就没了
+    const GIZMO_SWITCH_DBLCLICK_MS = 400;
 
     // 包围框句柄的屏幕半径（主画布坐标，2000x1000 空间）
     const GIZMO_HANDLE_R = 9;
@@ -1286,7 +1400,9 @@
                 showThumbnailEnabled: dressOptimizationManager.showThumbnailEnabled,
                 itemHighlightEnabled: dressOptimizationManager.itemHighlightEnabled
             })
-        }
+        },
+        // 诊断拷贝面板为什么没列出某个槽位。需先进入调色界面
+        diagnoseCopy: (wide) => itemColorAdjustmentWindow.diagnoseCopyTargets(wide)
     };
 
     // =======================================================================================
@@ -1401,7 +1517,9 @@
                 border: 2px solid #000;
                 border-radius: 5px;
                 padding: 15px;
-                z-index: 10001;
+                /* 取色器是各处共用的顶层弹层，必须高于主窗口(10000)
+                   与工具栏面板(10002)，否则从工具面板里取色会被压在下面 */
+                z-index: 10005;
                 box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
                 display: flex;
                 flex-direction: column;
@@ -1822,6 +1940,12 @@
             this.expandedLayeringNodes = new Set(); // 展开层级设置的节点ID集合
             this.selectedNodeId = null; // 当前选中的节点ID
             this.colorPickerPanel = new ColorPickerPanel(); // 颜色选择器面板实例
+            this.toolPanel = null;      // 当前打开的工具栏弹出面板
+            this.toolPanelClose = null; // 其收起函数
+            this.toastEl = null;        // 当前的短暂提示
+            this.toastTimer = null;
+            // 句柄操作模式下待确认的切换目标 { layerIndex, at }
+            this.switchConfirm = null;
             this.hoveredNodeId = null; // 当前悬浮的节点ID
             this.hoveredLayeringNodeId = null; // 当前悬浮的层级节点ID
             this.highlightTimer = null; // 透明度闪烁定时器
@@ -2174,6 +2298,35 @@
             };
             walk(node);
             return Array.from(out);
+        }
+
+        /**
+         * 收集节点（含所有后代）覆盖的 ColorIndex，去重。
+         *
+         * 与 collectLayerIndices 分开：颜色的寻址键是 ColorIndex，
+         * 多个物理图层可以共享同一个（CopyLayerColor），数量也与
+         * 图层数不等。递归而不是直接读 node.colorIndices，因为
+         * 根节点只在资产有 WholeItem 颜色组时才填这个字段。
+         *
+         * @param {Object} node - 节点对象
+         * @returns {number[]} 升序的 ColorIndex 数组
+         */
+        collectColorIndices(node) {
+            const out = new Set();
+            const walk = (n) => {
+                if (!n) return;
+                if (typeof n.colorIndex === "number") out.add(n.colorIndex);
+                if (Array.isArray(n.colorIndices)) n.colorIndices.forEach(i => out.add(i));
+                if (Array.isArray(n.children)) n.children.forEach(walk);
+            };
+            walk(node);
+            return Array.from(out).sort((a, b) => a - b);
+        }
+
+        /** 当前物品全部可着色槽位的 ColorIndex。工具栏的改色作用于整件 */
+        allColorIndices() {
+            const count = ItemColorState?.colors?.length ?? 0;
+            return Array.from({ length: count }, (_, i) => i);
         }
 
         /**
@@ -2773,9 +2926,21 @@
             `;
             const title = document.createElement('span');
             title.id = 'lian-item-color-adjustment-title';
-            title.style.cssText = 'font-weight: bold; font-size: 18px; flex: 1;';
+            // min-width: 0 + 省略号：标题过长时截断而不是把工具栏推离中心
+            title.style.cssText = `
+                font-weight: bold; font-size: 18px;
+                flex: 1; min-width: 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            `;
             // 标题会在updateWindow中更新
             header.appendChild(title);
+
+            header.appendChild(this.buildToolbar());
+
+            // 标题与关闭按钮各占一份等宽弹性空间，工具栏才会落在标题栏正中，
+            // 而不是被挤到右边贴着关闭按钮
+            const tail = document.createElement('div');
+            tail.style.cssText = 'flex: 1; display: flex; justify-content: flex-end;';
 
             const closeBtn = document.createElement('button');
             closeBtn.textContent = '关闭';
@@ -2791,7 +2956,8 @@
                 e.stopPropagation();
                 this.hide();
             };
-            header.appendChild(closeBtn);
+            tail.appendChild(closeBtn);
+            header.appendChild(tail);
 
             this.windowElement.appendChild(header);
 
@@ -2824,6 +2990,865 @@
             document.body.appendChild(this.windowElement);
         }
 
+        /**
+         * 标题栏上的工具栏：整件级别的批量操作入口。
+         * 用 emoji 当图标，省去外部图标依赖，配 title 说明用途。
+         * @returns {HTMLElement}
+         */
+        buildToolbar() {
+            const bar = document.createElement('div');
+            bar.style.cssText = `display: flex; align-items: center; gap: 6px; flex-shrink: 0;`;
+            const tools = [
+                { icon: '🎨', title: '改色：统一调整色相/饱和度/亮度，或整体染色', open: (btn) => this.showRecolorPanel(btn) },
+                { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) }
+            ];
+            for (const tool of tools) {
+                const btn = document.createElement('button');
+                btn.textContent = tool.icon;
+                btn.title = tool.title;
+                btn.style.cssText = `
+                    width: 30px; height: 26px;
+                    background: #fff; border: 1px solid #000;
+                    cursor: pointer; font-size: 15px;
+                    line-height: 1; padding: 0;
+                `;
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    tool.open(btn);
+                };
+                bar.appendChild(btn);
+            }
+            return bar;
+        }
+
+        /**
+         * 工具栏弹出面板的通用外壳：定位、标题、关闭、点击外部收起。
+         *
+         * 不复用 ColorPickerPanel —— 那个是专用于选单色的，
+         * 这里要放滑条与下拉，结构差别大。但定位策略沿用它的思路：
+         * 按钮下方优先，右侧或下方溢出就翻转。
+         *
+         * @param {HTMLElement} anchor - 触发按钮，作为定位基准
+         * @param {string} titleText
+         * @param {Function} onClose - 面板收起时调用（用于回滚未确认的改动）
+         * @returns {{panel: HTMLElement, body: HTMLElement, close: Function}}
+         */
+        openToolPanel(anchor, titleText, onClose) {
+            this.closeToolPanel();
+
+            const W = 300;
+            const rect = anchor.getBoundingClientRect();
+            let x = Math.min(rect.left, window.innerWidth - W - 10);
+            if (x < 10) x = 10;
+
+            const panel = document.createElement('div');
+            panel.style.cssText = `
+                position: fixed;
+                left: ${x}px; top: ${rect.bottom + 5}px;
+                width: ${W}px;
+                background: #fff; border: 2px solid #000; border-radius: 5px;
+                padding: 12px; z-index: 10002;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+                display: flex; flex-direction: column; gap: 10px;
+                font-size: ${UI.fontSm}px;
+            `;
+
+            const head = document.createElement('div');
+            head.style.cssText = 'display: flex; align-items: center; justify-content: space-between;';
+            const t = document.createElement('span');
+            t.textContent = titleText;
+            t.style.cssText = `font-weight: bold; font-size: ${UI.fontLg}px;`;
+            head.appendChild(t);
+
+            const x2 = document.createElement('button');
+            x2.textContent = '✕';
+            x2.style.cssText = 'border: 1px solid #000; background: #fff; cursor: pointer; width: 22px; height: 22px; line-height: 1; padding: 0;';
+            head.appendChild(x2);
+            panel.appendChild(head);
+
+            const body = document.createElement('div');
+            body.style.cssText = 'display: flex; flex-direction: column; gap: 10px;';
+            panel.appendChild(body);
+
+            // 面板浮在 MainCanvas 上，任何漏下去的点击都会被本体的
+            // AppearanceClick 当成画布点击处理（Color 模式下即回滚退出）
+            panel.onclick = (e) => e.stopPropagation();
+            panel.onmousedown = (e) => e.stopPropagation();
+
+            document.body.appendChild(panel);
+
+            const close = () => {
+                document.removeEventListener('mousedown', outside, true);
+                this.colorPickerPanel.hide();
+                panel.remove();
+                if (this.toolPanel === panel) this.toolPanel = null;
+                if (onClose) onClose();
+            };
+            x2.onclick = (e) => { e.stopPropagation(); close(); };
+
+            // 点击面板与触发按钮之外的地方收起。用 mousedown 而不是 click，
+            // 避免滑条拖到面板外松手时被误判成外部点击
+            const outside = (e) => {
+                if (panel.contains(e.target) || anchor.contains(e.target)) return;
+                // 颜色选择器是挂在 body 上的独立浮层，点它不算点到外面，
+                // 否则一开始取色就把整个工具面板关掉了
+                const picker = this.colorPickerPanel?.panelElement;
+                if (picker && picker.contains(e.target)) return;
+                close();
+            };
+            document.addEventListener('mousedown', outside, true);
+
+            // 超出下边界就翻到按钮上方
+            const h = panel.getBoundingClientRect().height;
+            if (rect.bottom + 5 + h > window.innerHeight - 10) {
+                panel.style.top = `${Math.max(10, rect.top - h - 5)}px`;
+            }
+
+            this.toolPanel = panel;
+            this.toolPanelClose = close;
+            return { panel, body, close };
+        }
+
+        /** 收起当前工具面板（若有） */
+        closeToolPanel() {
+            if (this.toolPanelClose) {
+                const fn = this.toolPanelClose;
+                this.toolPanelClose = null;
+                fn();
+            }
+        }
+
+        /**
+         * 按 ColorIndex 直接写颜色，同时同步到 Item.Color。
+         *
+         * Item.Color 在本体里可能是字符串（全部同色时被压缩过），
+         * 这时要先展开成数组，否则按下标写入会变成改字符串下标（无效）。
+         *
+         * @param {number} colorIndex
+         * @param {string} hex
+         */
+        writeColorAt(colorIndex, hex) {
+            if (!ItemColorState || !ItemColorItem) return;
+            ItemColorState.colors[colorIndex] = hex;
+            if (!Array.isArray(ItemColorItem.Color)) {
+                const n = ItemColorState.colors.length;
+                const base = typeof ItemColorItem.Color === "string" ? ItemColorItem.Color : "Default";
+                ItemColorItem.Color = Array.from({ length: n }, () => base);
+            }
+            ItemColorItem.Color[colorIndex] = hex;
+        }
+
+        /** 重绘预览角色 */
+        refreshPreview() {
+            if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
+                CharacterLoadCanvas(ItemColorCharacter);
+            }
+        }
+
+        /**
+         * 取当前整件的颜色快照。
+         *
+         * "Default" 这类非 hex 的值要解析成实际颜色才能参与运算，
+         * 交给本体的 defaultColors 兜底；仍拿不到就当纯白。
+         *
+         * @returns {Array<{index: number, hex: string, raw: string}>}
+         */
+        snapshotColors() {
+            const out = [];
+            for (const i of this.allColorIndices()) {
+                const raw = ItemColorState.colors[i];
+                let hex = parseHex(raw) ? raw : null;
+                if (!hex) {
+                    const def = ItemColorState.defaultColors?.[i];
+                    hex = parseHex(def) ? def : "#FFFFFF";
+                }
+                out.push({ index: i, hex, raw });
+            }
+            return out;
+        }
+
+        /**
+         * 改色面板：HSL 相对偏移与整体染色。
+         *
+         * 两个功能共用一份基线快照。偏移是相对于打开面板那一刻的颜色，
+         * 而不是相对上一次拖动的结果，否则连续拖动会累积漂移，
+         * 也没法回到原点。取消则整份还原。
+         *
+         * @param {HTMLElement} anchor
+         */
+        showRecolorPanel(anchor) {
+            if (!ItemColorState || !ItemColorItem) return;
+
+            const base = this.snapshotColors();
+            if (base.length === 0) {
+                this.openToolPanel(anchor, '改色', null).body
+                    .appendChild(this.hintText('这件衣服没有可调整的颜色'));
+                return;
+            }
+
+            let committed = false;
+            const revert = () => {
+                if (committed) return;
+                for (const c of base) this.writeColorAt(c.index, c.raw);
+                this.refreshPreview();
+                this.updateWindow();
+            };
+
+            const { body, close } = this.openToolPanel(anchor, '改色', revert);
+            const state = { h: 0, s: 0, l: 0, tint: '#FF0000', ratio: 0 };
+
+            // 两种模式互斥：染色是"朝目标色靠"，HSL 是"在原色上偏移"，
+            // 同时生效会让用户搞不清哪个在起作用
+            let mode = 'hsl';
+            const apply = () => {
+                for (const c of base) {
+                    const next = mode === 'hsl'
+                        ? shiftHsl(c.hex, state)
+                        : mixHex(c.hex, state.tint, state.ratio);
+                    this.writeColorAt(c.index, next);
+                }
+                this.refreshPreview();
+            };
+
+            const tabs = document.createElement('div');
+            tabs.style.cssText = 'display: flex; gap: 6px;';
+            const panes = {};
+            const setMode = (m) => {
+                mode = m;
+                for (const k in panes) {
+                    panes[k].pane.style.display = k === m ? 'flex' : 'none';
+                    panes[k].tab.style.background = k === m ? '#000' : '#fff';
+                    panes[k].tab.style.color = k === m ? '#fff' : '#000';
+                }
+                // 切换时把另一模式的效果清掉，只保留当前模式的参数
+                if (m === 'hsl') { state.ratio = 0; } else { state.h = 0; state.s = 0; state.l = 0; }
+                apply();
+            };
+
+            for (const [key, label] of [['hsl', '调整'], ['tint', '染色']]) {
+                const tab = document.createElement('button');
+                tab.textContent = label;
+                tab.style.cssText = `flex: 1; padding: 4px 0; border: 1px solid #000; cursor: pointer; font-size: ${UI.fontSm}px;`;
+                tab.onclick = () => setMode(key);
+                tabs.appendChild(tab);
+                const pane = document.createElement('div');
+                pane.style.cssText = 'flex-direction: column; gap: 8px;';
+                panes[key] = { tab, pane };
+            }
+            body.appendChild(tabs);
+
+            const hslPane = panes.hsl.pane;
+            hslPane.appendChild(this.sliderRow('色相', -180, 180, 1, 0, '°',
+                v => { state.h = v; apply(); }));
+            hslPane.appendChild(this.sliderRow('饱和度', -100, 100, 1, 0, '%',
+                v => { state.s = v / 100; apply(); }));
+            hslPane.appendChild(this.sliderRow('亮度', -100, 100, 1, 0, '%',
+                v => { state.l = v / 100; apply(); }));
+            body.appendChild(hslPane);
+
+            const tintPane = panes.tint.pane;
+            const tintRow = document.createElement('div');
+            tintRow.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+            const tintLabel = document.createElement('span');
+            tintLabel.textContent = '目标色';
+            tintLabel.style.cssText = `width: 52px; flex-shrink: 0; font-size: ${UI.fontSm}px;`;
+            tintRow.appendChild(tintLabel);
+
+            // 用窗口内通用的颜色选择器（iro.js + HEX + 剪贴板），
+            // 与各图层那一列的取色方式保持一致，而不是浏览器原生 input
+            const tintBtn = document.createElement('button');
+            const paintTintBtn = () => {
+                tintBtn.textContent = state.tint.toUpperCase();
+                tintBtn.style.background = state.tint;
+                tintBtn.style.color = this.getContrastColor(state.tint);
+            };
+            tintBtn.style.cssText = `
+                flex: 1; min-width: 0; padding: 3px 6px;
+                border: 1px solid #000; cursor: pointer;
+                font-size: ${UI.fontSm}px; font-family: monospace;
+            `;
+            paintTintBtn();
+            tintBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.colorPickerPanel.show(tintBtn, state.tint, (newColor) => {
+                    state.tint = newColor;
+                    paintTintBtn();
+                    apply();
+                });
+            };
+            tintRow.appendChild(tintBtn);
+            tintPane.appendChild(tintRow);
+            tintPane.appendChild(this.sliderRow('比例', 0, 100, 1, 0, '%',
+                v => { state.ratio = v / 100; apply(); }));
+            body.appendChild(tintPane);
+
+            const foot = document.createElement('div');
+            foot.style.cssText = 'display: flex; gap: 8px; margin-top: 2px;';
+            const mkBtn = (text, primary, fn) => {
+                const b = document.createElement('button');
+                b.textContent = text;
+                b.style.cssText = `
+                    flex: 1; padding: 5px 0; cursor: pointer;
+                    border: 1px solid #000; font-size: ${UI.fontSm}px;
+                    background: ${primary ? '#000' : '#fff'}; color: ${primary ? '#fff' : '#000'};
+                `;
+                b.onclick = fn;
+                return b;
+            };
+            foot.appendChild(mkBtn('确定', true, () => {
+                committed = true;
+                this.updateWindow();
+                close();
+            }));
+            foot.appendChild(mkBtn('取消', false, () => close()));
+            body.appendChild(foot);
+
+            setMode('hsl');
+        }
+
+        /**
+         * 这个资产的"结构指纹"，用于判断两个槽位的同名资产能不能整份互拷。
+         *
+         * 只看影响配置寻址的维度：可着色槽位数量、各图层的名字与
+         * ColorIndex。名字相同但结构不同的情况确实存在——CopyConfig
+         * 出来的资产会从各自的组继承默认值，图层可以多一层锁或少一层。
+         *
+         * @param {Object} asset
+         * @returns {string}
+         */
+        assetFingerprint(asset) {
+            const layers = Array.isArray(asset?.Layer) ? asset.Layer : [];
+            const parts = layers.map(l => `${l.Name ?? ""}:${l.ColorIndex ?? -1}`);
+            return `${asset?.ColorableLayerCount ?? 0}|${layers.length}|${parts.join(",")}`;
+        }
+
+        /**
+         * 判断一个候选资产为什么不能作为拷贝目标。
+         *
+         * 单独抽出来是为了让 diagnoseCopyTargets 复用同一份判据：
+         * 诊断如果自己写一遍条件，两边迟早对不上，报告就没有意义了。
+         *
+         * @param {Object} C - 角色
+         * @param {Object} cur - 当前编辑的资产
+         * @param {Object} asset - 候选资产
+         * @returns {string|null} 排除原因（给人看的短语），可用则 null
+         */
+        copyCandidateReject(C, cur, asset) {
+            if (asset.Name !== cur.Name) return "名称不同";
+            const group = asset.Group;
+            if (!group) return "资产没有所属分组";
+            if (group.Name === cur.Group?.Name) return "就是当前槽位";
+            // 跨家族（人类 / 别的体型）的同名资产穿不到这个角色身上
+            if (group.Family !== C.AssetFamily) return `家族不符（${group.Family}）`;
+            if (group.Category !== "Appearance") return `分类不是服装（${group.Category}）`;
+            if (group.AllowCustomize === false) return "该部位不允许自定义";
+            // 拿不到的衣服拷过去也穿不上
+            if (w.InventoryAvailable?.(C, asset.Name, group.Name) === false) {
+                return "未拥有／当前场景不可用";
+            }
+            return null;
+        }
+
+        /**
+         * 找出其他槽位里同名的可用资产。
+         *
+         * 同名跨组是 CopyConfig 造成的常见情况（比如同一款衣服在
+         * Cloth 与 ClothLower 各有一份）。这里按名字全量列出，结构
+         * 不一致的不排除，只打警告标记并在拷贝时降级为只搬颜色。
+         *
+         * @returns {Array<{group: Object, asset: Object, worn: boolean, compatible: boolean}>}
+         */
+        findCopyTargets() {
+            const cur = ItemColorItem?.Asset;
+            const C = ItemColorCharacter;
+            if (!cur || !C || !Array.isArray(w.Asset)) return [];
+
+            const fp = this.assetFingerprint(cur);
+            const out = [];
+            for (const asset of w.Asset) {
+                if (this.copyCandidateReject(C, cur, asset) !== null) continue;
+                const group = asset.Group;
+
+                // 槽位当前穿的东西分三种：同名（可直接互拷）、别的衣服
+                // （覆盖前要问一句是否更换）、空（覆盖时自动穿上）
+                const current = w.InventoryGet?.(C, group.Name) ?? null;
+                const worn = current?.Asset?.Name === asset.Name;
+                out.push({
+                    group, asset, worn, current,
+                    currentName: current
+                        ? (current.Asset?.Description || current.Asset?.Name || '未知衣服')
+                        : null,
+                    compatible: this.assetFingerprint(asset) === fp
+                });
+            }
+            // 同名已穿着的排最前（最可能是想拷的那件），其次是空槽位，
+            // 穿着别的衣服的放最后：那类需要先换装，代价最大
+            const rank = (t) => t.worn ? 0 : (t.current ? 2 : 1);
+            out.sort((a, b) => (rank(a) - rank(b)) || a.group.Name.localeCompare(b.group.Name));
+            return out;
+        }
+
+        /**
+         * 诊断拷贝目标的筛选结果，把每个同名候选被哪一条规则拦掉打到控制台。
+         *
+         * 用途：有些槽位明明看得见同款衣服，面板却说没有。多数情况是
+         * Asset.Name 其实不同（界面显示的是 Description，两件不同资产
+         * 可以有相同的中文名），或者跨了 Family / Category。
+         *
+         * @param {boolean} [wide] - true 时把 Description 相同但 Name 不同的
+         *   资产也一并列出，用来抓"看着同款其实不同资产"的情况
+         * @returns {Object} 结构化结果，同时已打印到控制台
+         */
+        diagnoseCopyTargets(wide = false) {
+            const cur = ItemColorItem?.Asset;
+            const C = ItemColorCharacter;
+            if (!cur || !C) {
+                console.warn("[改色拷贝诊断] 需要先进入某件衣服的调色界面");
+                return { ok: false, reason: "not-in-color-screen" };
+            }
+            if (!Array.isArray(w.Asset)) {
+                console.warn("[改色拷贝诊断] Asset 表不可用");
+                return { ok: false, reason: "no-asset-table" };
+            }
+
+            const fp = this.assetFingerprint(cur);
+            console.group(
+                `[改色拷贝诊断] 当前：${cur.Description || cur.Name}` +
+                `（Name=${cur.Name} Group=${cur.Group?.Name} Family=${cur.Group?.Family}）`
+            );
+            console.log("当前结构指纹：", fp);
+            console.log("角色 AssetFamily：", C.AssetFamily);
+
+            const accepted = [];
+            const rejected = [];
+            for (const asset of w.Asset) {
+                if (asset.Name !== cur.Name) continue;
+                const reason = this.copyCandidateReject(C, cur, asset);
+                const row = {
+                    分组: asset.Group?.Name,
+                    分类: asset.Group?.Category,
+                    家族: asset.Group?.Family,
+                    显示名: asset.Description || asset.Name,
+                    结构一致: this.assetFingerprint(asset) === fp,
+                    排除原因: reason ?? ""
+                };
+                (reason === null ? accepted : rejected).push(row);
+            }
+
+            console.log(`同名资产共 ${accepted.length + rejected.length} 个，可用 ${accepted.length} 个`);
+            if (accepted.length) { console.log("可用："); console.table(accepted); }
+            if (rejected.length) { console.log("被排除："); console.table(rejected); }
+
+            // 名字不同但显示名相同：这是"明明有却没列出"最常见的真实原因
+            const sameLabel = [];
+            const label = cur.Description || cur.Name;
+            for (const asset of w.Asset) {
+                if (asset.Name === cur.Name) continue;
+                if ((asset.Description || asset.Name) !== label) continue;
+                sameLabel.push({
+                    分组: asset.Group?.Name,
+                    分类: asset.Group?.Category,
+                    家族: asset.Group?.Family,
+                    实际Name: asset.Name,
+                    结构一致: this.assetFingerprint(asset) === fp
+                });
+            }
+            if (sameLabel.length) {
+                console.log(
+                    `另有 ${sameLabel.length} 个资产显示名相同但 Name 不同（不会被当成同款）：`
+                );
+                console.table(sameLabel);
+            }
+
+            // 角色身上每个槽位穿的东西，便于对照"我看到的那件"究竟是什么
+            if (wide) {
+                const worn = (C.Appearance ?? []).map(it => ({
+                    分组: it.Asset?.Group?.Name,
+                    分类: it.Asset?.Group?.Category,
+                    实际Name: it.Asset?.Name,
+                    显示名: it.Asset?.Description || it.Asset?.Name,
+                    与当前同名: it.Asset?.Name === cur.Name
+                }));
+                console.log("角色当前穿着：");
+                console.table(worn);
+            }
+
+            console.groupEnd();
+            return { ok: true, current: cur.Name, fingerprint: fp, accepted, rejected, sameLabel };
+        }
+
+        /**
+         * 把颜色与透明度从一件搬到另一件。
+         *
+         * 按下标逐个搬而不是整体赋值：两件的可着色槽位数可能不等
+         * （结构不兼容时），多出来的部分保持目标原样比越界写入安全。
+         *
+         * @param {Object} src - 源 Item
+         * @param {Object} dst - 目标 Item
+         */
+        copyColorAndOpacity(src, dst) {
+            const srcColor = w.ItemColorSanitizeColor?.(src) ?? src.Color;
+            const n = Math.min(
+                Array.isArray(srcColor) ? srcColor.length : 0,
+                dst.Asset?.DefaultColor?.length ?? 0
+            );
+            if (n > 0) {
+                const next = [...dst.Asset.DefaultColor];
+                for (let i = 0; i < n; i++) next[i] = srcColor[i];
+                dst.Color = next;
+            }
+
+            const srcOp = src.Property?.Opacity;
+            if (Array.isArray(srcOp)) {
+                dst.Property = dst.Property || {};
+                const layers = dst.Asset?.Layer?.length ?? 0;
+                const op = dst.Asset.Layer.map(l => l.Opacity);
+                for (let i = 0; i < Math.min(srcOp.length, layers); i++) op[i] = srcOp[i];
+                dst.Property.Opacity = op;
+            } else if (typeof srcOp === "number") {
+                dst.Property = dst.Property || {};
+                dst.Property.Opacity = srcOp;
+            }
+        }
+
+        /**
+         * 搬运层级与变换属性（OverridePriority 与 Layer* 系列）。
+         * 只在结构兼容时调用：键是图层名，结构不同则键对不上。
+         * @param {Object} src
+         * @param {Object} dst
+         */
+        copyLayerProps(src, dst) {
+            const keys = [
+                "OverridePriority",
+                "ItemTranslationX", "ItemTranslationY",
+                "ItemScaleX", "ItemScaleY", "ItemRotation",
+                "LayerTranslationX", "LayerTranslationY",
+                "LayerScaleX", "LayerScaleY", "LayerRotation"
+            ];
+            dst.Property = dst.Property || {};
+            for (const k of keys) {
+                const v = src.Property?.[k];
+                if (v === undefined || v === null) {
+                    delete dst.Property[k];
+                } else if (typeof v === "object") {
+                    dst.Property[k] = JSON.parse(JSON.stringify(v));
+                } else {
+                    dst.Property[k] = v;
+                }
+            }
+        }
+
+        /**
+         * 拷贝面板：把当前配置搬到其他槽位的同名衣服，或反向取回。
+         * @param {HTMLElement} anchor
+         */
+        showCopyPanel(anchor) {
+            const { body } = this.openToolPanel(anchor, '拷贝配置', null);
+            const targets = this.findCopyTargets();
+
+            if (targets.length === 0) {
+                body.appendChild(this.hintText('其他槽位没有可用的同名衣服'));
+                return;
+            }
+
+            const sel = document.createElement('select');
+            sel.style.cssText = `width: 100%; border: 1px solid #000; font-size: ${UI.fontSm}px; padding: 3px;`;
+            targets.forEach((t, i) => {
+                const o = document.createElement('option');
+                o.value = String(i);
+                const gname = t.group.Description || t.group.Name;
+                // 槽位里穿着什么直接写出来，"空槽位"只留给真的空着的
+                const tags = [t.worn ? '已穿着同款' : (t.current ? `现为 ${t.currentName}` : '空槽位')];
+                if (!t.compatible) tags.push('结构不一致');
+                o.textContent = `${gname}（${tags.join('，')}）`;
+                sel.appendChild(o);
+            });
+            body.appendChild(sel);
+
+            const warn = this.hintText('');
+            body.appendChild(warn);
+
+            const btns = [];
+            const mk = (label, dir, full) => {
+                const b = document.createElement('button');
+                b.style.cssText = `
+                    width: 100%; padding: 5px 0; cursor: pointer;
+                    border: 1px solid #000; background: #fff; font-size: ${UI.fontSm}px;
+                `;
+                // 必须挡住冒泡：这些按钮浮在 MainCanvas 上，漏下去会让本体的
+                // AppearanceClick 在同一次点击里执行，而 Color 模式下它走
+                // ItemColorExitClick —— 那会回滚颜色并退出，改动就白做了
+                b.onclick = (e) => {
+                    e.stopPropagation();
+                    this.requestCopy(targets[Number(sel.value)], dir, full);
+                };
+                b.dataset.label = label;
+                b.dataset.dir = dir;
+                b.dataset.full = full ? '1' : '';
+                btns.push(b);
+                body.appendChild(b);
+                return b;
+            };
+            mk('覆盖目标：颜色 + 透明度', 'to', false);
+            mk('覆盖目标：全部（颜色 + 层级 + 变换）', 'to', true);
+            mk('从目标取回：颜色 + 透明度', 'from', false);
+            mk('从目标取回：全部', 'from', true);
+
+            // 结构不一致时"全部"这条路走不通：层级与变换的键是图层名，
+            // 对不上就会写进一堆无效键。降级为只搬颜色，并把按钮禁掉
+            const sync = () => {
+                const t = targets[Number(sel.value)];
+                const notes = [];
+                if (!t.compatible) notes.push('两件衣服图层结构不同，只能拷贝颜色与透明度。');
+                if (!t.worn && t.current) notes.push(`该槽位现在穿的是「${t.currentName}」，覆盖会先替换成本款。`);
+                warn.textContent = notes.join('');
+                warn.style.display = notes.length ? 'block' : 'none';
+
+                for (const b of btns) {
+                    const full = b.dataset.full === '1';
+                    // 结构不一致时"全部"无意义；槽位没有同款时无从取回
+                    const off = (full && !t.compatible) || (b.dataset.dir === 'from' && !t.worn);
+                    b.disabled = off;
+                    b.style.opacity = off ? '0.4' : '1';
+                    b.style.cursor = off ? 'not-allowed' : 'pointer';
+                    b.textContent = b.dataset.label;
+                }
+            };
+            sel.onchange = sync;
+            sync();
+        }
+
+        /**
+         * 拷贝前的确认关卡。
+         *
+         * 覆盖一个已经穿着别的衣服的槽位会把那件换掉，属于用户未必
+         * 预期的副作用，所以先问一句。空槽位与同款槽位没有这个风险，
+         * 直接执行。
+         *
+         * @param {Object} target - findCopyTargets 的一项
+         * @param {'to'|'from'} dir
+         * @param {boolean} full
+         */
+        requestCopy(target, dir, full) {
+            const needSwap = dir === 'to' && !target.worn && target.current;
+            if (!needSwap) {
+                this.runCopy(target, dir, full);
+                return;
+            }
+            const gname = target.group.Description || target.group.Name;
+            const self = target.asset.Description || target.asset.Name;
+            this.confirmDialog(
+                `「${gname}」现在穿的是「${target.currentName}」。\n继续会把它换成「${self}」，再写入配置。`,
+                '更换并覆盖',
+                () => this.runCopy(target, dir, full)
+            );
+        }
+
+        /**
+         * 确认弹窗。盖在工具面板之上，确认或取消后自行销毁。
+         * 不用原生 confirm：那个会阻塞游戏的 requestAnimationFrame 循环。
+         *
+         * @param {string} text - 提示正文，\n 换行
+         * @param {string} okText - 确认按钮文字
+         * @param {Function} onOk
+         */
+        confirmDialog(text, okText, onOk) {
+            const mask = document.createElement('div');
+            mask.style.cssText = `
+                position: fixed; inset: 0;
+                background: rgba(0,0,0,0.45);
+                z-index: 10010;
+                display: flex; align-items: center; justify-content: center;
+            `;
+            const box = document.createElement('div');
+            box.style.cssText = `
+                background: #fff; border: 2px solid #000; border-radius: 5px;
+                padding: 16px; width: 320px;
+                display: flex; flex-direction: column; gap: 12px;
+                font-size: ${UI.fontSm}px;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+            `;
+            const msg = document.createElement('div');
+            msg.textContent = text;
+            msg.style.cssText = 'white-space: pre-wrap; line-height: 1.6;';
+            box.appendChild(msg);
+
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; gap: 8px;';
+            const mkBtn = (label, primary, fn) => {
+                const b = document.createElement('button');
+                b.textContent = label;
+                b.style.cssText = `
+                    flex: 1; padding: 6px 0; cursor: pointer;
+                    border: 1px solid #000; font-size: ${UI.fontSm}px;
+                    background: ${primary ? '#000' : '#fff'}; color: ${primary ? '#fff' : '#000'};
+                `;
+                b.onclick = (e) => { e.stopPropagation(); mask.remove(); fn?.(); };
+                return b;
+            };
+            row.appendChild(mkBtn(okText, true, onOk));
+            row.appendChild(mkBtn('取消', false, null));
+            box.appendChild(row);
+
+            // 点遮罩空白处等于取消；点内容区不关闭
+            mask.onmousedown = (e) => {
+                e.stopPropagation();
+                if (e.target === mask) mask.remove();
+            };
+            mask.appendChild(box);
+            document.body.appendChild(mask);
+        }
+
+        /**
+         * 执行一次拷贝。
+         *
+         * @param {{group: Object, asset: Object, worn: boolean, compatible: boolean}} target
+         * @param {'to'|'from'} dir - to 是当前覆盖目标，from 是反向
+         * @param {boolean} full - 是否连层级与变换一起搬
+         */
+        runCopy(target, dir, full) {
+            const C = ItemColorCharacter;
+            if (!C || !ItemColorItem || !target) return;
+
+            let other = w.InventoryGet?.(C, target.group.Name);
+            const sameAsset = other?.Asset?.Name === target.asset.Name;
+
+            if (dir === 'from' && !sameAsset) {
+                this.toast('目标槽位没有这件衣服，无法取回');
+                return;
+            }
+
+            // 空槽位（或穿着别的衣服）就先把这件穿上，否则无处安放配置。
+            // 换掉别人的衣服这一步已经在 requestCopy 里确认过了。
+            // Refresh 传 false：配置还没写进去，这里刷新会先闪一下默认色，
+            // 也会多发一次服务器同步
+            const swapped = dir === 'to' && !sameAsset && !!other;
+            if (dir === 'to' && !sameAsset) {
+                if (typeof w.InventoryWear !== 'function') return;
+                w.InventoryWear(C, target.asset.Name, target.group.Name, undefined, undefined, undefined, undefined, false);
+                other = w.InventoryGet?.(C, target.group.Name);
+                if (!other) {
+                    this.toast('穿上目标衣服失败');
+                    return;
+                }
+            }
+
+            const src = dir === 'to' ? ItemColorItem : other;
+            const dst = dir === 'to' ? other : ItemColorItem;
+
+            this.copyColorAndOpacity(src, dst);
+            if (full && target.compatible) this.copyLayerProps(src, dst);
+
+            // Property 里可能被清空成 {}，本体的序列化会跳过空对象，无需额外处理
+            if (typeof w.CharacterRefresh === 'function') {
+                w.CharacterRefresh(C, true, false);
+            } else {
+                this.refreshPreview();
+            }
+            if (C.IsPlayer?.() && typeof w.ChatRoomCharacterUpdate === 'function') {
+                w.ChatRoomCharacterUpdate(C);
+            }
+
+            this.closeToolPanel();
+
+            if (dir === 'from') {
+                // 取回的是当前这件，重建面板才能显示新颜色
+                this.updateWindow();
+                this.toast('已从目标槽位取回配置');
+                return;
+            }
+
+            const parts = [swapped ? '已更换衣服并拷贝配置' : '已拷贝到目标槽位'];
+            if (full && !target.compatible) parts.push('结构不一致，层级与变换已跳过');
+            this.toast(parts.join('（') + (parts.length > 1 ? '）' : ''));
+        }
+
+        /**
+         * 顶部短暂提示。写在窗口内而不是用 alert，避免打断操作。
+         * @param {string} text
+         */
+        toast(text) {
+            if (!this.windowElement) return;
+            if (this.toastEl) this.toastEl.remove();
+            const el = document.createElement('div');
+            el.textContent = text;
+            el.style.cssText = `
+                position: absolute; left: 50%; top: 46px;
+                transform: translateX(-50%);
+                background: rgba(0,0,0,0.82); color: #fff;
+                padding: 5px 12px; border-radius: 4px;
+                font-size: ${UI.fontSm}px; white-space: nowrap;
+                pointer-events: none; z-index: 10003;
+            `;
+            this.windowElement.appendChild(el);
+            this.toastEl = el;
+            clearTimeout(this.toastTimer);
+            this.toastTimer = setTimeout(() => {
+                if (this.toastEl === el) this.toastEl = null;
+                el.remove();
+            }, 2600);
+        }
+
+        /** 灰色小字提示 */
+        hintText(text) {
+            const el = document.createElement('div');
+            el.textContent = text;
+            el.style.cssText = `color: #666; font-size: ${UI.fontSm}px; line-height: 1.5;`;
+            return el;
+        }
+
+        /**
+         * 一行"标签 + 滑条 + 数值"。滑条与数字框双向绑定。
+         * @param {string} label
+         * @param {number} min
+         * @param {number} max
+         * @param {number} step
+         * @param {number} value - 初始值
+         * @param {string} unit - 数值后缀，仅用于显示
+         * @param {(v: number) => void} onChange
+         * @returns {HTMLElement}
+         */
+        sliderRow(label, min, max, step, value, unit, onChange) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+
+            const name = document.createElement('span');
+            name.textContent = label;
+            name.style.cssText = `width: 52px; flex-shrink: 0; font-size: ${UI.fontSm}px;`;
+            row.appendChild(name);
+
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = String(min);
+            slider.max = String(max);
+            slider.step = String(step);
+            slider.value = String(value);
+            slider.style.cssText = 'flex: 1; min-width: 0; height: 16px;';
+            row.appendChild(slider);
+
+            const num = document.createElement('input');
+            num.type = 'number';
+            num.min = String(min);
+            num.max = String(max);
+            num.step = String(step);
+            num.value = String(value);
+            num.style.cssText = `width: 52px; flex-shrink: 0; border: 1px solid #000; font-size: ${UI.fontSm}px; padding: 1px 2px;`;
+            num.title = unit;
+            row.appendChild(num);
+
+            const clamp = (v) => Math.max(min, Math.min(max, v));
+            slider.oninput = () => {
+                num.value = slider.value;
+                onChange(Number(slider.value));
+            };
+            num.oninput = () => {
+                const v = Number(num.value);
+                if (!Number.isFinite(v)) return;
+                slider.value = String(clamp(v));
+                onChange(clamp(v));
+            };
+            return row;
+        }
 
         /**
          * 更新窗口内容
@@ -4195,14 +5220,75 @@
             if (hits.length === 0) return false;
 
             const layerIndex = hits[this.cycleIndex(hits, mx, my)];
+
+            // 正在句柄操作模式、且要切到别的目标时，要求双击确认。
+            // 单击会把正在调整的变换目标丢掉，代价不对称：切错了得重新
+            // 找回原来那层，而多点一下的成本很低
+            if (this.needsSwitchConfirm(layerIndex)) {
+                const now = Date.now();
+                const pending = this.switchConfirm;
+                // 两次点击必须指向同一目标、同一位置、且在时间窗内。
+                // 位置也要比：挪到别处再点是新的意图，不该顺势确认掉
+                const same = pending
+                    && pending.layerIndex === layerIndex
+                    && now - pending.at <= GIZMO_SWITCH_DBLCLICK_MS
+                    && Math.hypot(mx - pending.x, my - pending.y) <= GIZMO_HANDLE_R * 2;
+
+                if (!same) {
+                    // 第一次点击：记下待确认目标，先不切。
+                    //
+                    // 关键是不能动 lastPick —— 它是轮换基准，改了下一次
+                    // cycleIndex 就会前移到别的图层，两次点击的目标对不上，
+                    // 永远确认不了。保持原样，第二次点击才算出同一个目标。
+                    //
+                    // 这次点击仍算命中（返回 true），否则会漏给本体当成换装点击
+                    this.switchConfirm = { layerIndex, at: now, x: mx, y: my };
+                    this.hintSwitchConfirm(layerIndex);
+                    return true;
+                }
+                // 第二次点击：确认切换，走下面的正常流程
+            }
+            this.switchConfirm = null;
+
             this.lastPick = { x: mx, y: my, key: hits.join(","), layerIndex };
             this.selectLayerRow(layerIndex);
             return true;
         }
 
+        /**
+         * 这次拾取是否需要双击确认。
+         *
+         * 只在"已进入句柄操作模式，且拾取到的不是当前正在操作的那一层"时
+         * 才拦。没进操作模式（只是浏览定位）保持单击即走，物品级选中同理
+         * 需要确认——它也是一个正在被拖动的变换目标。
+         *
+         * @param {number} layerIndex
+         * @returns {boolean}
+         */
+        needsSwitchConfirm(layerIndex) {
+            if (!this.gizmo.isActive()) return false;
+            // 点的就是当前操作目标，不算切换
+            if (!this.gizmo.itemLevel && this.gizmo.layerIndex === layerIndex) return false;
+            return true;
+        }
+
+        /** 提示需要再点一次才会切换目标 */
+        hintSwitchConfirm(layerIndex) {
+            // 闪一下目标图层，让人看清"再点一次会切到这里"
+            this.startLayerHighlight(layerIndex);
+            this.toast('再点一次切换到该层级（会退出当前变换操作）');
+        }
+
+        /** 清掉待确认的切换意图 */
+        clearSwitchConfirm() {
+            this.switchConfirm = null;
+        }
+
         /** 光标离开或状态变化时重置轮换，下次点击从最上层重新开始 */
         resetPickCycle() {
             this.lastPick = null;
+            // 轮换基准作废时，待确认的切换意图也不再成立
+            this.switchConfirm = null;
         }
 
         /**
@@ -4530,6 +5616,7 @@
             this.gizmo.clear();
             this.selectedLayeringId = null;
             this.pickedLayeringId = null;
+            this.switchConfirm = null;
             this.createWindow();
             this.buildTree();
             this.isVisible = true;
@@ -4548,6 +5635,7 @@
                 this.windowElement.style.display = 'none';
             }
             this.colorPickerPanel.hide();
+            this.closeToolPanel();
             this.gizmo.endDrag();
             this.hideHighlightBox();
         }
@@ -4568,6 +5656,9 @@
                 this.windowElement = null;
             }
             this.colorPickerPanel.hide();
+            this.closeToolPanel();
+            clearTimeout(this.toastTimer);
+            this.toastEl = null;
             this.gizmo.reset();
             this.isVisible = false;
             this.treeNodes = [];
