@@ -8,7 +8,6 @@
 // @match https://*.bondage-europe.com/R*/*
 // @match https://*.bondageprojects.com/R*/*
 // @match https://*.bondage-asia.com/club/R*/*
-// @icon https://cdn.jsdelivr.net/gh/XinLian132243/BCMod@master/Assets/LianChatButton.png
 // @grant        none
 // @license      MIT
 // ==/UserScript==
@@ -161,6 +160,7 @@
             '  --ease-spring:cubic-bezier(.34,1.56,.64,1);',
             '  --r-pill:999px; --r-tab:9px; --r-card:14px; --r-row:10px;',
             '  --lc-font:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;',
+            '  --lc-msg-font-size:14px;',
             '}',
             /* 亮色主题令牌 */
             'html[data-lc-theme="light"]{',
@@ -311,6 +311,12 @@
 
         return { init: init, apply: apply, dispose: dispose, getPref: function () { return pref; } };
     })();
+
+    // 聊天信息字体大小：写入 --lc-msg-font-size，供 .lc-bubble 读取
+    function applyMessageFontSize(size) {
+        const px = Number(size) || 14;
+        document.documentElement.style.setProperty('--lc-msg-font-size', px + 'px');
+    }
 
     // Step1 自启动
     injectDesignTokens();
@@ -641,10 +647,10 @@
         /* 消息气泡 */
         '.lc-msg-self,.lc-msg-other{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}',
         '.lc-msg-self{justify-content:flex-end}',
-        '.lc-bubble{position:relative;max-width:80%;min-width:50px;padding:8px 10px;border-radius:12px;font-size:14px;line-height:1.45;word-break:break-word;color:var(--ink)!important}',
+        '.lc-bubble{position:relative;max-width:80%;min-width:50px;padding:8px 10px;border-radius:12px;font-size:var(--lc-msg-font-size,14px);line-height:1.45;word-break:break-word;color:var(--ink)!important}',
         '.lc-msg-other .lc-bubble,.lc-msg-self .lc-bubble{color:var(--ink)!important;border:1px solid var(--seam)!important}',
         '.lc-msg-other .lc-bubble{background:var(--panel-dn)!important;border-left:3px solid var(--divider)!important;border-top-left-radius:4px!important}',
-        '.lc-msg-self .lc-bubble{background:var(--panel-dn)!important}',
+        '.lc-msg-self .lc-bubble{background:var(--accent-soft)!important}',
         '.lc-msg-self .lc-bubble{border-left:3px solid var(--accent)!important;border-top-right-radius:4px!important}',
         '.lc-avatar,.lc-av{width:40px!important;height:40px!important;min-width:40px!important;max-width:40px!important;flex:0 0 40px!important;padding:0!important;border:0!important;border-radius:50%!important;box-shadow:none!important;overflow:hidden!important;background:transparent!important}',
         '.lc-avatar img,.lc-av img{width:100%!important;height:100%!important;border-radius:50%!important;object-fit:cover!important}',
@@ -2138,6 +2144,8 @@
                 'hide_when_open': '打开时隐藏',
                 'always_hide': '一直隐藏',
                 'background_notification': '网页后台时消息通知',
+                'message_font_size': '聊天信息字体大小',
+                'message_font_size_unit': 'px',
                 'signature_placeholder': '输入新的签名...（最多50字）',
                 'avatar_url_placeholder': '输入头像地址...',
                 'avatar_sites_tip': '悬停此处查看目前头像可用网站',
@@ -2203,6 +2211,8 @@
                 'hide_when_open': 'Hide when open',
                 'always_hide': 'Always hide',
                 'background_notification': 'Message notification when page is in background',
+                'message_font_size': 'Chat message font size',
+                'message_font_size_unit': 'px',
                 'signature_placeholder': 'Enter new signature... (max 50 characters)',
                 'avatar_url_placeholder': 'Enter avatar URL...',
                 'avatar_sites_tip': 'Hover here to view available avatar sites',
@@ -6362,6 +6372,55 @@
             snapLabel.appendChild(document.createTextNode('悬浮按钮自动贴边'));
             dialog.appendChild(snapLabel);
 
+            // 聊天信息字体大小（直接输入 px 数值）
+            const fontSizeRow = document.createElement('div');
+            fontSizeRow.style.display = 'flex';
+            fontSizeRow.style.flexDirection = 'row';
+            fontSizeRow.style.alignItems = 'center';
+            fontSizeRow.style.justifyContent = 'space-between';
+            fontSizeRow.style.marginBottom = '18px';
+            fontSizeRow.style.gap = '10px';
+            fontSizeRow.style.color = 'var(--ink)';
+            fontSizeRow.style.fontSize = '14px';
+
+            const fontSizeLabel = document.createElement('span');
+            fontSizeLabel.textContent = I18nModule.getText('message_font_size');
+            fontSizeRow.appendChild(fontSizeLabel);
+
+            const fontSizeInputWrap = document.createElement('span');
+            fontSizeInputWrap.style.display = 'flex';
+            fontSizeInputWrap.style.alignItems = 'center';
+            fontSizeInputWrap.style.gap = '4px';
+            fontSizeInputWrap.style.flex = 'none';
+
+            // 当前设置
+            const currentFontSize = (Player.ExtensionSettings?.LCData?.MessageSetting?.FontSize) ?? 14;
+
+            const fontSizeInput = document.createElement('input');
+            fontSizeInput.type = 'number';
+            fontSizeInput.id = 'lcMessageFontSizeInput';
+            fontSizeInput.min = '10';
+            fontSizeInput.max = '32';
+            fontSizeInput.step = '1';
+            fontSizeInput.value = currentFontSize;
+            fontSizeInput.style.width = '56px';
+            fontSizeInput.style.padding = '4px 6px';
+            fontSizeInput.style.border = '1px solid var(--seam)';
+            fontSizeInput.style.borderRadius = '6px';
+            fontSizeInput.style.background = 'var(--input-surface)';
+            fontSizeInput.style.color = 'var(--ink)';
+            fontSizeInput.style.fontFamily = 'var(--lc-font)';
+            fontSizeInput.addEventListener('click', function (e) { e.stopPropagation(); });
+
+            const fontSizeUnit = document.createElement('span');
+            fontSizeUnit.textContent = I18nModule.getText('message_font_size_unit');
+            fontSizeUnit.style.color = 'var(--ink-2)';
+
+            fontSizeInputWrap.appendChild(fontSizeInput);
+            fontSizeInputWrap.appendChild(fontSizeUnit);
+            fontSizeRow.appendChild(fontSizeInputWrap);
+            dialog.appendChild(fontSizeRow);
+
             // 确定按钮
             const okBtn = document.createElement('button');
             okBtn.textContent = I18nModule.getText('confirm');
@@ -6382,11 +6441,18 @@
                 // 读取勾选
                 const notifyValue = notifyCheckbox.checked;
                 const snapValue = snapCheckbox.checked;
+                let fontSizeValue = parseInt(fontSizeInput.value, 10);
+                if (!Number.isFinite(fontSizeValue)) fontSizeValue = 14;
+                fontSizeValue = Math.min(32, Math.max(10, fontSizeValue));
 
                 // 保存到设置
                 Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat = hideValue;
                 Player.ExtensionSettings.LCData.MessageSetting.NotifyWhenBackground = notifyValue;
                 Player.ExtensionSettings.LCData.MessageSetting.SnapFloatingButtonToEdge = snapValue;
+                Player.ExtensionSettings.LCData.MessageSetting.FontSize = fontSizeValue;
+
+                // 立即生效
+                applyMessageFontSize(fontSizeValue);
 
                 // 同步到服务器
                 ServerPlayerExtensionSettingsSync('LCData');
@@ -8146,6 +8212,9 @@
         Player.ExtensionSettings.LCData.MessageSetting.SnapFloatingButtonToEdge ??= true;
         Player.ExtensionSettings.LCData.MessageSetting.PinnedRooms ??= {};
         Player.ExtensionSettings.LCData.MessageSetting.SetRoomSpace ??= 'X';
+        Player.ExtensionSettings.LCData.MessageSetting.FontSize ??= 14;
+
+        applyMessageFontSize(Player.ExtensionSettings.LCData.MessageSetting.FontSize);
     }
 
     function InitAll()
