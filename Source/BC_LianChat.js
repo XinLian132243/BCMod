@@ -794,7 +794,6 @@
             if (pageBtn && pageBtn.textContent === '📄') _swapBtnIcon(pageBtn, 'pencil', 'md');
             if (setBtn && setBtn.textContent === '⚙') _swapBtnIcon(setBtn, 'gear', 'md');
             if (closeBtn && closeBtn.textContent === '×') _swapBtnIcon(closeBtn, 'close', 'md');
-            if (backBtn && backBtn.textContent === '◀️') _swapBtnIcon(backBtn, 'chevL', 'md');
             // 合并主题拨杆进头部（含兜底重试：头部按钮可能稍后填充）
             if (!_moveDialIntoHead(dlg)) {
                 setTimeout(function () { if (dlg && dlg.isConnected) _moveDialIntoHead(dlg); }, 200);
@@ -867,11 +866,9 @@
         const pageBtn = btns.find(function (b) { return b.textContent === '📄'; });
         const setBtn = btns.find(function (b) { return b.textContent === '⚙'; });
         const closeBtn = btns.find(function (b) { return b.textContent === '×'; });
-        const backBtn = btns.find(function (b) { return b.textContent === '◀️'; });
         if (pageBtn && pageBtn.textContent === '📄') _swapBtnIcon(pageBtn, 'pencil', 'md');
         if (setBtn && setBtn.textContent === '⚙') _swapBtnIcon(setBtn, 'gear', 'md');
         if (closeBtn && closeBtn.textContent === '×') _swapBtnIcon(closeBtn, 'close', 'md');
-        if (backBtn && backBtn.textContent === '◀️') _swapBtnIcon(backBtn, 'chevL', 'md');
         const input = document.getElementById('LC-Message-InputField');
         if (input && !input.classList.contains('lc-input')) { _strip(input, ['border', 'borderRadius', 'background', 'color', 'padding', 'outline', 'boxShadow', 'boxSizing']); input.classList.add('lc-input'); }
         const send = document.getElementById('messageSendButton');
@@ -1073,10 +1070,6 @@
         rightContainer.dataset.lcCollapsed = mode === 'contacts' ? '1' : '0';
         const toggle = document.querySelector('button.lc-head-btn[data-lc-patched="pencil-v3"]');
         if (toggle) toggle.classList.toggle('lc-head-btn--active', mode === 'contacts');
-        // 桌面端左侧标签被收起、聊天区占满时，显示返回按钮；否则隐藏。
-        if (MessageModule.backToSenderButton) {
-            MessageModule.backToSenderButton.style.display = (mode === 'chat') ? 'flex' : 'none';
-        }
     }
 
     // 面板布局与行为
@@ -3964,16 +3957,8 @@
             backToSenderButton.addEventListener('click', function(e) {
                 e.stopPropagation();
 
-                if (MessageModule.isPageMode) {
-                    // 移动端：从右侧页面返回发送者列表页面
-                    MessageModule.switchToSenderListPage();
-                } else {
-                    // 桌面端：从展开的聊天区返回联系人列表
-                    const rightContainer = document.getElementById('LC-Message-RightContainer');
-                    if (rightContainer && rightContainer.dataset.lcLayout === 'chat') {
-                        setDesktopPanelLayout('contacts');
-                    }
-                }
+                // 从右侧页面返回发送者列表页面
+                MessageModule.switchToSenderListPage();
             });
 
             // 设置按钮
@@ -4439,8 +4424,8 @@
                         }
                         LCDataStorage.updateSenderState(selectedSenderNum, messageHistory[selectedSenderNum]);
                     }
-                    // 更新消息内容
-                    updateMessageContent();
+                    // 消息会由统一的 addMessageToHistory 路径增量加入画面；
+                    // 此处不再重建整个 lc-message-log，避免发送时闪烁与滚动跳动。
                     // 只有在使用输入框内容时才聚焦输入框
                     if (customMessage === undefined) {
                         inputField.focus();
@@ -4635,10 +4620,9 @@
                 const recentMessages = chatHistory.messages.slice(-config.maxMessageCount);
                 displayMessages(recentMessages);
 
-                // 滚动到底部
-                setTimeout(() => {
-                    messageContent.scrollTop = messageContent.scrollHeight;
-                }, 10);
+                // 清空与重建都发生在同一轮事件中，立即定位到底部，避免旧版延迟
+                // 10ms 期间浏览器先绘制 scrollTop=0 而产生闪烁。
+                messageContent.scrollTop = messageContent.scrollHeight;
             }
 
             // 显示"无选择"消息
@@ -5430,6 +5414,7 @@
             // 创建单个消息项
             function createMessageItem(msg) {
                 const messageItem = document.createElement('div');
+                messageItem.className = 'lc-message-item';
                 messageItem.style.marginBottom = '6px';
                 messageItem.style.padding = '4px';
                 messageItem.style.borderRadius = '5px';
@@ -5497,6 +5482,38 @@
                 messageContainer.appendChild(messageFooter);
 
                 return messageItem;
+            }
+
+            // 当前对话收到新消息时只追加一个节点，不清空 lc-message-log。
+            // 用户原本停在底部（或消息由自己发送）才跟随到底；正在阅读旧消息时保留位置。
+            function appendMessageToContent(msg, previousMessage) {
+                if (!msg || !selectedSenderNum) return;
+                const wasNearBottom = messageContent.scrollHeight - messageContent.scrollTop - messageContent.clientHeight < 80;
+                messageContent.querySelectorAll(':scope > div').forEach(function(element) {
+                    if (element.classList.contains('lc-message-item') || element.classList.contains('message-time-divider')) return;
+                    if (element.textContent === I18nModule.getText('no_messages')) element.remove();
+                });
+
+                const previousTime = previousMessage?.time ? new Date(previousMessage.time) : null;
+                const currentTime = msg.time instanceof Date ? msg.time : new Date(msg.time);
+                const divider = createTimeDivider(currentTime, previousTime);
+                if (divider) messageContent.appendChild(divider);
+                messageContent.appendChild(createMessageItem(msg));
+
+                // 维持画面上限；移除最旧消息及其紧邻的旧时间分隔。
+                const items = messageContent.querySelectorAll(':scope > .lc-message-item');
+                if (items.length > config.maxMessageCount) {
+                    const oldest = items[0];
+                    const dividerBefore = oldest.previousElementSibling;
+                    oldest.remove();
+                    if (dividerBefore?.querySelector('.message-time-divider')) dividerBefore.remove();
+                }
+
+                if (wasNearBottom || msg.sender === Player.MemberNumber) {
+                    requestAnimationFrame(function() {
+                        messageContent.scrollTop = messageContent.scrollHeight;
+                    });
+                }
             }
 
             // 处理消息内容，返回处理后的HTML和可能的操作按钮
@@ -5979,6 +5996,7 @@
 
             messageDialog.updateSenderList = updateSenderList;
             messageDialog.updateMessageContent = updateMessageContent;
+            messageDialog.appendMessageToContent = appendMessageToContent;
             messageDialog.hideAddSenderInterface = hideAddSenderInterface;
             messageDialog.updateAddSenderLists = updateAddSenderLists;
             messageDialog.showCharacterInfoPanel = showCharacterInfoPanel;
@@ -6648,6 +6666,7 @@
                 // status: { delivered: "false" }
             };
 
+            const previousMessage = messageHistory[memberNumber].messages[messageHistory[memberNumber].messages.length - 1] || null;
             messageHistory[memberNumber].messages.push(msgObj);
 
             if (LCDataStorage) LCDataStorage.addMessage(memberNumber, msgObj);
@@ -6666,7 +6685,7 @@
             if (MessageModule.isMessageDialogVisible()) {
                 messageDialog.updateSenderList();
                 if (selectedSenderNum === memberNumber) {
-                    messageDialog.updateMessageContent();
+                    messageDialog.appendMessageToContent(msgObj, previousMessage);
                 }
             }
 
