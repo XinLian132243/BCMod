@@ -695,7 +695,9 @@
         ShowThumbnailEnabled: true,
         ItemHighlightEnabled: true,
         UseAdjustmentWindow: true,
-        ClothPickEnabled: true
+        ClothPickEnabled: true,
+        // 换装历史自动备份，配合工具栏的历史记录按钮
+        DressHistoryEnabled: true
     };
 
     /**
@@ -1070,6 +1072,8 @@
         dressOptimizationManager.setWheelScrollEnabled(settings.WheelScrollEnabled);
         dressOptimizationManager.setShowThumbnailEnabled(settings.ShowThumbnailEnabled);
         dressOptimizationManager.setItemHighlightEnabled(settings.ItemHighlightEnabled);
+        // 历史备份的开关存在共享对象里，由 DressHistory 自取（声明顺序在后）
+        historyConfig.enabled = settings.DressHistoryEnabled;
     }
 
     // =======================================================================================
@@ -1119,6 +1123,11 @@
 
     // Hook AppearanceRun 函数，实现分层按钮显示缩略图和服装提示检测
     mod.hookFunction("AppearanceRun", 1, (args, next) => {
+        // 换装界面内的定时备份。tick 自己判断是否到点，每帧只是一次时间比较
+        if (typeof CharacterAppearanceSelection !== 'undefined' && CharacterAppearanceSelection) {
+            dressHistory.tick(CharacterAppearanceSelection);
+        }
+
         // 检测鼠标悬浮并触发闪烁（在绘制之前）
         if (dressOptimizationManager.itemHighlightEnabled &&
             typeof CurrentScreen !== 'undefined' && CurrentScreen === 'Appearance' &&
@@ -1388,7 +1397,18 @@
             if (MouseIn(500, 600, 450, 64)) {
                 this.setHoverText("在角色身上悬浮描边高亮所指的服装，点击直接跳转到该部位的编辑；调色界面同样可以悬浮和点选图层");
             }
-            
+
+            // 换装历史自动备份开关
+            DrawCheckbox(500, 700, 64, 64,
+                "换装历史备份",
+                this.settings.DressHistoryEnabled
+            );
+
+            // 检测鼠标悬停 - 换装历史
+            if (MouseIn(500, 700, 450, 64)) {
+                this.setHoverText("改过衣服才会记录快照，可从插件窗口的历史按钮回退；只备份衣服不含束具，自己留 60 条其他玩家每人 30 条，只存在本机");
+            }
+
             // 退出按钮
             DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
             
@@ -1441,6 +1461,13 @@
                 dressOptimizationManager.setItemHighlightEnabled(this.settings.ItemHighlightEnabled);
             }
             
+            // 换装历史备份开关
+            if (MouseXIn(500, 64) && MouseYIn(700, 64)) {
+                this.settings.DressHistoryEnabled = !this.settings.DressHistoryEnabled;
+                // 立即生效，否则要等下次登录
+                historyConfig.enabled = this.settings.DressHistoryEnabled;
+            }
+
             // 点击服装拾取开关
             if (MouseXIn(500, 64) && MouseYIn(600, 64)) {
                 this.settings.ClothPickEnabled = !this.settings.ClothPickEnabled;
@@ -2079,6 +2106,513 @@
             this.clipboardButtonsContainer = null;
         }
     }
+
+    // =======================================================================================
+    // 换装历史自动备份
+    // =======================================================================================
+
+    // 键里带版本号：换过快照口径（只存衣服）之后旧记录不能再用 ——
+    // 它们含道具，恢复时会把束具连锁一起重新穿上。换键让旧数据自然作废
+    const HISTORY_KEY = 'LianDressHistory_v2';
+    /** 自己保留 60 条 */
+    const HISTORY_MAX_SELF = 60;
+    /** 其他玩家每人保留 30 条 */
+    const HISTORY_MAX_OTHER = 30;
+    /** 所有目标合计上限，超了优先丢别人的 */
+    const HISTORY_MAX_TOTAL = 300;
+    /** 界面内轮询间隔：每分钟比对一次 */
+    const HISTORY_TICK = 60 * 1000;
+
+    /**
+     * 这件是不是"衣服"（含身体、发型等外观件），而不是束具道具。
+     *
+     * 判据用组的 Category：BC 把资产组分成 Appearance / Item / Script，
+     * 束具都在 Item 组里。不用 IsRestraint —— 那是单件资产上的标记，
+     * 同一个 Item 组里既有 IsRestraint 的也有不是的，按它筛会漏。
+     *
+     * @param {Object} item
+     * @returns {boolean}
+     */
+    function isDressItem(item) {
+        const group = item?.Asset?.Group;
+        if (!group) return false;
+        if (typeof group.IsAppearance === 'function') return group.IsAppearance();
+        // 取不到方法就退回读字段；两者都缺时当作衣服，宁可多备份不要漏
+        return group.Category == null || group.Category === 'Appearance';
+    }
+
+    /**
+     * 取可保存的道具列表。字段与 BC 衣服代码通用格式一致，
+     * 便于和其他工具互相粘贴。
+     *
+     * 只收衣服：束具道具带着锁、计时、施加者等状态，备份回放没有意义，
+     * 恢复时还可能把别人上的锁悄悄改掉。
+     *
+     * @param {Object} C
+     * @returns {Array<Object>}
+     */
+    function getSimpleItems(C) {
+        if (!C || !Array.isArray(C.Appearance)) return [];
+        return C.Appearance
+            .filter(item => !!item && !!item.Asset && isDressItem(item))
+            .map(item => ({
+                Group: item.Asset.Group.Name,
+                Name: item.Asset.Name,
+                Color: item.Color,
+                Craft: item.Craft,
+                Difficulty: item.Difficulty,
+                Property: item.Property
+            }));
+    }
+
+    /**
+     * 装备里那些会自己变、与用户改动无关的字段。
+     *
+     * 它们进了快照就会让"内容有没有变"这个判断失灵：锁的计时每秒都在动，
+     * 表情和口塞状态跟着聊天走，Fetish/Activity 由互动触发。
+     * 换装历史关心的是穿了什么、什么颜色、怎么排布。
+     */
+    const HISTORY_VOLATILE_PROPS = new Set([
+        'RemoveTimer', 'ShowTimer', 'LockedBy', 'MemberNumber',
+        'Expression', 'Effect', 'Block', 'Hide', 'HideItem',
+        'ShockLevel', 'TriggerCount', 'BlinkState', 'Mode', 'Intensity',
+        'PunishOrgasm', 'PunishStandup', 'PunishActivity', 'PunishSpeech',
+        'NextShockTime', 'AutoPunish', 'ShowText', 'Text', 'Text2', 'Text3'
+    ]);
+
+    /**
+     * 用于比对的指纹。与 getSimpleItems 的区别是剔掉了易变字段，
+     * 并且对 Property 做浅拷贝 —— 直接引用会让后续的原地修改
+     * 悄悄改变已经算过的结果。
+     * @param {Object} C
+     * @returns {string|null}
+     */
+    function buildCompareKey(C) {
+        if (!C || !Array.isArray(C.Appearance)) return null;
+        try {
+            const parts = C.Appearance
+                .filter(item => !!item && !!item.Asset && isDressItem(item))
+                .map(item => {
+                    let prop = null;
+                    if (item.Property && typeof item.Property === 'object') {
+                        prop = {};
+                        for (const k of Object.keys(item.Property).sort()) {
+                            if (HISTORY_VOLATILE_PROPS.has(k)) continue;
+                            prop[k] = item.Property[k];
+                        }
+                        if (Object.keys(prop).length === 0) prop = null;
+                    }
+                    return {
+                        G: item.Asset.Group.Name,
+                        N: item.Asset.Name,
+                        C: item.Color ?? null,
+                        P: prop
+                    };
+                });
+            // 排序：Appearance 的数组顺序会被同步流程重排，那不算改动
+            parts.sort((a, b) => (a.G + a.N).localeCompare(b.G + b.N));
+            return JSON.stringify(parts);
+        } catch (e) {
+            console.warn('[LianDressOptimization] 生成比对指纹失败', e);
+            return null;
+        }
+    }
+
+    /**
+     * 把角色当前装备压成一条字符串。取不到 LZString 时返回 null。
+     * @param {Object} C
+     * @returns {string|null}
+     */
+    function buildAppearanceCode(C) {
+        try {
+            const items = getSimpleItems(C);
+            if (items.length === 0) return null;
+            const lz = w.LZString;
+            if (!lz?.compressToBase64) return null;
+            return lz.compressToBase64(JSON.stringify(items));
+        } catch (e) {
+            console.warn('[LianDressOptimization] 生成衣服代码失败', e);
+            return null;
+        }
+    }
+
+    /**
+     * 换装历史。每个目标一个桶，按时间倒序存压缩后的衣服代码。
+     *
+     * 只在内容与上一条不同时才新增，所以纯浏览不会堆垃圾。
+     * 存 localStorage 而不是 ExtensionSettings：这是本地草稿性质的数据，
+     * 没必要占用服务器配额，也不该跨设备同步。
+     */
+    class DressHistory {
+        constructor() {
+            /** @type {Record<string, Array<{t: number, code: string, name: string}>>} */
+            this.buckets = {};
+            /** 上次轮询的时间戳 */
+            this.lastTick = 0;
+            this.loaded = false;
+            /**
+             * 进入换装界面时各目标的样子，key 同 keyOf。
+             * 只驻内存：它代表"这次进来时的原始状态"，跨会话没有意义。
+             * @type {Map<string, string>}
+             */
+            this.baselines = new Map();
+            /**
+             * 返回 true 时不采样：闪烁提示期间装备数据被临时改写，
+             * 那不是用户的改动。
+             *
+             * 用探针函数而不是 suspend/resume 计数 —— 闪烁的开始与恢复
+             * 分散在多处（超时、切换节点、销毁窗口），手动配对漏一次就会
+             * 让采样永久停摆。直接查状态没有这个风险。
+             * @type {(() => boolean)|null}
+             */
+            this.busyProbe = null;
+        }
+
+        get enabled() {
+            return historyConfig.enabled;
+        }
+
+        /**
+         * 目标的存储键。用会员号，匿名角色退回名字。
+         * @param {Object} C
+         * @returns {string|null}
+         */
+        keyOf(C) {
+            if (!C) return null;
+            if (C.MemberNumber != null) return `M${C.MemberNumber}`;
+            return C.Name ? `N${C.Name}` : null;
+        }
+
+        /** 这个目标能留多少条 */
+        capOf(C) {
+            return C?.IsPlayer?.() ? HISTORY_MAX_SELF : HISTORY_MAX_OTHER;
+        }
+
+        /** 从 localStorage 读入，只做一次 */
+        load() {
+            if (this.loaded) return;
+            this.loaded = true;
+            try {
+                const raw = w.localStorage?.getItem(HISTORY_KEY);
+                if (raw) {
+                    const data = JSON.parse(raw);
+                    if (data && typeof data === 'object') this.buckets = data;
+                }
+            } catch (e) {
+                console.warn('[LianDressOptimization] 读取换装历史失败', e);
+                this.buckets = {};
+            }
+            // 顺手清掉换键前留下的旧数据，别让它一直占着配额
+            try {
+                w.localStorage?.removeItem('LianDressHistory');
+            } catch {
+                /* 无所谓 */
+            }
+            this.prune();
+        }
+
+        /** 写回 localStorage */
+        save() {
+            try {
+                w.localStorage?.setItem(HISTORY_KEY, JSON.stringify(this.buckets));
+            } catch (e) {
+                // 配额爆了就丢掉一半最旧的再试一次，失败就放弃（历史不是关键数据）
+                console.warn('[LianDressOptimization] 保存换装历史失败，尝试瘦身', e);
+                try {
+                    for (const key of Object.keys(this.buckets)) {
+                        const list = this.buckets[key];
+                        this.buckets[key] = list.slice(0, Math.ceil(list.length / 2));
+                    }
+                    w.localStorage?.setItem(HISTORY_KEY, JSON.stringify(this.buckets));
+                } catch {
+                    /* 放弃 */
+                }
+            }
+        }
+
+        /**
+         * 按数量裁剪，不看时间。
+         *
+         * 先各桶限量（自己 60、其他玩家每人 30），再看总量：超了就从
+         * 其他玩家里丢最旧的，只有别人的全丢完还超才动自己的。
+         *
+         * 桶里只有会员号，看不出归属，所以每条记录自带 self 标记 ——
+         * 按"当前玩家是谁"实时判断的话，换账号后旧记录会判错。
+         */
+        prune() {
+            let changed = false;
+
+            // 第一步：丢掉损坏数据，各桶按自己的上限截断
+            for (const key of Object.keys(this.buckets)) {
+                const list = this.buckets[key];
+                if (!Array.isArray(list)) {
+                    delete this.buckets[key];
+                    changed = true;
+                    continue;
+                }
+                // 要求 fp 存在：早期版本的记录没有指纹字段，留着会让
+                // "已经记过这个状态"的判断失效，从而每分钟重复入库一次
+                const valid = list.filter(r =>
+                    r && typeof r.code === 'string' && typeof r.t === 'number'
+                    && typeof r.fp === 'string');
+                const cap = valid.some(r => r.self) ? HISTORY_MAX_SELF : HISTORY_MAX_OTHER;
+                const kept = valid.slice(0, cap);
+                if (kept.length !== list.length) changed = true;
+                if (kept.length === 0) delete this.buckets[key];
+                else this.buckets[key] = kept;
+            }
+
+            // 第二步：总量超限，优先牺牲其他玩家的旧记录
+            let total = this.total();
+            if (total <= HISTORY_MAX_TOTAL) return changed;
+
+            // 把候选摊平成 (key, 记录) 对，按"先别人后自己、同类先旧"排序。
+            // 自己的记录排在最后，只有别人的删光了还超才会被碰到
+            const victims = [];
+            for (const key of Object.keys(this.buckets)) {
+                for (const rec of this.buckets[key]) victims.push({ key, rec });
+            }
+            victims.sort((a, b) => {
+                const sa = a.rec.self ? 1 : 0;
+                const sb = b.rec.self ? 1 : 0;
+                if (sa !== sb) return sa - sb;
+                return a.rec.t - b.rec.t;
+            });
+
+            for (const v of victims) {
+                if (total <= HISTORY_MAX_TOTAL) break;
+                const list = this.buckets[v.key];
+                if (!list) continue;
+                const at = list.indexOf(v.rec);
+                if (at < 0) continue;
+                list.splice(at, 1);
+                total--;
+                changed = true;
+                if (list.length === 0) delete this.buckets[v.key];
+            }
+            return changed;
+        }
+
+        /** 当前总记录条数 */
+        total() {
+            let n = 0;
+            for (const key of Object.keys(this.buckets)) {
+                const list = this.buckets[key];
+                if (Array.isArray(list)) n += list.length;
+            }
+            return n;
+        }
+
+        /**
+         * 进入换装界面时记下当前样子作为基线。基线只在内存里，不落盘 ——
+         * 它的用途是判断"到底改过没有"，只有真的改了才会产生记录。
+         *
+         * 每帧调用，缺失时才计算，所以稳定态下只是一次 Map 查找。
+         * @param {Object} C
+         */
+        ensureBaseline(C) {
+            if (!this.enabled || this.busy()) return;
+            const key = this.keyOf(C);
+            if (!key || this.baselines.has(key)) return;
+            const fp = buildCompareKey(C);
+            const code = buildAppearanceCode(C);
+            if (fp && code) this.baselines.set(key, { fp, code });
+        }
+
+        /** 离开换装界面时清掉基线，下次进入重新取样 */
+        clearBaselines() {
+            this.baselines.clear();
+        }
+
+        /**
+         * 记一条快照。
+         *
+         * 没有改动就不记：这是"打开换装界面看一眼"与"真的动手改了"的分界。
+         * 判据是与进入界面时的基线比较，而不是与上一条记录比较 —— 后者在
+         * 跨会话时会把"上次退出后的正常变化"误当成本次改动。
+         *
+         * @param {Object} C
+         * @param {string} [note] - 记录来源，显示在列表里
+         * @param {boolean} [force] - 跳过基线判断（恢复历史前后的存档用）
+         * @returns {boolean} 是否真的新增了
+         */
+        record(C, note, force) {
+            if (!this.enabled) return false;
+            // 闪烁中的数据是临时值，记下来会污染历史
+            if (!force && this.busy()) return false;
+            const key = this.keyOf(C);
+            if (!key) return false;
+            this.load();
+
+            const code = buildAppearanceCode(C);
+            const fp = buildCompareKey(C);
+            if (!code || !fp) return false;
+
+            const base = this.baselines.get(key);
+            if (!force) {
+                // 还没取到基线说明没进过换装界面，不主动记
+                if (!base) return false;
+                // 与进门时一模一样：只是看了看，没动手。
+                // 比的是指纹（剔掉了计时器、表情这些自己会变的字段），
+                // 不是压缩后的完整代码
+                if (base.fp === fp) return false;
+            }
+
+            const list = this.buckets[key] ?? [];
+            // 已经记过这个状态
+            if (list.length > 0 && list[0].fp === fp) return false;
+
+            const self = !!C.IsPlayer?.();
+            const stamp = (rec, t, n) =>
+                ({ t, code: rec.code, fp: rec.fp, name: C.Name || '', self, note: n });
+
+            // 首次记录时把基线一起存进去，否则"改之前的样子"就找不回来了
+            if (base && base.fp !== fp
+                && (list.length === 0 || list[0].fp !== base.fp)) {
+                list.unshift(stamp(base, Date.now() - 1, '修改前'));
+            }
+            list.unshift(stamp({ code, fp }, Date.now(), note || ''));
+
+            this.buckets[key] = list.slice(0, this.capOf(C));
+            this.prune();
+            this.save();
+            return true;
+        }
+
+        /**
+         * 界面内的定时轮询。由每帧的 hook 调用，自己判断是否到点。
+         * 顺带在首帧取基线，这样"有没有改过"才有参照。
+         * @param {Object} C
+         */
+        tick(C) {
+            if (!this.enabled) return;
+            if (this.busy()) return;
+            this.ensureBaseline(C);
+            const now = Date.now();
+            if (now - this.lastTick < HISTORY_TICK) return;
+            this.lastTick = now;
+            this.record(C, '定时');
+        }
+
+        /** 当前装备数据是否正被临时改写（闪烁提示中） */
+        busy() {
+            try {
+                return !!this.busyProbe?.();
+            } catch {
+                return false;
+            }
+        }
+
+        /**
+         * 取某个目标的记录列表（已按时间倒序）
+         * @param {Object} C
+         * @returns {Array<{t: number, code: string}>}
+         */
+        listFor(C) {
+            this.load();
+            const key = this.keyOf(C);
+            if (!key) return [];
+            if (this.prune()) this.save();
+            return this.buckets[key] ?? [];
+        }
+
+        /**
+         * 清掉某个目标的全部记录
+         * @param {Object} C
+         */
+        clearFor(C) {
+            const key = this.keyOf(C);
+            if (!key) return;
+            this.load();
+            delete this.buckets[key];
+            this.save();
+        }
+
+        /**
+         * 把身上当前的非衣服件（道具、Script 组）并进要恢复的 bundle。
+         *
+         * 恢复只该改衣服。以快照为准、当前道具补位，两边同组时快照优先
+         * —— 快照里本来就只有衣服，不会和道具撞组。
+         *
+         * @param {Object} C
+         * @param {Array<Object>} bundle - 快照里的衣服
+         * @returns {Array<Object>} 可直接交给 ServerAppearanceLoadFromBundle
+         */
+        mergeKeptItems(C, bundle) {
+            if (!Array.isArray(C?.Appearance)) return bundle;
+            const covered = new Set(bundle.map(b => b?.Group).filter(Boolean));
+            const kept = [];
+            for (const item of C.Appearance) {
+                if (!item?.Asset || isDressItem(item)) continue;
+                const g = item.Asset.Group.Name;
+                if (covered.has(g)) continue;
+                kept.push({
+                    Group: g,
+                    Name: item.Asset.Name,
+                    Color: item.Color,
+                    Craft: item.Craft,
+                    Difficulty: item.Difficulty,
+                    Property: item.Property
+                });
+            }
+            return kept.length > 0 ? bundle.concat(kept) : bundle;
+        }
+
+        /**
+         * 把一条记录写回角色。
+         *
+         * 走本体的 ServerAppearanceLoadFromBundle：它会跑完整的校验与权限流程，
+         * 自己手搓 Appearance 数组容易造出非法组合。但它吃的是 bundle 格式
+         * （Name/Group/Color/Property），正好就是我们存的结构。
+         *
+         * @param {Object} C
+         * @param {string} code
+         * @returns {boolean} 是否成功
+         */
+        restore(C, code) {
+            if (!C || !code) return false;
+            try {
+                const lz = w.LZString;
+                const json = lz?.decompressFromBase64?.(code);
+                if (!json) return false;
+                const bundle = JSON.parse(json);
+                if (!Array.isArray(bundle) || bundle.length === 0) return false;
+
+                // 写回前先把当前状态记一条，否则恢复错了就找不回来了。
+                // force：这一条必须留下，不受"有没有改动"的约束
+                this.record(C, '恢复前', true);
+
+                // 恢复本身是一次改动，基线要跟着走到新状态，
+                // 否则下一次轮询会把"恢复结果 vs 老基线"再记一遍
+                this.baselines.delete(this.keyOf(C));
+
+                if (typeof w.ServerAppearanceLoadFromBundle !== 'function') return false;
+                // 关键：把身上现有的道具原样并回去。
+                // ServerAppearanceLoadFromBundle 是整体替换（C.Appearance =
+                // appearance），bundle 里缺哪个组，ServerBuildAppearanceDiff
+                // 就把那个组算成"移除"。快照只存衣服，直接写回等于把所有
+                // 束具连锁一起脱掉
+                w.ServerAppearanceLoadFromBundle(
+                    C, C.AssetFamily || 'Female3DCG',
+                    this.mergeKeptItems(C, bundle), w.Player?.MemberNumber);
+
+                w.CharacterRefresh?.(C, true, false);
+                if (C.IsPlayer?.()) {
+                    w.ServerPlayerAppearanceSync?.();
+                } else if (typeof w.ChatRoomCharacterUpdate === 'function') {
+                    w.ChatRoomCharacterUpdate(C);
+                }
+                return true;
+            } catch (e) {
+                console.warn('[LianDressOptimization] 恢复换装历史失败', e);
+                return false;
+            }
+        }
+    }
+
+    // 开关值单独放一个对象，跨越声明顺序：applySettings 可能先跑
+    const historyConfig = { enabled: DEFAULT_SETTINGS.DressHistoryEnabled };
+    const dressHistory = new DressHistory();
 
     // =======================================================================================
     // 衣服调整窗口
@@ -3159,7 +3693,8 @@
             const tools = [
                 { icon: '📁', title: '部件浏览器：分层缩略图，点选定位；可切换浏览其他可选衣服', open: () => this.showBrowser() },
                 { icon: '🎨', title: '改色：统一调整色相/饱和度/亮度，或整体染色', open: (btn) => this.showRecolorPanel(btn) },
-                { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) }
+                { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) },
+                { icon: '🕘', title: '历史记录：自动备份的换装快照，可回退到某个时间点', open: (btn) => this.showHistoryPanel(btn) }
             ];
             for (const tool of tools) {
                 const btn = document.createElement('button');
@@ -3210,6 +3745,8 @@
                 box-shadow: 0 4px 6px rgba(0,0,0,0.3);
                 display: flex; flex-direction: column; gap: 10px;
                 font-size: ${UI.fontSm}px;
+                box-sizing: border-box;
+                max-height: calc(100vh - 20px); overflow-y: auto;
             `;
 
             const head = document.createElement('div');
@@ -4052,6 +4589,153 @@
             const parts = [swapped ? '已更换衣服并拷贝配置' : '已拷贝到目标槽位'];
             if (full && !target.compatible) parts.push('结构不一致，层级与变换已跳过');
             this.toast(parts.join('（') + (parts.length > 1 ? '）' : ''));
+        }
+
+        /**
+         * 历史记录面板：列出自动备份的快照，可回退到某个时间点。
+         * @param {HTMLElement} anchor
+         */
+        showHistoryPanel(anchor) {
+            const C = ItemColorCharacter;
+            const { body } = this.openToolPanel(anchor, '历史记录', null);
+
+            if (!C) {
+                body.appendChild(this.hintText('读不到角色信息'));
+                return;
+            }
+            if (!historyConfig.enabled) {
+                body.appendChild(this.hintText(
+                    '自动备份已关闭。可在「换装设置」里重新打开。'));
+                return;
+            }
+
+            // 打开面板时若已有改动，把当前状态补一条，好让它也能被回退到。
+            // 没改动则什么都不做 —— 只是查看历史不该产生记录
+            dressHistory.record(C, '查看时');
+
+            const self = !!C.IsPlayer?.();
+            const list = dressHistory.listFor(C);
+
+            body.appendChild(this.hintText(
+                '只备份衣服，不含束具道具。'
+                + `${self ? '自己保留最近 60 条' : '每个玩家保留最近 30 条'}。`));
+
+            if (list.length === 0) {
+                body.appendChild(this.hintText('还没有记录。改动之后才会开始记。'));
+                return;
+            }
+
+            const scroll = document.createElement('div');
+            scroll.style.cssText = `
+                max-height: 260px; overflow-y: auto;
+                display: flex; flex-direction: column; gap: 4px;
+                border: 1px solid #CCC; padding: 4px;
+            `;
+            for (const rec of list) {
+                scroll.appendChild(this.historyRow(C, rec, list[0] === rec));
+            }
+            body.appendChild(scroll);
+
+            const clear = document.createElement('button');
+            clear.textContent = '清空这个角色的记录';
+            clear.style.cssText = `
+                padding: 5px 0; cursor: pointer;
+                border: 1px solid #000; background: #fff;
+                font-size: ${UI.fontSm}px;
+            `;
+            clear.onclick = (e) => {
+                e.stopPropagation();
+                this.confirmDialog('清空之后无法找回，确定吗？', '清空', () => {
+                    dressHistory.clearFor(C);
+                    this.closeToolPanel();
+                    this.toast('已清空历史记录');
+                });
+            };
+            body.appendChild(clear);
+        }
+
+        /**
+         * 历史记录里的一行。
+         * @param {Object} C
+         * @param {{t: number, code: string, note?: string}} rec
+         * @param {boolean} newest - 最新那条即当前状态，标注一下
+         */
+        historyRow(C, rec, newest) {
+            const row = document.createElement('div');
+            row.style.cssText = `
+                display: flex; align-items: center; gap: 6px;
+                padding: 3px 4px;
+            `;
+
+            const label = document.createElement('span');
+            const time = new Date(rec.t);
+            const hh = String(time.getHours()).padStart(2, '0');
+            const mm = String(time.getMinutes()).padStart(2, '0');
+            const ago = Math.max(0, Math.round((Date.now() - rec.t) / 60000));
+            const tags = [];
+            if (newest) tags.push('当前');
+            if (rec.note) tags.push(rec.note);
+            label.textContent = `${hh}:${mm}`
+                + (ago > 0 ? `（${ago} 分钟前）` : '（刚刚）')
+                + (tags.length ? ` ${tags.join('·')}` : '');
+            label.style.cssText = `flex: 1; min-width: 0; font-size: ${UI.fontSm}px;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;`;
+            row.appendChild(label);
+
+            const use = document.createElement('button');
+            use.textContent = '恢复';
+            use.disabled = newest;
+            use.style.cssText = `
+                padding: 3px 10px; cursor: ${newest ? 'default' : 'pointer'};
+                border: 1px solid #000; font-size: ${UI.fontXs}px;
+                background: ${newest ? '#EEE' : '#fff'};
+                color: ${newest ? '#999' : '#000'};
+            `;
+            use.onclick = (e) => {
+                e.stopPropagation();
+                if (newest) return;
+                this.confirmDialog(
+                    `把这身衣服换回 ${hh}:${mm} 的样子？\n`
+                    + '当前状态会先自动存一条，可以再退回来。',
+                    '恢复',
+                    () => {
+                        const ok = dressHistory.restore(C, rec.code);
+                        this.closeToolPanel();
+                        if (!ok) {
+                            this.toast('恢复失败，记录可能已损坏');
+                            return;
+                        }
+                        // 调色界面持有的 item 引用已经被上面的 bundle 加载换掉，
+                        // 留在这里改的会是孤儿对象，所以退回换装主界面
+                        this.toast('已恢复');
+                        this.exitToDressScreen();
+                    }
+                );
+            };
+            row.appendChild(use);
+            return row;
+        }
+
+        /**
+         * 退回换装主界面。
+         *
+         * 恢复历史会整体替换 C.Appearance，ItemColorItem 指向的旧对象就成了
+         * 孤儿。本体的 ItemColorFireExit 只认当前那份，直接留在调色界面
+         * 会让后续所有调整都写进被丢弃的对象里。
+         */
+        exitToDressScreen() {
+            try {
+                this.destroy();
+                if (w.CharacterAppearanceMode === 'Color'
+                    && typeof w.ItemColorCancelAndExit === 'function') {
+                    w.ItemColorCancelAndExit();
+                }
+                w.CharacterAppearanceMode = '';
+                const C = w.CharacterAppearanceSelection;
+                if (C) C.FocusGroup = null;
+            } catch (e) {
+                console.warn('[LianDressOptimization] 退回换装界面失败', e);
+            }
         }
 
         /**
@@ -7294,6 +7978,18 @@
         }
 
         /**
+         * 闪烁提示是否正在进行（装备的 Opacity 被临时改写着）。
+         *
+         * 判据用 originalOpacities 而不是 highlightTimer：前者是"有原值待
+         * 恢复"的直接证据，后者在恢复回调已执行但定时器字段还没清空的
+         * 间隙里会给出错误答案。
+         * @returns {boolean}
+         */
+        isHighlighting() {
+            return this.originalOpacities.size > 0;
+        }
+
+        /**
          * 把 originalOpacities 里记录的槽位原值写回
          */
         restoreOpacitySlots() {
@@ -8567,6 +9263,11 @@
     // 创建全局实例
     const itemColorAdjustmentWindow = new ItemColorAdjustmentWindow();
 
+    // 闪烁提示靠临时改写 Property.Opacity 实现（见 writeLayerOpacity），
+    // 那段时间的装备数据不代表用户意图。让历史备份能查到这个状态，
+    // 否则鼠标每扫过一个图层都会被记成一次"改动"
+    dressHistory.busyProbe = () => itemColorAdjustmentWindow.isHighlighting();
+
     // 捕获选中图层的贴图 URL 与绘制原点。
     // GLDrawImage / DrawImageCanvas 是两条渲染路径的共同末端，参数里带着
     // CommonDraw 算好的 drawX/drawY 和全部变换值，比在模组里复现一遍
@@ -8886,9 +9587,20 @@
 
     // 在屏幕切换时也销毁窗口
     mod.hookFunction("CommonSetScreen", 1, (args, next) => {
+        // 切屏之前抓一条：离开换装界面时的状态最值得留档。
+        // 放在 next 之前是因为 CharacterAppearanceSelection 之后可能已被清掉
+        const leaving = typeof CurrentScreen !== 'undefined' && CurrentScreen === 'Appearance';
+        const target = leaving ? w.CharacterAppearanceSelection : null;
+
         const result = next(args);
         if (typeof CurrentScreen !== 'undefined' && CurrentScreen !== 'Appearance') {
             itemColorAdjustmentWindow.destroy();
+            // 换装界面的退出会还原备份（CharacterAppearanceExit）或提交
+            // （CharacterAppearanceReady）。两种都在 next 里跑完了，
+            // 所以这里记到的是最终生效的那份
+            if (target) dressHistory.record(target, '离开换装');
+            // 基线只对"这一次进入换装界面"有效，离开就作废
+            dressHistory.clearBaselines();
         }
         return result;
     });
