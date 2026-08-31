@@ -53,6 +53,8 @@
         maxMessageCount: 50,
         maxShowPlayerCountOnLoading: 20
     };
+    // 仅保存在本页内存中；刷新页面后自动清空，避免永久误信任网域。
+    const trustedImageHosts = new Set();
 
     const HidePrivateChatEnum = {
         NONE: 0,        // 不隐藏
@@ -78,6 +80,8 @@
             startY = e.clientY;
             scrollLeft0 = el.scrollLeft;
             scrollTop0 = el.scrollTop;
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
         });
         function onMove(e) {
             if (!isDown) return;
@@ -94,12 +98,12 @@
             }
         }
         function onUp() {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
             if (!isDown) return;
             isDown = false;
             el.classList.remove('lc-drag-scrolling');
         }
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
         // 拖曳滚动结束后紧接着的 click 是「拖出来的」，不是真正点击，吞掉它避免误触房间/成员项
         // （允许文字选取的容器不吞 click：那类容器点击本来就没有「打开」语义，不需要防误触）
         el.addEventListener('click', function (e) {
@@ -270,9 +274,11 @@
             root.setAttribute('data-lc-theme-pref', pref);
             root.setAttribute('data-lc-theme', eff);
             const dial = document.getElementById('lcThemeDial');
-            if (dial) dial.setAttribute('aria-label', '主题模式：' + ({ classic: '经典', light: '亮色', dark: '暗色' }[pref]));
+            if (dial) dial.setAttribute('aria-label', I18nModule.getText('theme_mode_value', {
+                mode: I18nModule.getText('theme_' + pref)
+            }));
             const chip = document.getElementById('lcThemeChip');
-            if (chip) chip.textContent = ({ classic: '经典', light: '亮色', dark: '暗色' }[eff]);
+            if (chip) chip.textContent = I18nModule.getText('theme_' + eff);
         }
 
         function renderDial() {
@@ -282,7 +288,7 @@
             host.id = 'lc-theme-host';
             host.classList.add('lc-pending');
             host.innerHTML =
-                '<button class="lc-theme-dial" id="lcThemeDial" type="button" aria-label="主题模式">' +
+                '<button class="lc-theme-dial" id="lcThemeDial" type="button">' +
                 '<span class="lc-td-mark light" aria-hidden="true">' + LC_ICONS.sun + '</span>' +
                 '<span class="lc-td-mark classic" aria-hidden="true">' + LC_ICONS.half + '</span>' +
                 '<span class="lc-td-mark dark" aria-hidden="true">' + LC_ICONS.moon + '</span>' +
@@ -311,9 +317,8 @@
         return { init: init, apply: apply, dispose: dispose, getPref: function () { return pref; } };
     })();
 
-    // Step1 自启动
+    // 设计令牌可立即注入；主题控件需等翻译模块建立后再初始化。
     injectDesignTokens();
-    ThemeModule.init();
 
     // 主题拨杆尚未移入面板前跟随 FAB 位置。
     // 这个函式就不再做事。
@@ -1289,10 +1294,14 @@
             // ⚠️ 必须用版本号短路：cloneNode + replaceChild 会触发 MutationObserver 再次进入本函数，
             // 若不加短路会无限 clone 循环，占满主线程导致页面点不动。
             const pencil = [...dlg.querySelectorAll('button.lc-head-btn')].find(function (b) {
-                return b.title === '切换单双页模式' || b.title === '收起/展开右侧标签' || b.title === '切换联系人/对话';
+                return b.title === I18nModule.getText('toggle_page_mode')
+                    || b.title === I18nModule.getText('toggle_side_panel')
+                    || b.title === I18nModule.getText('toggle_contacts_chat');
             });
             if (!pencil || pencil.dataset.lcPatched === 'pencil-v3') return;
-            const headButtonLabel = CommonIsMobile ? '切换联系人/对话' : '收起/展开右侧标签';
+            const headButtonLabel = CommonIsMobile
+                ? I18nModule.getText('toggle_contacts_chat')
+                : I18nModule.getText('toggle_side_panel');
             pencil.title = headButtonLabel;
             pencil.setAttribute('aria-label', headButtonLabel);
             // 替换图标为「侧边栏切换」：外框 + 竖线 + 折叠箭头（告别"书写"铅笔）
@@ -2163,7 +2172,22 @@
                 'add_friend': '添加好友',
                 'friend_added_confirm': '已成功加{0}为好友，是否立即发送回执消息？',
                 'friend_added_message': '({0} 已经成为了你的好友，让我们一起开始愉快的聊天吧)',
-                'message_limit_tip': '超出显示范围的消息请下载后查看'
+                'message_limit_tip': '超出显示范围的消息请下载后查看',
+                'theme_mode_value': '主题模式：{mode}',
+                'theme_classic': '经典',
+                'theme_light': '亮色',
+                'theme_dark': '暗色',
+                'toggle_page_mode': '切换单双页模式',
+                'back_to_sender_list': '返回发送者列表',
+                'settings': '设置',
+                'toggle_contacts_chat': '切换联系人/对话',
+                'toggle_side_panel': '收起/展开右侧标签',
+                'no_search_results': '没有找到匹配“{query}”的消息成员',
+                'snap_floating_button': '悬浮按钮自动贴边',
+                'none': '无',
+                'trust_image_domain': '信任',
+                'trust_image_domain_title': '信任图片网域',
+                'trust_image_domain_confirm': '是否在本次页面期间信任网域“{domain}”？信任后，该网域的图片会直接显示；刷新页面后信任将自动重置。'
             },
             'EN': {
                 'input_placeholder': 'Type a message...',
@@ -2228,20 +2252,37 @@
                 'add_friend': 'Add Friend',
                 'friend_added_confirm': 'Successfully added {0} as friend. Send confirmation message now?',
                 'friend_added_message': '({0} is now your friend, let\'s start chatting happily together!)',
-                'message_limit_tip': 'Messages beyond the display range can be viewed after downloading'
+                'message_limit_tip': 'Messages beyond the display range can be viewed after downloading',
+                'theme_mode_value': 'Theme: {mode}',
+                'theme_classic': 'Classic',
+                'theme_light': 'Light',
+                'theme_dark': 'Dark',
+                'toggle_page_mode': 'Toggle single/two-page mode',
+                'back_to_sender_list': 'Back to conversation list',
+                'settings': 'Settings',
+                'toggle_contacts_chat': 'Toggle contacts/conversation',
+                'toggle_side_panel': 'Collapse/expand side panel',
+                'no_search_results': 'No message member matches “{query}”',
+                'snap_floating_button': 'Snap floating button to screen edge',
+                'none': 'None',
+                'trust_image_domain': 'Trust',
+                'trust_image_domain_title': 'Trust image domain',
+                'trust_image_domain_confirm': 'Trust “{domain}” for this page session? Images from this domain will be shown directly. Trust resets when the page is refreshed.'
             }
         };
+        // 当前仅启用中英双语。以后新增语言时，只需注册字典及其语言代码别名。
+        const languageAliases = { CN: 'CN', TW: 'CN', EN: 'EN' };
 
         /**
          * 获取当前语言
          * @returns {string} - 语言代码，如 'CN' 或 'EN'
          */
         function getCurrentLanguage() {
-            // 从 TranslationLanguage 获取当前语言，默认为 'CN'
-            const lang = typeof TranslationLanguage !== 'undefined' ? TranslationLanguage : 'EN';
-            if (lang === 'TW') return 'CN';
-            // 确保语言代码存在于翻译字典中
-            return translations[lang] ? lang : 'EN';
+            // CN、TW 共用中文，其余未注册语言统一回退英文。
+            const lang = typeof TranslationLanguage !== 'undefined'
+                ? String(TranslationLanguage).toUpperCase()
+                : 'EN';
+            return languageAliases[lang] || 'EN';
         }
 
         /**
@@ -2252,11 +2293,16 @@
          */
         function getText(key, ...args) {
             const lang = getCurrentLanguage();
-            let text = translations[lang][key] || translations['CN'][key] || key;
+            let text = translations[lang]?.[key] ?? translations.EN[key] ?? key;
 
-            // 替换占位符 {0}, {1}, {2} 等
-            args.forEach((arg, index) => {
-                text = text.replace(new RegExp(`\\{${index}\\}`, 'g'), arg);
+            // 推荐具名占位符 getText('key', { player, room })；继续兼容旧的 {0} 格式。
+            const replacements = args.length === 1 && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])
+                ? args[0]
+                : Object.fromEntries(args.map((value, index) => [index, value]));
+            text = text.replace(/\{([A-Za-z0-9_]+)\}/g, function(match, name) {
+                return Object.prototype.hasOwnProperty.call(replacements, name)
+                    ? String(replacements[name])
+                    : match;
             });
 
             return text;
@@ -2286,13 +2332,24 @@
             translations[lang][key] = value;
         }
 
+        function registerLanguage(lang, dictionary, aliases = []) {
+            const normalized = String(lang).toUpperCase();
+            translations[normalized] = { ...(translations[normalized] || {}), ...(dictionary || {}) };
+            languageAliases[normalized] = normalized;
+            aliases.forEach(alias => { languageAliases[String(alias).toUpperCase()] = normalized; });
+        }
+
         return {
             getText,
             hasKey,
             addTranslation,
+            registerLanguage,
             getCurrentLanguage
         };
     })();
+
+    ThemeModule.init();
+    _positionThemeHostNearFab();
 
     // 消息对话框模块
     const MessageModule = (function() {
@@ -3806,7 +3863,7 @@
             // 切换单双页模式按钮
             const pageButton = document.createElement('button');
             pageButton.textContent = '📄'; // 初始状态
-            pageButton.title = '切换单双页模式';
+            pageButton.title = I18nModule.getText('toggle_page_mode');
             pageButton.style.background = '#f0f0f0';
             pageButton.style.border = '1px solid #ddd';
             pageButton.style.borderRadius = '4px';
@@ -3826,7 +3883,7 @@
             // 返回发送者列表按钮
             const backToSenderButton = document.createElement('button');
             backToSenderButton.textContent = '◀️';
-            backToSenderButton.title = '返回发送者列表';
+            backToSenderButton.title = I18nModule.getText('back_to_sender_list');
             backToSenderButton.style.background = '#f0f0f0';
             backToSenderButton.style.border = '1px solid #ddd';
             backToSenderButton.style.borderRadius = '4px';
@@ -3964,7 +4021,7 @@
             // 设置按钮
             const settingsButton = document.createElement('button');
             settingsButton.textContent = '⚙'; // 齿轮符号
-            settingsButton.title = '设置';
+            settingsButton.title = I18nModule.getText('settings');
             settingsButton.style.background = '#f0f0f0';
             settingsButton.style.border = '1px solid #ddd';
             settingsButton.style.borderRadius = '4px';
@@ -4570,7 +4627,7 @@
                 // 如果没有匹配的发送者，显示提示信息
                 if (!hasVisibleSenders && searchKeyword) {
                     const noResults = document.createElement('div');
-                    noResults.textContent = `没有找到匹配"${searchKeyword}"的消息成员`;
+                    noResults.textContent = I18nModule.getText('no_search_results', { query: searchKeyword });
                     noResults.style.color = '#888';
                     noResults.style.padding = '10px 0';
                     scrollableContainer.appendChild(noResults);
@@ -4809,6 +4866,9 @@
                     btn.style.cursor = 'pointer';
                     btn.style.outline = 'none';
                     btn.style.fontWeight = 'bold';
+                    if (I18nModule.getCurrentLanguage() === 'EN') {
+                        btn.style.fontSize = 'calc(1em - 1pt)';
+                    }
                     btn.style.minWidth = '48px';
                     btn.style.whiteSpace = 'nowrap';
                     btn.style.display = 'flex';
@@ -5008,7 +5068,6 @@
                 container.style.gridTemplateColumns = `repeat(${columnCount}, 1fr)`;
 
                 // 生成成员列表
-                let showList;
                 if (mode === 'room') {
                     // 只显示房间成员
                     const roomMemberNumbers = ChatRoomCharacter
@@ -5483,6 +5542,26 @@
                 messageText.innerHTML = content;
                 messageText.style.margin = '2px 0';
                 messageText.style.wordBreak = 'break-word';
+                messageText.querySelectorAll('.lc-trust-image-btn').forEach(function(button) {
+                    button.addEventListener('click', function(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        let imageUrl = '';
+                        try { imageUrl = decodeURIComponent(button.dataset.lcImageUrl || ''); } catch (e) { return; }
+                        const hostname = getImageHostname(imageUrl);
+                        if (!hostname) return;
+                        createConfirmDialog({
+                            title: I18nModule.getText('trust_image_domain_title'),
+                            content: I18nModule.getText('trust_image_domain_confirm', { domain: hostname }),
+                            confirmText: I18nModule.getText('trust_image_domain'),
+                            cancelText: I18nModule.getText('cancel'),
+                            onConfirm: function() {
+                                trustedImageHosts.add(hostname);
+                                updateMessageContent();
+                            }
+                        });
+                    });
+                });
 
                 // 消息底部信息栏
                 const messageFooter = createMessageFooter(msg);
@@ -5533,7 +5612,16 @@
                 }
             }
 
-            // 处理消息内容，返回处理后的HTML和可能的操作按钮
+            function escapeHtml(value) {
+                return String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            // 处理消息内容，返回安全HTML和可能的操作按钮
             function processMessageContent(message, content, allowActions = true) {
                 // 初始化返回对象
                 const result = {
@@ -5541,20 +5629,30 @@
                     actions: []
                 };
 
-                // 处理换行符
-                let processedContent = content.replace(/\n/g, '<br>');
-
-                // 处理URL链接，使其可点击
+                // 先拆出 URL，再转义所有玩家输入，避免 innerHTML 注入。
                 const urlRegex = /(https?):\/\/[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]/g;
-                processedContent = processedContent.replace(urlRegex, function(url) {
+                let processedContent = '';
+                let lastIndex = 0;
+                String(content).replace(urlRegex, function(url, _scheme, offset) {
+                    processedContent += escapeHtml(String(content).slice(lastIndex, offset));
+                    const safeUrl = escapeHtml(url);
                     if (isValidImageUrl(url)) {
-                        return `<a href="${url}" target="_blank" style="text-decoration: none;"><img src="${url}" style="max-width: 100%; max-height: 300px; border-radius: 4px; margin: 4px 0;" alt="图片" /></a>`;
+                        processedContent += `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none;"><img src="${safeUrl}" style="max-width: 100%; max-height: 300px; border-radius: 4px; margin: 4px 0;" alt="Image" /></a>`;
+                    } else {
+                        processedContent += `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline;">${safeUrl}</a>`;
+                        if (isImageUrlCandidate(url)) {
+                            const encodedUrl = escapeHtml(encodeURIComponent(url));
+                            processedContent += ` <button type="button" class="lc-trust-image-btn lc-mini-btn" data-lc-image-url="${encodedUrl}">${escapeHtml(I18nModule.getText('trust_image_domain'))}</button>`;
+                        }
                     }
-                    return `<a href="${url}" target="_blank" style="color: #0066cc; text-decoration: underline;">${url}</a>`;
+                    lastIndex = offset + url.length;
+                    return url;
                 });
+                processedContent += escapeHtml(String(content).slice(lastIndex));
+                processedContent = processedContent.replace(/\n/g, '<br>');
 
                 // 检查是否以*开头和结尾，应用斜体样式
-                if (processedContent.startsWith('*') || processedContent.startsWith('•') && processedContent.length > 2) {
+                if ((processedContent.startsWith('*') || processedContent.startsWith('•')) && processedContent.length > 2) {
                     processedContent = `<em style="color: #444444;">${processedContent}</em>`;
                 }
 
@@ -5562,7 +5660,7 @@
                 if (allowActions) {
                     // 检查是否包含房间邀请 |房间名|格式
                     const roomInviteRegex = /\|([^\|]+)\|/;
-                    const roomMatch = processedContent.match(roomInviteRegex);
+                    const roomMatch = String(content).match(roomInviteRegex);
 
                     if (roomMatch) {
                         const roomName = roomMatch[1];
@@ -5874,8 +5972,6 @@
                     messages.forEach(msg => {
                         const timeStr = new Date(msg.time).toLocaleString();
                         const isSelf = msg.sender === Player.MemberNumber;
-                        const typeStr = getMessageTypeText(msg.type);
-
                         // 获取发送者名称
                         let senderName = '';
                         if (isSelf) {
@@ -6408,7 +6504,7 @@
             snapCheckbox.type = 'checkbox';
             snapCheckbox.checked = Player.ExtensionSettings?.LCData?.MessageSetting?.SnapFloatingButtonToEdge !== false;
             snapLabel.appendChild(snapCheckbox);
-            snapLabel.appendChild(document.createTextNode('悬浮按钮自动贴边'));
+            snapLabel.appendChild(document.createTextNode(I18nModule.getText('snap_floating_button')));
             dialog.appendChild(snapLabel);
 
             // 确定按钮
@@ -6499,7 +6595,8 @@
             messageDialog.updateFriendButtonCount();
             // 更新正在输入状态
             updateTypingPlayers();
-            if (document.getElementById('LC-Message-AddSenderContainer').style.display !== 'none')
+            const addSenderContainer = document.getElementById('LC-Message-AddSenderContainer');
+            if (addSenderContainer && addSenderContainer.style.display !== 'none')
             {
                 messageDialog.updateAddSenderLists();
             }
@@ -6913,18 +7010,26 @@
                                 return getCharacterName(f.MemberNumber);
                             }).join('，');
                         } else {
-                            friendsNames = '无';
+                            friendsNames = I18nModule.getText('none');
                         }
 
-                        // 填充内容
-                        popup.innerHTML = `
-                        <div style="display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:1.1em;margin-bottom:6px;">
-                            <span>${room.Name}</span>
-                            <span>(${room.MemberCount}/${room.MemberLimit})</span>
-                        </div>
-                        <div class="lc-room-description" style="margin-bottom:6px;">${room.Description || ''}</div>
-                        <div>${I18nModule.getText('friends')}：${friendsNames}</div>
-                        `;
+                        // 房间资料来自网络，使用 textContent 建立节点以避免 HTML 注入。
+                        const popupTitle = document.createElement('div');
+                        popupTitle.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:1.1em;margin-bottom:6px;';
+                        const popupRoomName = document.createElement('span');
+                        popupRoomName.textContent = room.Name || '';
+                        const popupRoomCount = document.createElement('span');
+                        popupRoomCount.textContent = `(${room.MemberCount}/${room.MemberLimit})`;
+                        popupTitle.append(popupRoomName, popupRoomCount);
+
+                        const popupDescription = document.createElement('div');
+                        popupDescription.className = 'lc-room-description';
+                        popupDescription.style.marginBottom = '6px';
+                        popupDescription.textContent = room.Description || '';
+
+                        const popupFriends = document.createElement('div');
+                        popupFriends.textContent = `${I18nModule.getText('friends')}: ${friendsNames}`;
+                        popup.append(popupTitle, popupDescription, popupFriends);
 
                         // 点击外部关闭
                         function closePopup(ev) {
@@ -7124,20 +7229,33 @@
             return isReadyRevRoomList;
         }
 
-        // 添加检查URL是否有效的函数
-        function isValidImageUrl(url) {
-            if (!url) return false;
+        function getImageHostname(url) {
+            try {
+                return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+            } catch (e) {
+                return '';
+            }
+        }
 
-            // 检查文件扩展名是否为常见图片格式
+        function isImageUrlCandidate(url) {
+            if (!url) return false;
             const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
-            const hasValidExtension = imageExtensions.some(ext => url.toLowerCase().endsWith(ext));
-            if (!hasValidExtension) return false;
+            try {
+                const urlObj = new URL(url);
+                return (urlObj.protocol === 'http:' || urlObj.protocol === 'https:')
+                    && imageExtensions.some(ext => urlObj.pathname.toLowerCase().endsWith(ext));
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // 预设白名单与本页临时信任网域可直接显示图片。
+        function isValidImageUrl(url) {
+            if (!isImageUrlCandidate(url)) return false;
 
             try {
-                // 解析URL
-                const urlObj = new URL(url);
-                // 获取主机名（不包含www）
-                const hostname = urlObj.hostname.replace(/^www\./, '');
+                const hostname = getImageHostname(url);
+                if (trustedImageHosts.has(hostname)) return true;
 
                 // 检查主机名是否匹配允许的网站
                 return config.allowedImageHosts.some(host => {
@@ -7544,7 +7662,7 @@
         // 如果已经存在对话框，先移除
         const existingDialog = document.getElementById('confirmDialog');
         if (existingDialog) {
-            existingDialog.remove();
+            (existingDialog.parentElement || existingDialog).remove();
         }
 
         // 创建遮罩层
@@ -7554,7 +7672,8 @@
         overlay.style.left = '0';
         overlay.style.width = '100%';
         overlay.style.height = '100%';
-        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.45)';
+        overlay.style.backdropFilter = 'blur(2px)';
         overlay.style.zIndex = FloatZindex - 1;
         overlay.style.display = 'flex';
         overlay.style.justifyContent = 'center';
@@ -7563,11 +7682,17 @@
         // 创建对话框容器
         const dialog = document.createElement('div');
         dialog.id = 'confirmDialog';
-        dialog.style.backgroundColor = 'white';
-        dialog.style.borderRadius = '8px';
+        dialog.className = 'lc-confirm-dialog';
+        dialog.style.backgroundColor = 'var(--panel)';
+        dialog.style.color = 'var(--ink)';
+        dialog.style.border = '1px solid var(--seam)';
+        dialog.style.borderRadius = '18px';
         dialog.style.padding = '20px';
         dialog.style.width = config.width;
-        dialog.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
+        dialog.style.maxWidth = 'calc(100vw - 40px)';
+        dialog.style.boxSizing = 'border-box';
+        dialog.style.boxShadow = 'var(--shadow-float)';
+        dialog.style.fontFamily = 'var(--lc-font)';
         dialog.style.position = 'relative';
 
         // 创建标题
@@ -7576,14 +7701,17 @@
         title.style.fontSize = '16px';
         title.style.fontWeight = 'bold';
         title.style.marginBottom = '15px';
-        title.style.color = '#333';
+        title.style.color = 'var(--ink)';
 
         // 创建内容
         const content = document.createElement('div');
         content.textContent = config.content;
         content.style.marginBottom = '20px';
-        content.style.color = '#666';
+        content.style.color = 'var(--ink-2)';
         content.style.lineHeight = '1.5';
+        content.style.overflowWrap = 'anywhere';
+        content.style.wordBreak = 'break-word';
+        content.style.maxWidth = '100%';
 
         // 创建按钮容器
         const buttonContainer = document.createElement('div');
@@ -7595,35 +7723,35 @@
         const cancelButton = document.createElement('button');
         cancelButton.textContent = config.cancelText;
         cancelButton.style.padding = '6px 12px';
-        cancelButton.style.border = '1px solid #ddd';
-        cancelButton.style.borderRadius = '4px';
-        cancelButton.style.backgroundColor = 'white';
+        cancelButton.style.border = '1px solid var(--seam)';
+        cancelButton.style.borderRadius = '10px';
+        cancelButton.style.backgroundColor = 'var(--card)';
         cancelButton.style.cursor = 'pointer';
-        cancelButton.style.color = '#666';
+        cancelButton.style.color = 'var(--ink-2)';
 
         // 创建确认按钮
         const confirmButton = document.createElement('button');
         confirmButton.textContent = config.confirmText;
         confirmButton.style.padding = '6px 12px';
         confirmButton.style.border = 'none';
-        confirmButton.style.borderRadius = '4px';
-        confirmButton.style.backgroundColor = '#4CAF50';
+        confirmButton.style.borderRadius = '10px';
+        confirmButton.style.backgroundColor = 'var(--accent)';
         confirmButton.style.cursor = 'pointer';
-        confirmButton.style.color = 'white';
+        confirmButton.style.color = 'var(--btn-label)';
 
         // 添加按钮悬停效果
         cancelButton.addEventListener('mouseover', () => {
-            cancelButton.style.backgroundColor = '#f5f5f5';
+            cancelButton.style.backgroundColor = 'var(--panel-dn)';
         });
         cancelButton.addEventListener('mouseout', () => {
-            cancelButton.style.backgroundColor = 'white';
+            cancelButton.style.backgroundColor = 'var(--card)';
         });
 
         confirmButton.addEventListener('mouseover', () => {
-            confirmButton.style.backgroundColor = '#45a049';
+            confirmButton.style.filter = 'brightness(.92)';
         });
         confirmButton.addEventListener('mouseout', () => {
-            confirmButton.style.backgroundColor = '#4CAF50';
+            confirmButton.style.filter = '';
         });
 
         // 添加按钮点击事件
@@ -7784,9 +7912,6 @@
         // 让确定按钮在鼠标下方
         const confirmBtnRect = confirmButton.getBoundingClientRect();
         // 计算偏移量，使鼠标在确定按钮中心
-        const offsetX = x - (dialogRect.left + dialogRect.width - confirmBtnRect.width / 2);
-        const offsetY = y - (dialogRect.top + dialogRect.height - confirmBtnRect.height / 2);
-
         // 让对话框右下角的确定按钮中心对准鼠标
         dialog.style.left = (x - dialogRect.width + confirmBtnRect.width / 2) + 'px';
         dialog.style.top = (y - dialogRect.height + confirmBtnRect.height / 2) + 'px';
