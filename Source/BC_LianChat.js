@@ -4577,6 +4577,25 @@
                 }
             }
 
+            // 切换对话时，消息区可能刚从隐藏状态显示，图片也可能尚未完成布局。
+            // 立即滚动一次，再在后续绘制周期校正，确保最终停在最新消息。
+            function scrollMessageContentToLatest(expectedSenderNum) {
+                const scrollToBottom = function() {
+                    if (selectedSenderNum !== expectedSenderNum || !messageContent.isConnected) return;
+                    messageContent.scrollTop = messageContent.scrollHeight;
+                };
+
+                scrollToBottom();
+                requestAnimationFrame(function() {
+                    scrollToBottom();
+                    requestAnimationFrame(scrollToBottom);
+                });
+
+                messageContent.querySelectorAll('img').forEach(function(img) {
+                    if (!img.complete) img.addEventListener('load', scrollToBottom, { once: true });
+                });
+            }
+
             // 更新消息内容
             function updateMessageContent() {
                 messageContent.innerHTML = '';
@@ -4620,9 +4639,7 @@
                 const recentMessages = chatHistory.messages.slice(-config.maxMessageCount);
                 displayMessages(recentMessages);
 
-                // 清空与重建都发生在同一轮事件中，立即定位到底部，避免旧版延迟
-                // 10ms 期间浏览器先绘制 scrollTop=0 而产生闪烁。
-                messageContent.scrollTop = messageContent.scrollHeight;
+                scrollMessageContentToLatest(selectedSenderNum);
             }
 
             // 显示"无选择"消息
