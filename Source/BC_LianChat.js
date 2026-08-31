@@ -63,6 +63,27 @@
     };
 
     const FloatZindex = 100001;
+    const DEFAULT_MESSAGE_FONT_SIZE_PT = 11;
+    const MIN_MESSAGE_FONT_SIZE_PT = 8;
+    const MAX_MESSAGE_FONT_SIZE_PT = 24;
+
+    function getMessageFontSizePt() {
+        const savedValue = Number(Player?.ExtensionSettings?.LCData?.MessageSetting?.MessageFontSizePt);
+        if (!Number.isFinite(savedValue)) return DEFAULT_MESSAGE_FONT_SIZE_PT;
+        return Math.min(MAX_MESSAGE_FONT_SIZE_PT, Math.max(MIN_MESSAGE_FONT_SIZE_PT, Math.round(savedValue)));
+    }
+
+    function applyMessageFontSize(root, sizePt = getMessageFontSizePt()) {
+        const normalizedSize = Math.min(MAX_MESSAGE_FONT_SIZE_PT, Math.max(MIN_MESSAGE_FONT_SIZE_PT, Math.round(Number(sizePt))));
+        const fontSize = `${Number.isFinite(normalizedSize) ? normalizedSize : DEFAULT_MESSAGE_FONT_SIZE_PT}pt`;
+        const targets = root?.classList?.contains('lc-message-log')
+            ? [root]
+            : (root || document).querySelectorAll('.lc-message-log');
+        targets.forEach(function(element) {
+            element.style.fontSize = fontSize;
+            element.style.setProperty('--lc-message-font-size', fontSize);
+        });
+    }
 
     // 为可滚动区域增加拖曳滚动；allowTextSelect 保留文字选择能力。
     function makeDragScrollable(el, opts) {
@@ -646,6 +667,7 @@
         '.lc-msg-self,.lc-msg-other{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}',
         '.lc-msg-self{justify-content:flex-end}',
         '.lc-bubble{position:relative;max-width:80%;min-width:50px;padding:8px 10px;border-radius:12px;font-size:14px;line-height:1.45;word-break:break-word;color:var(--ink)!important}',
+        '.lc-message-log .lc-bubble{font-size:var(--lc-message-font-size,11pt)}',
         '.lc-msg-other .lc-bubble,.lc-msg-self .lc-bubble{color:var(--ink)!important;border:1px solid var(--seam)!important}',
         '.lc-msg-other .lc-bubble{background:var(--panel-dn)!important;border-left:3px solid var(--divider)!important;border-top-left-radius:4px!important}',
         '.lc-msg-self .lc-bubble{background:var(--panel-dn)!important}',
@@ -974,6 +996,12 @@
         '  transition:transform .12s var(--ease),filter .2s var(--ease)!important}',
         '#lianChatSettingsDialog button:hover{filter:brightness(1.05)!important}',
         '#lianChatSettingsDialog button:active{transform:scale(.95)!important}',
+        /* 字體大小：文字在左，紧凑的减号/数值/加号在右 */
+        '#lianChatSettingsDialog > .lc-font-size-setting{display:flex!important;align-items:center!important;justify-content:space-between!important;flex-direction:row!important;',
+        '  gap:14px!important;margin-bottom:18px!important;color:var(--ink)!important;font-size:14px!important}',
+        '#lianChatSettingsDialog .lc-font-size-control button{width:30px!important;height:30px!important;min-width:30px!important;margin:0!important;padding:0!important;',
+        '  border-radius:50%!important;font-size:18px!important;box-shadow:none!important}',
+        '#lianChatSettingsDialog .lc-font-size-control button:disabled{opacity:.4!important;cursor:not-allowed!important;filter:none!important}',
         /* reduced-motion 守卫 */
         '@media (prefers-reduced-motion:reduce){',
         '  #lianChatSettingsDialog{animation:none!important}',
@@ -2146,6 +2174,8 @@
                 'hide_when_open': '打开时隐藏',
                 'always_hide': '一直隐藏',
                 'background_notification': '网页后台时消息通知',
+                'message_font_size': '聊天字體大小：',
+                'point_unit': '{0} PT',
                 'signature_placeholder': '输入新的签名...（最多50字）',
                 'avatar_url_placeholder': '输入头像地址...',
                 'avatar_sites_tip': '悬停此处查看目前头像可用网站',
@@ -2226,6 +2256,8 @@
                 'hide_when_open': 'Hide when open',
                 'always_hide': 'Always hide',
                 'background_notification': 'Message notification when page is in background',
+                'message_font_size': 'Chat font size:',
+                'point_unit': '{0} PT',
                 'signature_placeholder': 'Enter new signature... (max 50 characters)',
                 'avatar_url_placeholder': 'Enter avatar URL...',
                 'avatar_sites_tip': 'Hover here to view available avatar sites',
@@ -4265,6 +4297,7 @@
             messageContent.style.flexGrow = '1';
             messageContent.style.padding = '15px';
             messageContent.style.overflowY = 'auto';
+            applyMessageFontSize(messageContent);
             makeDragScrollable(messageContent, { allowTextSelect: true });
 
             // 创建工具按钮栏
@@ -6507,6 +6540,56 @@
             snapLabel.appendChild(document.createTextNode(I18nModule.getText('snap_floating_button')));
             dialog.appendChild(snapLabel);
 
+            // 聊天字體大小（以 PT 為單位）
+            // 不使用 label 包住按钮，避免点击控制列空白处时浏览器代为触发第一颗按钮。
+            const fontSizeLabel = document.createElement('div');
+            fontSizeLabel.className = 'lc-font-size-setting';
+            fontSizeLabel.style.display = 'flex';
+            fontSizeLabel.style.alignItems = 'center';
+            fontSizeLabel.style.justifyContent = 'space-between';
+            fontSizeLabel.style.gap = '16px';
+            fontSizeLabel.style.marginBottom = '18px';
+            fontSizeLabel.appendChild(document.createTextNode(I18nModule.getText('message_font_size')));
+
+            const originalFontSize = getMessageFontSizePt();
+            let previewFontSize = originalFontSize;
+            const fontSizeControl = document.createElement('span');
+            fontSizeControl.className = 'lc-font-size-control';
+            fontSizeControl.style.display = 'inline-flex';
+            fontSizeControl.style.alignItems = 'center';
+            fontSizeControl.style.gap = '8px';
+
+            const decreaseFontButton = document.createElement('button');
+            decreaseFontButton.type = 'button';
+            decreaseFontButton.textContent = '−';
+            decreaseFontButton.setAttribute('aria-label', '−');
+
+            const fontSizeValue = document.createElement('span');
+            fontSizeValue.style.minWidth = '54px';
+            fontSizeValue.style.textAlign = 'center';
+
+            const increaseFontButton = document.createElement('button');
+            increaseFontButton.type = 'button';
+            increaseFontButton.textContent = '+';
+            increaseFontButton.setAttribute('aria-label', '+');
+
+            function updateFontSizePreview(nextSize) {
+                previewFontSize = Math.min(MAX_MESSAGE_FONT_SIZE_PT, Math.max(MIN_MESSAGE_FONT_SIZE_PT, nextSize));
+                fontSizeValue.textContent = I18nModule.getText('point_unit', previewFontSize);
+                decreaseFontButton.disabled = previewFontSize <= MIN_MESSAGE_FONT_SIZE_PT;
+                increaseFontButton.disabled = previewFontSize >= MAX_MESSAGE_FONT_SIZE_PT;
+                applyMessageFontSize(document, previewFontSize);
+            }
+            decreaseFontButton.onclick = function() { updateFontSizePreview(previewFontSize - 1); };
+            increaseFontButton.onclick = function() { updateFontSizePreview(previewFontSize + 1); };
+            updateFontSizePreview(previewFontSize);
+
+            fontSizeControl.appendChild(decreaseFontButton);
+            fontSizeControl.appendChild(fontSizeValue);
+            fontSizeControl.appendChild(increaseFontButton);
+            fontSizeLabel.appendChild(fontSizeControl);
+            dialog.appendChild(fontSizeLabel);
+
             // 确定按钮
             const okBtn = document.createElement('button');
             okBtn.textContent = I18nModule.getText('confirm');
@@ -6532,10 +6615,15 @@
                 Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat = hideValue;
                 Player.ExtensionSettings.LCData.MessageSetting.NotifyWhenBackground = notifyValue;
                 Player.ExtensionSettings.LCData.MessageSetting.SnapFloatingButtonToEdge = snapValue;
+                Player.ExtensionSettings.LCData.MessageSetting.MessageFontSizePt = previewFontSize;
+
+                // 不需重開聊天視窗，立即套用到目前的訊息區。
+                applyMessageFontSize(document);
 
                 // 同步到服务器
                 ServerPlayerExtensionSettingsSync('LCData');
 
+                document.removeEventListener('mousedown', closeIfClickOutside);
                 dialog.remove();
             };
 
@@ -6544,6 +6632,7 @@
             // 点击弹窗外部关闭
             function closeIfClickOutside(e) {
                 if (!dialog.contains(e.target)) {
+                    applyMessageFontSize(document, originalFontSize);
                     dialog.remove();
                     document.removeEventListener('mousedown', closeIfClickOutside);
                 }
@@ -7561,11 +7650,14 @@
         // 创建菜单容器
         const menu = document.createElement('div');
         menu.id = 'contextMenu';
+        menu.className = 'lc-context-menu';
         menu.style.position = 'fixed';
-        menu.style.backgroundColor = 'white';
-        menu.style.border = '1px solid #ddd';
-        menu.style.borderRadius = '4px';
-        menu.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+        menu.style.backgroundColor = 'var(--panel)';
+        menu.style.color = 'var(--ink)';
+        menu.style.border = '1px solid var(--seam)';
+        menu.style.borderRadius = 'var(--r-row)';
+        menu.style.boxShadow = 'var(--shadow-float)';
+        menu.style.fontFamily = 'var(--lc-font)';
         menu.style.padding = '5px 0';
         menu.style.zIndex = FloatZindex;
         menu.style.maxHeight = '300px';
@@ -7577,11 +7669,11 @@
             menuItem.textContent = option.text;
             menuItem.style.padding = '6px 12px';
             menuItem.style.cursor = 'pointer';
-            menuItem.style.color = '#333';
+            menuItem.style.color = 'var(--ink)';
 
             // 鼠标悬停效果
             menuItem.addEventListener('mouseover', function() {
-                this.style.backgroundColor = '#f5f5f5';
+                this.style.backgroundColor = 'var(--accent-soft)';
             });
             menuItem.addEventListener('mouseout', function() {
                 this.style.backgroundColor = 'transparent';
@@ -8319,6 +8411,7 @@
         Player.ExtensionSettings.LCData.MessageSetting.HidePrivateChat ??= HidePrivateChatEnum.NONE;
         Player.ExtensionSettings.LCData.MessageSetting.NotifyWhenBackground ??= false;
         Player.ExtensionSettings.LCData.MessageSetting.SnapFloatingButtonToEdge ??= true;
+        Player.ExtensionSettings.LCData.MessageSetting.MessageFontSizePt ??= DEFAULT_MESSAGE_FONT_SIZE_PT;
         Player.ExtensionSettings.LCData.MessageSetting.PinnedRooms ??= {};
         Player.ExtensionSettings.LCData.MessageSetting.SetRoomSpace ??= 'X';
     }
