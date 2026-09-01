@@ -712,18 +712,24 @@
         props.forEach(function (p) { try { el.style[p] = ''; } catch (e) {} });
     }
 
-    // 返回按钮：优先按 emoji 命中（首次），已 SVG 化后按 title 命中（重渲染）。
+    // 返回按钮：优先按 dataset.lcRole 命中（语言无关且不受 SVG 化影响）；
+    // emoji 与 title 仅作旧结构的向后兼容兜底。
     function _findBackBtn(btns) {
         const label = I18nModule.getText('back_to_sender_list');
-        return btns.find(function (b) { return b.textContent === '◀️'; })
+        return btns.find(function (b) { return b.dataset && b.dataset.lcRole === 'back-to-list'; })
+            || btns.find(function (b) { return b.textContent === '◀️'; })
             || btns.find(function (b) { return b.title === label; });
     }
 
     function _skinBackBtn(btn) {
-        if (!btn || btn.dataset.lcBackSvg === '1') return;
+        if (!btn) return;
+        const label = I18nModule.getText('back_to_sender_list');
+        // 切换语言后同步文案；SVG 只替换一次。
+        if (btn.title !== label) btn.title = label;
+        btn.setAttribute('aria-label', label);
+        if (btn.dataset.lcBackSvg === '1') return;
         btn.dataset.lcBackSvg = '1';
         _swapBtnIcon(btn, 'chevL', 'md');
-        btn.setAttribute('aria-label', I18nModule.getText('back_to_sender_list'));
     }
 
     // 找到对话框（含 #LC-Message-SenderList 的 fixed 定位祖先）
@@ -1083,7 +1089,10 @@
         const panel = document.querySelector('.lc-panel');
         const senderList = document.getElementById('LC-Message-SenderList');
         const rightContainer = document.getElementById('LC-Message-RightContainer');
-        if (!panel || !senderList || !rightContainer || MessageModule.isPageMode) return;
+        if (!panel || !senderList || !rightContainer) return;
+        // 单列模式下双列布局无意义，直接早退；调用方若期望生效，
+        // 必须先把 isPageMode 置为 false（见 exitPageMode）。
+        if (MessageModule.isPageMode) return;
 
         if (rightContainer._lcCollapseTimer) clearTimeout(rightContainer._lcCollapseTimer);
         if (rightContainer._lcLayoutTimer) clearTimeout(rightContainer._lcLayoutTimer);
@@ -1354,13 +1363,28 @@
             // 兼容已 patch 过的按钮（title 已是新文案）：重注入时也能找到并替换旧 clone。
             // ⚠️ 必须用版本号短路：cloneNode + replaceChild 会触发 MutationObserver 再次进入本函数，
             // 若不加短路会无限 clone 循环，占满主线程导致页面点不动。
-            const pencil = [...dlg.querySelectorAll('button.lc-head-btn')].find(function (b) {
+            // 优先按 dataset.lcRole 定位：title 会随界面语言变化，切换语言后
+            // 纯文本匹配会全部落空，导致按钮拿不到 handler 而彻底点不动。
+            const headBtns = [...dlg.querySelectorAll('button.lc-head-btn')];
+            const pencil = headBtns.find(function (b) {
+                return b.dataset && b.dataset.lcRole === 'column-toggle';
+            }) || headBtns.find(function (b) {
                 return b.title === I18nModule.getText('toggle_page_mode')
                     || b.title === I18nModule.getText('toggle_column_mode')
                     || b.title === I18nModule.getText('toggle_side_panel')
                     || b.title === I18nModule.getText('toggle_contacts_chat');
             });
-            if (!pencil || pencil.dataset.lcPatched === 'pencil-v3') return;
+            if (!pencil) return;
+            // 已 patch 过的按钮只刷新文案：切换界面语言后 title/aria-label 需要跟上，
+            // 但不能重复 clone（会丢监听并触发 observer 循环）。
+            if (pencil.dataset.lcPatched === 'pencil-v3') {
+                const label = I18nModule.getText('toggle_column_mode');
+                if (pencil.title !== label) {
+                    pencil.title = label;
+                    pencil.setAttribute('aria-label', label);
+                }
+                return;
+            }
             const headButtonLabel = I18nModule.getText('toggle_column_mode');
             pencil.title = headButtonLabel;
             pencil.setAttribute('aria-label', headButtonLabel);
@@ -1373,7 +1397,15 @@
             // 桌面端与移动端统一语义：只切换单列 / 双列，不再做「收起侧栏」或「联系人/对话」跳转。
             clone.addEventListener('click', function (e) {
                 e.stopPropagation();
-                if (typeof MessageModule.toggleColumnMode === 'function') MessageModule.toggleColumnMode();
+                if (typeof MessageModule.toggleColumnMode === 'function') {
+                    MessageModule.toggleColumnMode();
+                } else {
+                    // 本函数由 MutationObserver 驱动，可能早于 createMessageDialog 完成挂载。
+                    // 此时不静默丢弃点击：直接翻转状态并留下告警，便于定位。
+                    console.warn('[LianChat] toggleColumnMode 尚未挂载，使用兜底切换');
+                    MessageModule.isPageMode = !MessageModule.isPageMode;
+                    MessageModule.isRightPageActive = false;
+                }
                 syncColumnToggleButton();
                 if (typeof constrainDialogToWindow === 'function' && dlg) constrainDialogToWindow(dlg);
             });
@@ -3916,6 +3948,8 @@
             // 切换单双页模式按钮
             const pageButton = document.createElement('button');
             pageButton.textContent = '📄'; // 初始状态
+            // 语言无关的定位锚点：title 会随语言变化，dataset 不会。
+            pageButton.dataset.lcRole = 'column-toggle';
             pageButton.title = I18nModule.getText('toggle_page_mode');
             pageButton.style.background = '#f0f0f0';
             pageButton.style.border = '1px solid #ddd';
@@ -3936,6 +3970,7 @@
             // 返回发送者列表按钮
             const backToSenderButton = document.createElement('button');
             backToSenderButton.textContent = '◀️';
+            backToSenderButton.dataset.lcRole = 'back-to-list';
             backToSenderButton.title = I18nModule.getText('back_to_sender_list');
             backToSenderButton.style.background = '#f0f0f0';
             backToSenderButton.style.border = '1px solid #ddd';
@@ -4002,6 +4037,13 @@
 
             // 切换到发送者列表页面的共用函数
             function switchToSenderListPage(preserveSelection) {
+                // 清掉 contacts 折叠动画的收尾定时器：它会在 520ms 后把右栏 display:none，
+                // 若此时已切回单列/双列，会把刚显示出来的右栏又隐藏掉。
+                const rc0 = document.getElementById('LC-Message-RightContainer');
+                if (rc0 && rc0._lcLayoutTimer) {
+                    clearTimeout(rc0._lcLayoutTimer);
+                    rc0._lcLayoutTimer = null;
+                }
                 if (MessageModule.isPageMode) {
                     MessageModule.isRightPageActive = false;
                     if (!preserveSelection) selectedSenderNum = 0;
@@ -4026,13 +4068,14 @@
                 MessageModule.isRightPageActive = false;
                 messageDialog.updateMessageContent();
 
-                const senderList = document.getElementById('LC-Message-SenderList');
                 const rightContainer = document.getElementById('LC-Message-RightContainer');
-
-                if (senderList && rightContainer) {
-                    senderList.style.width = '220px';
-                    senderList.style.minWidth = '220px';
-                    rightContainer.style.width = 'auto';
+                if (rightContainer) {
+                    // 同上：清掉折叠动画的收尾定时器，避免它稍后把右栏重新隐藏。
+                    if (rightContainer._lcLayoutTimer) {
+                        clearTimeout(rightContainer._lcLayoutTimer);
+                        rightContainer._lcLayoutTimer = null;
+                    }
+                    // 先恢复可见性，宽度交给 setDesktopPanelLayout 统一计算，避免写两遍造成闪动。
                     rightContainer.style.display = 'flex';
                 }
                 // 走标准双列布局，清掉单列/收起态遗留的 flex、opacity 与 display:none。
