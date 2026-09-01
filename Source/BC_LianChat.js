@@ -712,6 +712,20 @@
         props.forEach(function (p) { try { el.style[p] = ''; } catch (e) {} });
     }
 
+    // 返回按钮：优先按 emoji 命中（首次），已 SVG 化后按 title 命中（重渲染）。
+    function _findBackBtn(btns) {
+        const label = I18nModule.getText('back_to_sender_list');
+        return btns.find(function (b) { return b.textContent === '◀️'; })
+            || btns.find(function (b) { return b.title === label; });
+    }
+
+    function _skinBackBtn(btn) {
+        if (!btn || btn.dataset.lcBackSvg === '1') return;
+        btn.dataset.lcBackSvg = '1';
+        _swapBtnIcon(btn, 'chevL', 'md');
+        btn.setAttribute('aria-label', I18nModule.getText('back_to_sender_list'));
+    }
+
     // 找到对话框（含 #LC-Message-SenderList 的 fixed 定位祖先）
     function _findDialog() {
         const sl = document.getElementById('LC-Message-SenderList');
@@ -804,7 +818,8 @@
         const pageBtn = btns.find(function (b) { return b.textContent === '📄'; });
         const setBtn = btns.find(function (b) { return b.textContent === '⚙'; });
         const closeBtn = btns.find(function (b) { return b.textContent === '×'; });
-        const backBtn = btns.find(function (b) { return b.textContent === '◀️'; });
+        // 返回按钮 SVG 化后 textContent 变空，改用 title 定位才能在重渲染时继续命中。
+        const backBtn = _findBackBtn(btns);
         const titleBar = _findTitleBar(dlg);
         if (titleBar) {
             titleBar.classList.add('lc-panel-head');
@@ -821,6 +836,7 @@
             if (pageBtn && pageBtn.textContent === '📄') _swapBtnIcon(pageBtn, 'pencil', 'md');
             if (setBtn && setBtn.textContent === '⚙') _swapBtnIcon(setBtn, 'gear', 'md');
             if (closeBtn && closeBtn.textContent === '×') _swapBtnIcon(closeBtn, 'close', 'md');
+            _skinBackBtn(backBtn);
             // 合并主题拨杆进头部（含兜底重试：头部按钮可能稍后填充）
             if (!_moveDialIntoHead(dlg)) {
                 setTimeout(function () { if (dlg && dlg.isConnected) _moveDialIntoHead(dlg); }, 200);
@@ -896,6 +912,12 @@
         if (pageBtn && pageBtn.textContent === '📄') _swapBtnIcon(pageBtn, 'pencil', 'md');
         if (setBtn && setBtn.textContent === '⚙') _swapBtnIcon(setBtn, 'gear', 'md');
         if (closeBtn && closeBtn.textContent === '×') _swapBtnIcon(closeBtn, 'close', 'md');
+        const backBtn = _findBackBtn(btns);
+        if (backBtn && !backBtn.classList.contains('lc-head-btn')) {
+            backBtn.classList.add('lc-head-btn');
+            _strip(backBtn, ['background', 'border', 'borderRadius', 'color', 'width', 'height', 'fontSize', 'fontWeight']);
+        }
+        _skinBackBtn(backBtn);
         const input = document.getElementById('LC-Message-InputField');
         if (input && !input.classList.contains('lc-input')) { _strip(input, ['border', 'borderRadius', 'background', 'color', 'padding', 'outline', 'boxShadow', 'boxSizing']); input.classList.add('lc-input'); }
         const send = document.getElementById('messageSendButton');
@@ -1101,8 +1123,19 @@
 
         rightContainer.dataset.lcLayout = mode;
         rightContainer.dataset.lcCollapsed = mode === 'contacts' ? '1' : '0';
+        syncColumnToggleButton();
+    }
+
+    // 头部切换按钮的高亮态：单列模式点亮，双列模式熄灭。
+    // 返回按钮的显隐同样只由「是否单列 + 是否停在右栏」决定，桌面/移动一致。
+    function syncColumnToggleButton() {
         const toggle = document.querySelector('button.lc-head-btn[data-lc-patched="pencil-v3"]');
-        if (toggle) toggle.classList.toggle('lc-head-btn--active', mode === 'contacts');
+        if (toggle) toggle.classList.toggle('lc-head-btn--active', !!MessageModule.isPageMode);
+        const back = MessageModule.backToSenderButton;
+        if (back) {
+            const show = !!MessageModule.isPageMode && !!MessageModule.isRightPageActive;
+            back.style.display = show ? 'flex' : 'none';
+        }
     }
 
     // 面板布局与行为
@@ -1323,13 +1356,12 @@
             // 若不加短路会无限 clone 循环，占满主线程导致页面点不动。
             const pencil = [...dlg.querySelectorAll('button.lc-head-btn')].find(function (b) {
                 return b.title === I18nModule.getText('toggle_page_mode')
+                    || b.title === I18nModule.getText('toggle_column_mode')
                     || b.title === I18nModule.getText('toggle_side_panel')
                     || b.title === I18nModule.getText('toggle_contacts_chat');
             });
             if (!pencil || pencil.dataset.lcPatched === 'pencil-v3') return;
-            const headButtonLabel = CommonIsMobile
-                ? I18nModule.getText('toggle_contacts_chat')
-                : I18nModule.getText('toggle_side_panel');
+            const headButtonLabel = I18nModule.getText('toggle_column_mode');
             pencil.title = headButtonLabel;
             pencil.setAttribute('aria-label', headButtonLabel);
             // 替换图标为「侧边栏切换」：外框 + 竖线 + 折叠箭头（告别"书写"铅笔）
@@ -1338,23 +1370,14 @@
             const clone = pencil.cloneNode(true);
             clone.dataset.lcPatched = 'pencil-v3';
             pencil.parentElement.replaceChild(clone, pencil);
+            // 桌面端与移动端统一语义：只切换单列 / 双列，不再做「收起侧栏」或「联系人/对话」跳转。
             clone.addEventListener('click', function (e) {
                 e.stopPropagation();
-                if (MessageModule.isPageMode) {
-                    if (MessageModule.isRightPageActive) {
-                        MessageModule.switchToSenderListPage(true);
-                    } else if (MessageModule.hasSelectedSender()) {
-                        MessageModule.switchToRightPage();
-                    }
-                    clone.classList.toggle('lc-head-btn--active', MessageModule.isRightPageActive);
-                    return;
-                }
-                const rightContainer = document.getElementById('LC-Message-RightContainer');
-                if (!rightContainer) return;
-                const mode = rightContainer.dataset.lcLayout || (rightContainer.dataset.lcCollapsed === '1' ? 'contacts' : 'split');
-                setDesktopPanelLayout(mode === 'contacts' ? 'split' : 'contacts');
+                if (typeof MessageModule.toggleColumnMode === 'function') MessageModule.toggleColumnMode();
+                syncColumnToggleButton();
                 if (typeof constrainDialogToWindow === 'function' && dlg) constrainDialogToWindow(dlg);
             });
+            syncColumnToggleButton();
         }
         patchPencilButton();
 
@@ -2208,6 +2231,7 @@
                 'theme_light': '亮色',
                 'theme_dark': '暗色',
                 'toggle_page_mode': '切换单双页模式',
+                'toggle_column_mode': '切换单列/双列模式',
                 'back_to_sender_list': '返回发送者列表',
                 'settings': '设置',
                 'toggle_contacts_chat': '切换联系人/对话',
@@ -2290,6 +2314,7 @@
                 'theme_light': 'Light',
                 'theme_dark': 'Dark',
                 'toggle_page_mode': 'Toggle single/two-page mode',
+                'toggle_column_mode': 'Toggle single/two column mode',
                 'back_to_sender_list': 'Back to conversation list',
                 'settings': 'Settings',
                 'toggle_contacts_chat': 'Toggle contacts/conversation',
@@ -3809,10 +3834,6 @@
             selectedSenderNum = memberNumber;
 
             if (memberNumber) MessageModule.switchToRightPage();
-            if (memberNumber && MessageModule.isPageMode) {
-                const pageToggle = document.querySelector('button.lc-head-btn[data-lc-patched="pencil-v3"]');
-                if (pageToggle) pageToggle.classList.add('lc-head-btn--active');
-            }
 
             messageDialog.updateSenderList();
             messageDialog.updateMessageContent();
@@ -3964,19 +3985,18 @@
                 if (MessageModule.isPageMode) {
                     MessageModule.isRightPageActive = true;
 
-                    // 显示返回发送者按钮
-                    MessageModule.backToSenderButton.style.display = 'flex';
-
                     if (senderList && rightContainer) {
                         senderList.style.width = '0';
                         senderList.style.minWidth = '0';
                         rightContainer.style.width = '100%';
                         rightContainer.style.display = 'flex';
                     }
+                    if (typeof syncColumnToggleButton === 'function') syncColumnToggleButton();
                 } else if (rightContainer
                            && (rightContainer.dataset.lcLayout === 'contacts'
                                || rightContainer.dataset.lcCollapsed === '1')) {
-                    setDesktopPanelLayout('chat');
+                    // 双列模式下若侧栏曾被收起，恢复标准双列布局。
+                    setDesktopPanelLayout('split');
                 }
             }
 
@@ -3985,8 +4005,7 @@
                 if (MessageModule.isPageMode) {
                     MessageModule.isRightPageActive = false;
                     if (!preserveSelection) selectedSenderNum = 0;
-                    // 隐藏返回发送者按钮
-                    MessageModule.backToSenderButton.style.display = 'none';
+                    if (typeof syncColumnToggleButton === 'function') syncColumnToggleButton();
 
                     const senderList = document.getElementById('LC-Message-SenderList');
                     const rightContainer = document.getElementById('LC-Message-RightContainer');
@@ -4006,8 +4025,6 @@
                 MessageModule.isPageMode = false;
                 MessageModule.isRightPageActive = false;
                 messageDialog.updateMessageContent();
-                // 隐藏返回发送者按钮
-                MessageModule.backToSenderButton.style.display = 'none';
 
                 const senderList = document.getElementById('LC-Message-SenderList');
                 const rightContainer = document.getElementById('LC-Message-RightContainer');
@@ -4018,6 +4035,9 @@
                     rightContainer.style.width = 'auto';
                     rightContainer.style.display = 'flex';
                 }
+                // 走标准双列布局，清掉单列/收起态遗留的 flex、opacity 与 display:none。
+                if (typeof setDesktopPanelLayout === 'function') setDesktopPanelLayout('split');
+                if (typeof syncColumnToggleButton === 'function') syncColumnToggleButton();
             }
 
             // 将函数设为MessageModule可访问
@@ -4025,21 +4045,23 @@
             MessageModule.switchToSenderListPage = switchToSenderListPage;
             MessageModule.exitPageMode = exitPageMode;
 
-            // 切换单双页模式按钮点击事件
-            pageButton.addEventListener('click', function(e) {
-                e.stopPropagation();
-
+            // 单列 / 双列切换：桌面端与移动端共用同一入口，行为完全一致。
+            function toggleColumnMode() {
                 if (MessageModule.isPageMode) {
-                    // 当前是分页模式，切换到双页模式
-                    MessageModule.exitPageMode();
+                    exitPageMode();
                 } else {
-                    // 当前是双页模式，切换到分页模式
                     MessageModule.isPageMode = true;
                     MessageModule.isRightPageActive = false;
-
-                    // 切换到发送者列表页面
-                    MessageModule.switchToSenderListPage();
+                    switchToSenderListPage();
                 }
+                if (typeof syncColumnToggleButton === 'function') syncColumnToggleButton();
+            }
+            MessageModule.toggleColumnMode = toggleColumnMode;
+
+            pageButton.title = I18nModule.getText('toggle_column_mode');
+            pageButton.addEventListener('click', function(e) {
+                e.stopPropagation();
+                toggleColumnMode();
             });
 
             // 返回发送者列表按钮点击事件
