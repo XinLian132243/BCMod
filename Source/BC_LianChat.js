@@ -412,7 +412,7 @@
         '  font:700 11px/1 var(--lc-font);box-shadow:0 2px 6px rgba(0,0,0,.25);border:1px solid var(--card);}',
         /* 未讀通知光圈 */
         '.lc-fab-ring{position:absolute;z-index:0;inset:0;border-radius:50%;pointer-events:none;box-shadow:none}',
-        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingFast 1.2s ease-out infinite}',
+        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingFast 1.2s ease-out 1 forwards}',
         '@keyframes lcFabRingFast{0%{box-shadow:0 0 2px 0 var(--accent);opacity:.65}100%{box-shadow:0 0 18px 22px var(--accent);opacity:0}}',
         '.lc-fab--unread .lc-fab-badge{animation:lcBadgePop .36s var(--ease-spring) both}',
         /* 来消息：按钮级呼吸光晕 + 加速光环，辨识度拉满 */
@@ -2229,7 +2229,7 @@
                 'hide_when_open': '打开时隐藏',
                 'always_hide': '一直隐藏',
                 'background_notification': '网页后台时消息通知',
-                'message_font_size': '聊天字體大小：',
+                'message_font_size': '聊天字体大小：',
                 'point_unit': '{0} PT',
                 'signature_placeholder': '输入新的签名...（最多50字）',
                 'avatar_url_placeholder': '输入头像地址...',
@@ -4363,7 +4363,10 @@
             messageContent.style.padding = '15px';
             messageContent.style.overflowY = 'auto';
             applyMessageFontSize(messageContent);
-            makeDragScrollable(messageContent, { allowTextSelect: true });
+            // 手机保留拖曳滚动；电脑使用滚轮，拖曳文字时不改变滚动位置。
+            if (CommonIsMobile) {
+                makeDragScrollable(messageContent, { allowTextSelect: true });
+            }
 
             // 创建工具按钮栏
             const toolbarContainer = createToolbar();
@@ -6605,7 +6608,7 @@
             snapLabel.appendChild(document.createTextNode(I18nModule.getText('snap_floating_button')));
             dialog.appendChild(snapLabel);
 
-            // 聊天字體大小（以 PT 為單位）
+            // 聊天字体大小（以 PT 為單位）
             // 不使用 label 包住按钮，避免点击控制列空白处时浏览器代为触发第一颗按钮。
             const fontSizeLabel = document.createElement('div');
             fontSizeLabel.className = 'lc-font-size-setting';
@@ -8340,24 +8343,33 @@
         const unreadCount = MessageModule.getTotalUnreadCount();
         // 打开态切换为糖果强调色（由 .lc-fab--open 类提供，零内联）
         button.classList.toggle('lc-fab--open', !!MessageModule.isMessageDialogVisible());
-        // 来消息时启用醒目脉冲（呼吸光晕 + 加速光环 + 徽标弹入），零内联
+        // 从无未读变为有未读时播放一次；定时刷新不重建元素，避免动画重新开始。
         button.classList.toggle('lc-fab--unread', unreadCount > 0);
 
-        // 清空并重建为 SVG 图标 + 呼吸环 + 未读徽标（.lc-* 类，零内联色值）
-        button.innerHTML = '';
-        const icon = document.createElement('span');
-        icon.className = 'lc-fab-ico lc-ico lc-ico--lg';
-        icon.innerHTML = LC_ICONS.chat;
-        button.appendChild(icon);
-        if (unreadCount > 0) {
-            const badge = document.createElement('span');
-            badge.className = 'lc-fab-badge';
-            badge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
-            button.appendChild(badge);
+        let icon = button.querySelector('.lc-fab-ico');
+        if (!icon) {
+            icon = document.createElement('span');
+            icon.className = 'lc-fab-ico lc-ico lc-ico--lg';
+            icon.innerHTML = LC_ICONS.chat;
+            button.appendChild(icon);
         }
-        const ring = document.createElement('span');
-        ring.className = 'lc-fab-ring';
-        button.appendChild(ring);
+        let badge = button.querySelector('.lc-fab-badge');
+        if (unreadCount > 0) {
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'lc-fab-badge';
+                button.appendChild(badge);
+            }
+            const label = unreadCount > 99 ? '99+' : unreadCount.toString();
+            if (badge.textContent !== label) badge.textContent = label;
+        } else if (badge) {
+            badge.remove();
+        }
+        if (!button.querySelector('.lc-fab-ring')) {
+            const ring = document.createElement('span');
+            ring.className = 'lc-fab-ring';
+            button.appendChild(ring);
+        }
     }
 
     // 约束按钮位置到可视区域内
