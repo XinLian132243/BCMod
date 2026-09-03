@@ -411,9 +411,14 @@
         '  border-radius:999px;background:var(--accent);color:var(--btn-label);',
         '  font:700 11px/1 var(--lc-font);box-shadow:0 2px 6px rgba(0,0,0,.25);border:1px solid var(--card);}',
         /* 未讀通知光圈 */
-        '.lc-fab-ring{position:absolute;z-index:0;inset:0;border-radius:50%;pointer-events:none;box-shadow:none}',
-        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingFast 1.2s ease-out 1 forwards}',
-        '@keyframes lcFabRingFast{0%{box-shadow:0 0 2px 0 var(--accent);opacity:.65}100%{box-shadow:0 0 18px 22px var(--accent);opacity:0}}',
+        '.lc-fab-ring{position:absolute;z-index:0;inset:0;border-radius:50%;pointer-events:none;box-shadow:none;',
+        '  --lc-ring-glow:0 0 10px 4px var(--accent);}',
+        /* 扩散一次后收束为常亮光圈，未读期间一直保持；已读移除 class 即回到无光圈 */
+        '.lc-fab--unread .lc-fab-ring{animation:lcFabRingGlow 1.2s ease-out 1 forwards}',
+        '@keyframes lcFabRingGlow{',
+        '  0%{box-shadow:0 0 2px 0 var(--accent);opacity:.55}',
+        '  55%{box-shadow:0 0 18px 22px var(--accent);opacity:.3}',
+        '  100%{box-shadow:var(--lc-ring-glow);opacity:1}}',
         '.lc-fab--unread .lc-fab-badge{animation:lcBadgePop .36s var(--ease-spring) both}',
         /* 来消息：按钮级呼吸光晕 + 加速光环，辨识度拉满 */
         '.lc-fab--unread{animation:none}',
@@ -427,6 +432,8 @@
         '  .lc-fab-ring{animation:none!important}',
         '  .lc-fab--rise{animation:none!important}',
         '  .lc-fab--unread,.lc-fab--unread .lc-fab-ring,.lc-fab--unread .lc-fab-badge{animation:none!important}',
+        /* 不播扩散动画，但直接给出常亮光圈，未读状态仍可见 */
+        '  .lc-fab--unread .lc-fab-ring{box-shadow:var(--lc-ring-glow)!important;opacity:1!important}',
         '}'
     ].join('\n');
 
