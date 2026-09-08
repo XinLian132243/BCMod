@@ -567,6 +567,16 @@
 
     const SETTINGS_KEY = "LianDressOpt";
 
+    // 本体按 AllowNone 把整组身体部件排除在变换之外，这里额外放开的组。
+    // Pussy 是本体自己的例外（受限位移与缩放）；Emoticon 是本插件加的：
+    // 它虽然 AllowNone 为 false，但实际是一张独立贴图，变换能正常生效
+    const TRANSFORM_ALLOW_GROUPS = new Set(["Pussy", "Emoticon"]);
+
+    // 走表情通道同步的组。这类组的改动经 ChatRoomCharacterExpressionUpdate
+    // 广播，那个消息只通知房间、不写服务器存档（见 ChatRoom.js 的注释），
+    // 所以变换改完必须自己补一次真正的同步
+    const EXPRESSION_SYNC_GROUPS = new Set(["Emoticon"]);
+
     // 图层变换配置。范围与步长对齐本体 Layering.js 的 _GetTabContents
     // 存储位置为 Property.Layer{Prop}[layerName]，绘制侧在 CommonDraw.getTransform 读取：
     // 平移/旋转与物品级值相加，缩放与物品级值相乘
@@ -3198,8 +3208,14 @@
         }
 
         /**
-         * 该物品是否允许图层变换。规则对齐本体 Layering._GetTabContents：
-         * 非 AllowNone 的组（Pussy 除外）与 DynamicAfterDraw 资产禁止变换
+         * 该物品是否允许图层变换。规则基本对齐本体 Layering._GetTabContents：
+         * 非 AllowNone 的组（Pussy 除外）与 DynamicAfterDraw 资产禁止变换。
+         *
+         * 例外：Emoticon 额外放开。本体把它归进黑名单是因为整组 AllowNone
+         * 为 false，但它其实是一张独立贴图（Priority 100、自带 Left/Top），
+         * 位移缩放都能正常生效。代价是它走表情同步通道，退出时要补一次
+         * 真正的同步，见 syncExpressionGroupTransform。
+         *
          * @returns {{allowed: boolean, reason: string}}
          */
         getTransformAvailability() {
@@ -3207,8 +3223,8 @@
             if (!asset) return { allowed: false, reason: "无物品" };
 
             const group = asset.Group;
-            const isPussy = group?.Name === "Pussy";
-            if (group && !group.AllowNone && !isPussy) {
+            if (group && !group.AllowNone
+                && !TRANSFORM_ALLOW_GROUPS.has(group.Name)) {
                 return { allowed: false, reason: "该部位不支持变换" };
             }
             if (asset.DynamicAfterDraw) {
@@ -4340,19 +4356,30 @@
         }
 
         /**
-         * 搬运层级与变换属性（OverridePriority 与 Layer* 系列）。
-         * 只在结构兼容时调用：键是图层名，结构不同则键对不上。
+         * 搬运层级与变换属性（OverridePriority 与变换系列）。
          * @param {Object} src
          * @param {Object} dst
+         * @param {boolean} [layerScoped=true] - 是否连按图层名索引的 Layer* 一起搬。
+         *   结构不兼容时传 false：那些键以图层名为索引，对不上会写进无效键
          */
-        copyLayerProps(src, dst) {
-            const keys = [
+        copyLayerProps(src, dst, layerScoped = true) {
+            // 物品级变换的键不带前缀，图层级才有 Layer 前缀。
+            // 见 CommonDraw 的 getTransform：物品级读 props[propName]，
+            // 图层级读 props[`Layer${propName}`]。之前这里写的是
+            // ItemTranslationX 这类键，BC 里并不存在，所以"覆盖所有"
+            // 时物品整体的变换一直没被搬过去
+            const itemKeys = [
                 "OverridePriority",
-                "ItemTranslationX", "ItemTranslationY",
-                "ItemScaleX", "ItemScaleY", "ItemRotation",
+                "TranslationX", "TranslationY",
+                "ScaleX", "ScaleY", "Rotation"
+            ];
+            const layerKeys = [
                 "LayerTranslationX", "LayerTranslationY",
                 "LayerScaleX", "LayerScaleY", "LayerRotation"
             ];
+            // 图层级的键以图层名为索引，结构不同就对不上，只能跳过。
+            // 物品级不依赖图层名，任何时候都能搬
+            const keys = layerScoped ? itemKeys.concat(layerKeys) : itemKeys;
             dst.Property = dst.Property || {};
             for (const k of keys) {
                 const v = src.Property?.[k];
@@ -4422,20 +4449,20 @@
             mk('从目标取回：颜色 + 透明度', 'from', false);
             mk('从目标取回：全部', 'from', true);
 
-            // 结构不一致时"全部"这条路走不通：层级与变换的键是图层名，
-            // 对不上就会写进一堆无效键。降级为只搬颜色，并把按钮禁掉
+            // 结构不一致时只有按图层名索引的那部分走不通，物品整体的
+            // 变换与优先级照样能搬，所以"全部"不再禁用，只提示会跳过什么
             const sync = () => {
                 const t = targets[Number(sel.value)];
                 const notes = [];
-                if (!t.compatible) notes.push('两件衣服图层结构不同，只能拷贝颜色与透明度。');
+                if (!t.compatible) notes.push('两件衣服图层结构不同，'
+                    + '「全部」会跳过各图层单独的变换，物品整体的变换与优先级仍会拷贝。');
                 if (!t.worn && t.current) notes.push(`该槽位现在穿的是「${t.currentName}」，覆盖会先替换成本款。`);
                 warn.textContent = notes.join('');
                 warn.style.display = notes.length ? 'block' : 'none';
 
                 for (const b of btns) {
-                    const full = b.dataset.full === '1';
-                    // 结构不一致时"全部"无意义；槽位没有同款时无从取回
-                    const off = (full && !t.compatible) || (b.dataset.dir === 'from' && !t.worn);
+                    // 槽位没有同款时无从取回
+                    const off = b.dataset.dir === 'from' && !t.worn;
                     b.disabled = off;
                     b.style.opacity = off ? '0.4' : '1';
                     b.style.cursor = off ? 'not-allowed' : 'pointer';
@@ -4565,7 +4592,9 @@
             const dst = dir === 'to' ? other : ItemColorItem;
 
             this.copyColorAndOpacity(src, dst);
-            if (full && target.compatible) this.copyLayerProps(src, dst);
+            // 结构不一致时也搬物品级的变换与优先级：那部分与图层名无关。
+            // 只有按图层名索引的 Layer* 需要结构对得上
+            if (full) this.copyLayerProps(src, dst, target.compatible);
 
             // Property 里可能被清空成 {}，本体的序列化会跳过空对象，无需额外处理
             if (typeof w.CharacterRefresh === 'function') {
@@ -4587,7 +4616,7 @@
             }
 
             const parts = [swapped ? '已更换衣服并拷贝配置' : '已拷贝到目标槽位'];
-            if (full && !target.compatible) parts.push('结构不一致，层级与变换已跳过');
+            if (full && !target.compatible) parts.push('结构不一致，各图层单独的变换已跳过');
             this.toast(parts.join('（') + (parts.length > 1 ? '）' : ''));
         }
 
@@ -9581,9 +9610,55 @@
     // 必须在 next 之前销毁：ItemColorFireExit 会调 ItemColorReset() 清空
     // ItemColorState / ItemColorItem，之后闪烁就没法恢复原始透明度了
     mod.hookFunction("ItemColorFireExit", 1, (args, next) => {
+        // 退出前先取现场：next 里的 ItemColorReset 会把这两个全局清空。
+        // 用 bcGlobal 而不是 w.xxx —— 这两个是 let 声明的，不挂在 window 上
+        const save = args[0] !== false;
+        const C = bcGlobal("ItemColorCharacter");
+        const group = bcGlobal("ItemColorItem")?.Asset?.Group?.Name;
+
         itemColorAdjustmentWindow.destroy();
-        return next(args);
+        const result = next(args);
+
+        // 表情类组（Emoticon）改完变换不会自动存到服务器：它们走
+        // ChatRoomCharacterExpressionUpdate，那条消息只通知房间不写存档。
+        // 取消退出时不用补 —— 本体已把 Property 还原成备份
+        if (save && group && EXPRESSION_SYNC_GROUPS.has(group)) {
+            syncExpressionGroupTransform(C);
+        }
+        return result;
     });
+
+    /**
+     * 给表情类组补一次真正的服务器同步。
+     *
+     * 自己的角色用 ServerPlayerAppearanceSync 写账号存档；改别人的只能
+     * 走 ChatRoomCharacterUpdate。两者都发整份 Appearance，变换字段
+     * 在 Property 里一起带过去（ServerBundledItemFromAppearanceItem
+     * 是整体打包，没有字段白名单）。
+     *
+     * @param {Object} C - 被编辑的角色
+     */
+    function syncExpressionGroupTransform(C) {
+        if (!C) return;
+        try {
+            if (C.IsPlayer?.()) {
+                // 存档要求已登录：CharacterID 为空时 ServerPlayerAppearanceSync
+                // 会拿不到账号，直接跳过
+                if (C.CharacterID !== "" && typeof w.ServerPlayerAppearanceSync === 'function') {
+                    w.ServerPlayerAppearanceSync();
+                }
+                // 房间里的其他人靠这条看到变化。ServerPlayerAppearanceSync
+                // 只更新数据库，不广播
+                if (w.ServerPlayerIsInChatRoom?.() && typeof w.ChatRoomCharacterUpdate === 'function') {
+                    w.ChatRoomCharacterUpdate(C);
+                }
+            } else if (typeof w.ChatRoomCharacterUpdate === 'function') {
+                w.ChatRoomCharacterUpdate(C);
+            }
+        } catch (e) {
+            console.warn('[LianDressOptimization] 同步表情组变换失败', e);
+        }
+    }
 
     // 在屏幕切换时也销毁窗口
     mod.hookFunction("CommonSetScreen", 1, (args, next) => {
