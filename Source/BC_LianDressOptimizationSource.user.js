@@ -563,6 +563,82 @@
         try { asset.EditOpacity = true; } catch { /* 只读则忽略，绘制侧已够用 */ }
         return true;
     }
+
+    // 按图层名索引的变换键。物品级的 TranslationX 等不带索引，与图层名无关
+    const LAYER_TRANSFORM_KEYS = [
+        "LayerTranslationX", "LayerTranslationY",
+        "LayerScaleX", "LayerScaleY", "LayerRotation"
+    ];
+
+    /**
+     * 迁移旧版的无名图层变换键。
+     *
+     * R132 的 3e4c4b7fd 把 CommonDraw.getTransform 里的键从
+     * `layer.Name ?? asset.Name` 统一成了 `layer.Name ?? ""`。在那之前本插件
+     * 跟着旧约定写，存下的值键名是资产名，改版后本体再也读不到 ——
+     * 表现就是部件变换整体失效，旧值还一直残留在 Property 里。
+     *
+     * 两种入参形态都吃：身上穿的 Item（Asset.Name / Asset.Group.Name）与
+     * 序列化的 ItemBundle（Name / Group 字符串），后者是历史快照和导入代码的格式。
+     *
+     * 幂等：迁移完旧键就没了，重复调用不会有二次改动。
+     *
+     * @param {Object} entry - Item 或 ItemBundle
+     * @returns {number} 迁移的键数，0 表示无需处理
+     */
+    function migrateLegacyLayerKeys(entry) {
+        const props = entry?.Property;
+        if (!props || typeof props !== "object") return 0;
+
+        const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
+        // 资产名为空串时与目标键撞车，无从区分新旧
+        if (typeof assetName !== "string" || assetName === "") return 0;
+
+        // 只有存在无名图层的资产才会用资产名做键。Bundle 形态下要先查资产
+        const asset = entry.Asset ?? w.AssetGet?.(
+            w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
+        );
+        if (!asset || !Array.isArray(asset.Layer)) return 0;
+        if (!asset.Layer.some(l => !l || l.Name == null)) return 0;
+
+        let moved = 0;
+        for (const key of LAYER_TRANSFORM_KEYS) {
+            const map = props[key];
+            if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+            if (!Object.prototype.hasOwnProperty.call(map, assetName)) continue;
+
+            const legacy = map[assetName];
+            // 新键已有值时只清旧键 —— 那是改版后调好的，不能覆盖
+            if (typeof legacy === "number" && !Number.isNaN(legacy)
+                && typeof map[""] !== "number") {
+                map[""] = legacy;
+            }
+            delete map[assetName];
+            if (Object.keys(map).length === 0) delete props[key];
+            moved++;
+        }
+
+        return moved;
+    }
+
+    /**
+     * 批量迁移一份装备列表，原地修改。
+     * @param {Array<Object>} items - Item 或 ItemBundle 的数组
+     * @returns {{items: number, keys: number, names: string[]}} 统计
+     */
+    function migrateLegacyLayerKeysAll(items) {
+        const stat = { items: 0, keys: 0, names: [] };
+        if (!Array.isArray(items)) return stat;
+        for (const entry of items) {
+            const n = migrateLegacyLayerKeys(entry);
+            if (n === 0) continue;
+            stat.items++;
+            stat.keys += n;
+            const name = entry.Asset ? entry.Asset.Name : entry.Name;
+            if (!stat.names.includes(name)) stat.names.push(name);
+        }
+        return stat;
+    }
     // =======================================================================================
 
     const SETTINGS_KEY = "LianDressOpt";
@@ -2247,6 +2323,50 @@
     }
 
     /**
+     * 解析衣服代码，得到 ItemBundle 数组。
+     *
+     * 三种形态都吃：LZString Base64（本插件与多数工具的格式）、
+     * LZString UTF16（本体衣柜的压缩方式）、以及直接的 JSON 明文。
+     * 逐个试而不是先嗅探格式 —— 压缩串没有可靠的特征头。
+     *
+     * @param {string} code
+     * @returns {Array<Object>|null} 解不出来时返回 null
+     */
+    function decodeAppearanceCode(code) {
+        const text = typeof code === 'string' ? code.trim() : '';
+        if (!text) return null;
+
+        const lz = w.LZString;
+        const tries = [
+            () => lz?.decompressFromBase64?.(text),
+            () => lz?.decompressFromUTF16?.(text),
+            () => text
+        ];
+
+        for (const attempt of tries) {
+            let parsed;
+            try {
+                const json = attempt();
+                if (!json) continue;
+                parsed = JSON.parse(json);
+            } catch {
+                continue;
+            }
+            // 有些工具导出的是 { Appearance: [...] } 之类的包装
+            const list = Array.isArray(parsed)
+                ? parsed
+                : (parsed?.Appearance ?? parsed?.Items ?? parsed?.items);
+            if (!Array.isArray(list) || list.length === 0) continue;
+            // 认一下形状：至少得有 Name 与 Group，否则是别的东西解出来的巧合
+            if (!list.some(i => i && typeof i.Name === 'string' && typeof i.Group === 'string')) {
+                continue;
+            }
+            return list.filter(i => i && typeof i.Name === 'string' && typeof i.Group === 'string');
+        }
+        return null;
+    }
+
+    /**
      * 换装历史。每个目标一个桶，按时间倒序存压缩后的衣服代码。
      *
      * 只在内容与上一条不同时才新增，所以纯浏览不会堆垃圾。
@@ -2580,17 +2700,33 @@
          * @returns {boolean} 是否成功
          */
         restore(C, code) {
-            if (!C || !code) return false;
-            try {
-                const lz = w.LZString;
-                const json = lz?.decompressFromBase64?.(code);
-                if (!json) return false;
-                const bundle = JSON.parse(json);
-                if (!Array.isArray(bundle) || bundle.length === 0) return false;
+            const bundle = decodeAppearanceCode(code);
+            if (!C || !bundle) return false;
+            return this.applyBundle(C, bundle, '恢复前');
+        }
 
-                // 写回前先把当前状态记一条，否则恢复错了就找不回来了。
+        /**
+         * 把一份 bundle 穿到角色身上。历史恢复与代码导入共用。
+         *
+         * @param {Object} C
+         * @param {Array<Object>} bundle - ItemBundle 数组，会被原地迁移旧键
+         * @param {string} note - 写回前那条存档的备注
+         * @returns {boolean} 是否成功
+         */
+        applyBundle(C, bundle, note) {
+            if (!C || !Array.isArray(bundle) || bundle.length === 0) return false;
+            try {
+                // 旧代码里的无名图层变换键还是资产名，R132 之后本体读不到，
+                // 直接穿上就是一件没有变换的衣服。这里就地修好再穿
+                const fixed = migrateLegacyLayerKeysAll(bundle);
+                if (fixed.keys > 0) {
+                    console.log(`[LianDressOptimization] 已修复 ${fixed.items} 件衣服的 `
+                        + `${fixed.keys} 个旧版图层变换键：${fixed.names.join('、')}`);
+                }
+
+                // 写回前先把当前状态记一条，否则换错了就找不回来了。
                 // force：这一条必须留下，不受"有没有改动"的约束
-                this.record(C, '恢复前', true);
+                this.record(C, note, true);
 
                 // 恢复本身是一次改动，基线要跟着走到新状态，
                 // 否则下一次轮询会把"恢复结果 vs 老基线"再记一遍
@@ -2614,7 +2750,7 @@
                 }
                 return true;
             } catch (e) {
-                console.warn('[LianDressOptimization] 恢复换装历史失败', e);
+                console.warn('[LianDressOptimization] 写回衣服代码失败', e);
                 return false;
             }
         }
@@ -3180,25 +3316,27 @@
         }
 
         /**
-         * 图层变换属性在 Property 中的键名（与 CommonDraw 的读取一致）
+         * 图层变换属性在 Property 中的键名（与 CommonDraw 的读取一致）。
+         *
+         * 无名图层用空串。R132 的 3e4c4b7fd 把读取侧从
+         * `layer.Name ?? asset.Name` 统一成了 `layer.Name ?? ""`，
+         * 跟着资产名写本体就永远查不到，表现是部件变换整体失效。
+         * 旧数据由 migrateLegacyLayerKeys 在打开时迁移。
+         *
          * @param {Object} layer - 图层对象
          * @returns {string}
          */
         getTransformLayerName(layer) {
-            return layer.Name ?? ItemColorItem?.Asset?.Name;
+            return layer.Name ?? "";
         }
 
         /**
          * OverridePriority 里图层的键名。
          *
-         * 注意与 getTransformLayerName 不同：本体这两类属性的键约定不一样。
-         * 变换在 CommonDraw.getTransform 里按 `layer.Name ?? asset.Name` 读，
-         * 而优先级在 CharacterAppearanceSortLayers 里按 `layer.Name ?? ""` 读。
-         *
-         * 无名图层若跟着变换那套用资产名，写进去的值本体永远查不到，
-         * 表现就是子层级怎么调都不生效、只有改根节点（走 number 分支、
-         * 不看键名）才有反应。本体自己的 Layering 界面也踩了这个坑，
-         * 但这里以能生效为准，对齐读取侧。
+         * 与 getTransformLayerName 现在是同一套约定（无名图层用空串）。
+         * R132 之前本体读变换用资产名、读优先级用空串，两者不一致；
+         * 3e4c4b7fd 之后统一成空串。两个函数仍分开保留，因为它们对应
+         * 本体里两个独立的读取点，将来再分化时只改这里即可。
          *
          * @param {Object} layer - 图层对象
          * @returns {string}
@@ -3710,7 +3848,8 @@
                 { icon: '📁', title: '部件浏览器：分层缩略图，点选定位；可切换浏览其他可选衣服', open: () => this.showBrowser() },
                 { icon: '🎨', title: '改色：统一调整色相/饱和度/亮度，或整体染色', open: (btn) => this.showRecolorPanel(btn) },
                 { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) },
-                { icon: '🕘', title: '历史记录：自动备份的换装快照，可回退到某个时间点', open: (btn) => this.showHistoryPanel(btn) }
+                { icon: '🕘', title: '历史记录：自动备份的换装快照，可回退到某个时间点', open: (btn) => this.showHistoryPanel(btn) },
+                { icon: '📥', title: '导入代码：粘贴衣服代码直接穿上，顺带修好旧版失效的变换', open: (btn) => this.showImportPanel(btn) }
             ];
             for (const tool of tools) {
                 const btn = document.createElement('button');
@@ -4743,6 +4882,118 @@
             };
             row.appendChild(use);
             return row;
+        }
+
+        /**
+         * 导入面板：粘贴衣服代码直接穿上。
+         *
+         * 顺带修好 R132 之前存下的无名图层变换键 —— 那批代码里的变换
+         * 在新版本里读不到，不修就是一身没有变换的衣服。
+         *
+         * @param {HTMLElement} anchor
+         */
+        showImportPanel(anchor) {
+            const C = ItemColorCharacter;
+            const { body } = this.openToolPanel(anchor, '导入衣服代码', null);
+
+            if (!C) {
+                body.appendChild(this.hintText('读不到角色信息'));
+                return;
+            }
+
+            body.appendChild(this.hintText(
+                '粘贴衣服代码，确认后直接穿上。旧版本存的部件变换会自动修好。\n'
+                + '只换衣服，身上的束具道具保持不动。'));
+
+            const input = document.createElement('textarea');
+            input.placeholder = '在这里粘贴衣服代码';
+            input.style.cssText = `
+                width: 100%; height: 90px; resize: vertical;
+                border: 1px solid #000; box-sizing: border-box;
+                padding: 4px; font-size: ${UI.fontXs}px;
+                font-family: monospace; word-break: break-all;
+            `;
+            // 输入框里的按键不能漏给游戏：本体在 document 上监听快捷键，
+            // 打字会被当成操作指令
+            input.onkeydown = (e) => e.stopPropagation();
+            input.onkeyup = (e) => e.stopPropagation();
+            body.appendChild(input);
+
+            const status = this.hintText('');
+            body.appendChild(status);
+
+            const wear = document.createElement('button');
+            wear.textContent = '穿上';
+            wear.style.cssText = `
+                padding: 6px 0; cursor: pointer;
+                border: 1px solid #000; background: #fff;
+                font-size: ${UI.fontSm}px;
+            `;
+            wear.onclick = (e) => {
+                e.stopPropagation();
+                this.runImport(C, input.value, status);
+            };
+            body.appendChild(wear);
+
+            input.focus();
+        }
+
+        /**
+         * 校验并套用导入的代码。
+         * @param {Object} C
+         * @param {string} code
+         * @param {HTMLElement} status - 用于回显解析结果
+         */
+        runImport(C, code, status) {
+            const raw = decodeAppearanceCode(code);
+            if (!raw) {
+                status.textContent = '解析不出来，确认复制的是完整的衣服代码。';
+                status.style.color = '#C00';
+                return;
+            }
+
+            // 外部工具导出的代码可能带着束具组。它们会经 ServerAppearanceLoadFromBundle
+            // 顶掉身上现有的束具（含别人上的锁），与"只换衣服"的承诺不符，
+            // 所以在这里就滤掉，只留衣服组
+            const family = C.AssetFamily || 'Female3DCG';
+            const bundle = raw.filter(entry => {
+                const group = w.AssetGroupGet?.(family, entry.Group);
+                // 查不到组的条目留给本体去校验，它会自己忽略非法项
+                if (!group) return true;
+                return typeof group.IsAppearance === 'function'
+                    ? group.IsAppearance()
+                    : (group.Category == null || group.Category === 'Appearance');
+            });
+            const dropped = raw.length - bundle.length;
+
+            if (bundle.length === 0) {
+                status.textContent = '这份代码里没有衣服，只有束具道具。';
+                status.style.color = '#C00';
+                return;
+            }
+
+            // 先在副本上跑一遍迁移，数出要修几处，好在确认框里说清楚。
+            // 用同一个函数而不是另写判据，免得两边的条件日后走偏
+            const legacy = migrateLegacyLayerKeysAll(
+                JSON.parse(JSON.stringify(bundle))).keys;
+
+            const msg = `解析到 ${bundle.length} 件衣服，确认穿上？\n`
+                + (legacy > 0 ? `其中 ${legacy} 处旧版失效的变换会一并修好。\n` : '')
+                + (dropped > 0 ? `代码里另有 ${dropped} 件束具道具，会跳过不动。\n` : '')
+                + '当前状态会先存一条历史，可以退回来。';
+
+            this.confirmDialog(msg, '穿上', () => {
+                const ok = dressHistory.applyBundle(C, bundle, '导入前');
+                this.closeToolPanel();
+                if (!ok) {
+                    this.toast('穿上失败，看控制台的报错');
+                    return;
+                }
+                // 与历史恢复同理：整体替换过 Appearance，
+                // ItemColorItem 已成孤儿，必须退出调色界面
+                this.toast(legacy > 0 ? `已穿上，并修好 ${legacy} 处变换` : '已穿上');
+                this.exitToDressScreen();
+            });
         }
 
         /**
