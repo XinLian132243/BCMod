@@ -7707,10 +7707,21 @@
     MessageModule.init();
 
 
-    mod.hookFunction("FriendListLoadFriendList", 100, (args, next) => {
-        let data = args[0];
-        MessageModule.updateOnlineFriendsCache(data);
-        next(args);
+    // 好友在线数据统一在 ServerUpdateFriendList 汇聚：
+    // BC 的 ServerAccountQueryResult 按 CurrentScreen 分流——停在好友列表画面时
+    // 走 FriendListLoadFriendList（其内部再调本函数），其余画面直接调本函数。
+    // 因此只 hook 这一处即可覆盖两条路径；hook FriendListLoadFriendList 反而
+    // 会漏掉玩家在聊天室时的轮询（LianChat 的主要场景）。
+    mod.hookFunction("ServerUpdateFriendList", 100, (args, next) => {
+        const result = next(args);
+        // 放在 next 之后：BC 会在其中回填 FriendNames / SubmissivesList，
+        // 先让本体处理完再取数据，避免读到未同步的关系信息。
+        try {
+            MessageModule.updateOnlineFriendsCache(args[0]);
+        } catch (e) {
+            console.error('[LianChat] 更新在线好友缓存失败', e);
+        }
+        return result;
     });
 
 
