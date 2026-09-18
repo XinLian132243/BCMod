@@ -564,6 +564,48 @@
         return true;
     }
 
+    /**
+     * 把组上的 AllowExpression 补到资产上，保住表情在整份外观同步里的存活。
+     *
+     * R132 的 66b351f1f 给 ServerBundledItemFromAppearanceItem 加了属性白名单，
+     * Property 不再整份上传。Expression 要 `item.Asset.AllowExpression` 为真
+     * 才进白名单（Item.js 的 ItemPropertiesCompress），但 Emoticon 这类组把
+     * AllowExpression 定义在组上，而 AssetAdd 取的是 `AssetDef.AllowExpression`，
+     * 不回退到组 —— 于是资产级恒为 undefined，Expression 被整份滤掉。
+     *
+     * 后果：气泡的变换偏移量存下来了，表情没了。而 Expression 正是气泡贴图
+     * 路径里的一段（CommonDrawResolveLayerExpression），值一丢就什么都不画。
+     *
+     * 本体自己碰不到这个坑：CharacterSetFacialExpression 在房间里只发
+     * ChatRoomCharacterExpressionUpdate，走的是不经压缩的独立通道。
+     * 只有本插件为了存档主动调整份同步，才撞上。
+     *
+     * 用 ??= 只在缺失时补，像 Pussy 那种在资产级自己写了 AllowExpression 的
+     * 例外不受影响。改的是共享 Asset 定义，每个资产只处理一次。
+     *
+     * @param {Object} asset - Asset 对象
+     * @returns {boolean} 是否发生了修改
+     */
+    const expressionAllowPatched = new WeakSet();
+    function patchAssetAllowExpression(asset) {
+        if (!asset || expressionAllowPatched.has(asset)) return false;
+        expressionAllowPatched.add(asset);
+
+        // 资产自己有值就不动（那是刻意收窄过的范围）
+        if (asset.AllowExpression) return false;
+        const fromGroup = asset.Group?.AllowExpression;
+        if (!Array.isArray(fromGroup) || fromGroup.length === 0) return false;
+
+        try {
+            asset.AllowExpression = fromGroup;
+        } catch {
+            // 严格模式下只读属性会抛。放弃即可，同步会丢表情但不报错
+            return false;
+        }
+        // 非严格模式的调用方赋值失败是静默的，回读一次才能确认真写进去了
+        return asset.AllowExpression === fromGroup;
+    }
+
     // 按图层名索引的变换键。物品级的 TranslationX 等不带索引，与图层名无关
     const LAYER_TRANSFORM_KEYS = [
         "LayerTranslationX", "LayerTranslationY",
@@ -9865,7 +9907,8 @@
         // 用 bcGlobal 而不是 w.xxx —— 这两个是 let 声明的，不挂在 window 上
         const save = args[0] !== false;
         const C = bcGlobal("ItemColorCharacter");
-        const group = bcGlobal("ItemColorItem")?.Asset?.Group?.Name;
+        const item = bcGlobal("ItemColorItem");
+        const group = item?.Asset?.Group?.Name;
 
         itemColorAdjustmentWindow.destroy();
         const result = next(args);
@@ -9874,6 +9917,9 @@
         // ChatRoomCharacterExpressionUpdate，那条消息只通知房间不写存档。
         // 取消退出时不用补 —— 本体已把 Property 还原成备份
         if (save && group && EXPRESSION_SYNC_GROUPS.has(group)) {
+            // 必须在同步之前补：ItemPropertiesCompress 靠资产级的
+            // AllowExpression 决定要不要带上 Expression，晚了气泡就没了
+            patchAssetAllowExpression(item?.Asset);
             syncExpressionGroupTransform(C);
         }
         return result;
@@ -9883,9 +9929,10 @@
      * 给表情类组补一次真正的服务器同步。
      *
      * 自己的角色用 ServerPlayerAppearanceSync 写账号存档；改别人的只能
-     * 走 ChatRoomCharacterUpdate。两者都发整份 Appearance，变换字段
-     * 在 Property 里一起带过去（ServerBundledItemFromAppearanceItem
-     * 是整体打包，没有字段白名单）。
+     * 走 ChatRoomCharacterUpdate。两者都经 ServerBundledItemFromAppearanceItem
+     * 打包，R132 起那里会用 ItemPropertiesCompress 按白名单过滤 Property。
+     * 变换键都在白名单里，能正常带过去；Expression 不然，得靠
+     * patchAssetAllowExpression 先补资产级的 AllowExpression。
      *
      * @param {Object} C - 被编辑的角色
      */
