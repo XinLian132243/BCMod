@@ -681,6 +681,283 @@
         }
         return stat;
     }
+
+    /**
+     * 数一件衣服上有几个待迁移的旧键，不改动任何数据。
+     *
+     * 判据与 migrateLegacyLayerKeys 保持一致，只是不写。扫描阶段要先统计
+     * 再决定弹不弹提示，不能靠"跑一遍迁移看返回值"—— 那已经改了数据。
+     *
+     * @param {Object} entry - Item 或 ItemBundle
+     * @returns {number}
+     */
+    function countLegacyLayerKeys(entry) {
+        const props = entry?.Property;
+        if (!props || typeof props !== "object") return 0;
+
+        const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
+        if (typeof assetName !== "string" || assetName === "") return 0;
+
+        const asset = entry.Asset ?? w.AssetGet?.(
+            w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
+        );
+        if (!asset || !Array.isArray(asset.Layer)) return 0;
+        if (!asset.Layer.some(l => !l || l.Name == null)) return 0;
+
+        let n = 0;
+        for (const key of LAYER_TRANSFORM_KEYS) {
+            const map = props[key];
+            if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+            if (Object.prototype.hasOwnProperty.call(map, assetName)) n++;
+        }
+        return n;
+    }
+
+    // =======================================================================================
+    // 衣柜修复模块
+    //
+    // 独立成块，便于日后加别的修复项：往 WARDROBE_FIXES 里加一条即可。
+    // 模块本身不碰 UI，扫描结果交给调用方去呈现。
+    // =======================================================================================
+
+    /**
+     * 一个修复项的定义。
+     *
+     * @typedef {Object} WardrobeFix
+     * @property {string} id - 唯一标识，用于跳过已处理过的项
+     * @property {string} label - 提示里显示的问题名称
+     * @property {() => boolean} applies - 当前游戏版本是否需要这项修复
+     * @property {(entry: Object) => number} count - 数一件衣服上的问题点数，不改数据
+     * @property {(entry: Object) => number} fix - 原地修一件衣服，返回改动点数
+     */
+
+    /** @type {WardrobeFix[]} */
+    const WARDROBE_FIXES = [
+        {
+            id: "legacyLayerKeys",
+            label: "部件变换失效",
+            // R132 的 3e4c4b7fd 改了图层键约定，之前的版本不需要修
+            applies: () => gameVersionAtLeast(132),
+            count: countLegacyLayerKeys,
+            fix: migrateLegacyLayerKeys
+        }
+    ];
+
+    /**
+     * 当前游戏版本是否达到指定的主版本号。
+     *
+     * GameVersion 形如 "R132"、"R133Beta1"。取不到或格式不认时返回 true ——
+     * 宁可扫一遍（扫描本身无副作用），也不要在新版本上悄悄失效。
+     *
+     * @param {number} major
+     * @returns {boolean}
+     */
+    function gameVersionAtLeast(major) {
+        const raw = w.GameVersion;
+        if (typeof raw !== "string") return true;
+        const m = /^R(\d+)/.exec(raw);
+        if (!m) return true;
+        return parseInt(m[1], 10) >= major;
+    }
+
+    /**
+     * 衣柜修复器：扫出旧版数据留下的问题，按需一键修好。
+     *
+     * 扫描范围是衣柜（Player.Wardrobe）加身上穿着的（Player.Appearance）。
+     *
+     * 只在用户主动点设置里的修复按钮时才跑 —— 扫描要遍历整个衣柜并对每件
+     * 查资产，不适合塞进每帧或开窗口的路径里。
+     */
+    class WardrobeRepair {
+        /** 当前版本下需要执行的修复项 */
+        activeFixes() {
+            return WARDROBE_FIXES.filter(f => {
+                try {
+                    return f.applies();
+                } catch {
+                    return false;
+                }
+            });
+        }
+
+        /**
+         * 扫描，不改动任何数据。
+         *
+         * @param {WardrobeFix[]} [fixes] - 限定检查项，默认全部生效项
+         * @returns {{total: number, outfits: number, worn: number, names: string[], fixes: WardrobeFix[]}}
+         */
+        scan(fixes) {
+            const list = fixes ?? this.activeFixes();
+            const result = { total: 0, outfits: 0, worn: 0, names: [], fixes: [] };
+            if (list.length === 0) return result;
+
+            const hit = new Set();
+            const note = (entry) => {
+                const name = entry.Asset ? entry.Asset.Name : entry.Name;
+                if (typeof name === "string" && !result.names.includes(name)) {
+                    result.names.push(name);
+                }
+            };
+
+            // 衣柜：ItemBundle[][]，一套里可能有多件出问题，套数单独算
+            for (const outfit of w.Player?.Wardrobe ?? []) {
+                if (!Array.isArray(outfit)) continue;
+                let touched = false;
+                for (const bundle of outfit) {
+                    for (const f of list) {
+                        if (this.countSafe(f, bundle) === 0) continue;
+                        hit.add(f);
+                        result.total++;
+                        note(bundle);
+                        touched = true;
+                    }
+                }
+                if (touched) result.outfits++;
+            }
+
+            // 身上穿着的：Item[]，字段结构与 bundle 不同，检测函数两种都吃
+            for (const item of w.Player?.Appearance ?? []) {
+                for (const f of list) {
+                    if (this.countSafe(f, item) === 0) continue;
+                    hit.add(f);
+                    result.total++;
+                    result.worn++;
+                    note(item);
+                }
+            }
+
+            result.fixes = list.filter(f => hit.has(f));
+            return result;
+        }
+
+        /** 包一层 try：某个检测项抛了不该带崩整次扫描 */
+        countSafe(fix, entry) {
+            try {
+                return fix.count(entry) > 0 ? 1 : 0;
+            } catch (e) {
+                console.warn(`[LianDressOptimization] 检测 ${fix.id} 失败`, e);
+                return 0;
+            }
+        }
+
+        /**
+         * 执行修复并同步。
+         *
+         * 衣柜与身上穿着的走两条不同的同步路径：衣柜在服务器上是压缩字符串，
+         * 必须经 CharacterCompressWardrobe；身上的走装备同步并重画角色。
+         *
+         * @param {WardrobeFix[]} [fixes]
+         * @returns {{wardrobe: number, worn: number}} 各自改动的件数
+         */
+        apply(fixes) {
+            const list = fixes ?? this.activeFixes();
+            const stat = { wardrobe: 0, worn: 0 };
+            if (list.length === 0) return stat;
+
+            for (const outfit of w.Player?.Wardrobe ?? []) {
+                if (!Array.isArray(outfit)) continue;
+                for (const bundle of outfit) {
+                    if (this.fixSafe(list, bundle)) stat.wardrobe++;
+                }
+            }
+            for (const item of w.Player?.Appearance ?? []) {
+                if (this.fixSafe(list, item)) stat.worn++;
+            }
+
+            if (stat.wardrobe > 0) this.syncWardrobe();
+            if (stat.worn > 0) this.syncWorn();
+            return stat;
+        }
+
+        /** 对一件衣服跑完所有修复项，返回是否有改动 */
+        fixSafe(list, entry) {
+            let changed = 0;
+            for (const f of list) {
+                try {
+                    changed += f.fix(entry);
+                } catch (e) {
+                    console.warn(`[LianDressOptimization] 修复 ${f.id} 失败`, e);
+                }
+            }
+            return changed > 0;
+        }
+
+        /** 衣柜同步：服务器存的是 LZString 压缩串，必须走本体的压缩函数 */
+        syncWardrobe() {
+            if (typeof w.CharacterCompressWardrobe !== "function"
+                || !w.ServerAccountUpdate?.QueueData) {
+                console.warn("[LianDressOptimization] 取不到衣柜同步接口，改动只在本地");
+                return;
+            }
+            w.ServerAccountUpdate.QueueData({
+                Wardrobe: w.CharacterCompressWardrobe(w.Player.Wardrobe)
+            });
+        }
+
+        /** 身上穿着的：重画角色并同步装备 */
+        syncWorn() {
+            const C = w.Player;
+            if (!C) return;
+            w.CharacterRefresh?.(C, false, false);
+            if (C.CharacterID !== "") w.ServerPlayerAppearanceSync?.();
+            if (w.ServerPlayerIsInChatRoom?.()) w.ChatRoomCharacterUpdate?.(C);
+        }
+
+        /**
+         * 扫一遍并把结果交给调用方。有问题就请求确认，没问题也给个回音 ——
+         * 用户是主动点按钮的，静默无响应会让人以为按钮坏了。
+         *
+         * 模块不直接建 UI：提示的样子交给调用方。
+         *
+         * @param {(text: string, okText: string, onOk: Function) => void} confirm
+         * @param {(text: string) => void} [notify] - 结果提示
+         */
+        run(confirm, notify) {
+            if (!w.Player) {
+                notify?.("读不到角色信息");
+                return;
+            }
+            const fixes = this.activeFixes();
+            if (fixes.length === 0) {
+                notify?.("当前游戏版本无需修复");
+                return;
+            }
+
+            const found = this.scan(fixes);
+            if (found.total === 0) {
+                notify?.("衣柜检查完毕，没有发现问题");
+                return;
+            }
+
+            const names = found.names.slice(0, 5).join("、")
+                + (found.names.length > 5 ? ` 等 ${found.names.length} 种` : "");
+            const what = found.fixes.map(f => f.label).join("、");
+            const where = [];
+            if (found.outfits > 0) where.push(`衣柜 ${found.outfits} 套`);
+            if (found.worn > 0) where.push(`身上 ${found.worn} 件`);
+
+            confirm(
+                `检测到旧版数据问题：${what}。\n`
+                + `涉及 ${where.join("、")}，共 ${found.total} 处。\n`
+                + `资产：${names}\n\n`
+                + `修复会把旧格式的数据改写成新版能读的形式，改完立即同步。`,
+                "一键修复",
+                () => {
+                    const stat = this.apply(found.fixes);
+                    const done = [];
+                    if (stat.wardrobe > 0) done.push(`衣柜 ${stat.wardrobe} 件`);
+                    if (stat.worn > 0) done.push(`身上 ${stat.worn} 件`);
+                    const msg = done.length > 0
+                        ? `已修复 ${done.join("、")}`
+                        : "没有需要修复的内容";
+                    console.log(`[LianDressOptimization] ${msg}`);
+                    notify?.(msg);
+                }
+            );
+        }
+    }
+
+    const wardrobeRepair = new WardrobeRepair();
     // =======================================================================================
 
     const SETTINGS_KEY = "LianDressOpt";
@@ -1537,6 +1814,19 @@
                 this.setHoverText("改过衣服才会记录快照，可从插件窗口的历史按钮回退；只备份衣服不含束具，自己留 60 条其他玩家每人 30 条，只存在本机");
             }
 
+            // 右侧维护工具区。复选框占到 x=950，这里从 1050 起不会打架
+            DrawText("- 维护 -", 1050, 165, "Black", "Gray");
+            // DrawButton 内部用 DrawTextFit 按中心点画标签，前提是
+            // textAlign 为 center。本函数开头设的是 left，不切回来
+            // 文字会从按钮中线往右溢出
+            MainCanvas.textAlign = "center";
+            DrawButton(1050, 200, 300, 64, "检查衣柜问题", "White");
+            MainCanvas.textAlign = "left";
+
+            if (MouseIn(1050, 200, 300, 64)) {
+                this.setHoverText("扫描衣柜和身上的衣服，找出旧版本留下的失效数据（如部件变换不生效），可选择一键修复");
+            }
+
             // 退出按钮
             DrawButton(1815, 75, 90, 90, "", "White", "Icons/Exit.png");
             
@@ -1608,11 +1898,31 @@
                 }
             }
             
+            // 检查衣柜问题
+            if (MouseIn(1050, 200, 300, 64)) {
+                this.runWardrobeRepair();
+            }
+
             // 退出按钮
             if (MouseIn(1815, 75, 90, 90)) {
                 this.Exit();
             }
             return false;
+        }
+
+        /**
+         * 跑一次衣柜检查。
+         *
+         * 弹窗与提示借用调整窗口那一套 DOM 组件：设置界面本身画在 canvas 上，
+         * 没有自己的弹窗，而原生 confirm 会阻塞游戏的渲染循环。
+         */
+        runWardrobeRepair() {
+            wardrobeRepair.run(
+                (text, okText, onOk) => itemColorAdjustmentWindow.confirmDialog(text, okText, onOk),
+                // 结果走本体的 toast。不用 setHoverText —— Run() 每帧
+                // 开头都会 clearHoverText，那条提示撑不过一帧
+                (msg) => w.ToastManager?.info?.(msg)
+            );
         }
 
         /**
@@ -1686,7 +1996,13 @@
         diagnoseCopy: (wide) => itemColorAdjustmentWindow.diagnoseCopyTargets(wide),
         // 诊断某件衣服的缩略图为什么缺图 / 404。需先进入调色界面。
         // 不传参数则诊断当前槽位全部可选衣服，传名字只看那一件
-        diagnoseThumb: (assetName) => itemColorAdjustmentWindow.diagnoseThumbs(assetName)
+        diagnoseThumb: (assetName) => itemColorAdjustmentWindow.diagnoseThumbs(assetName),
+        // 衣柜修复：scan 只看不改，apply 直接修（跳过确认弹窗）。
+        // 正常入口是换装设置里的「检查衣柜问题」按钮
+        wardrobe: {
+            scan: () => wardrobeRepair.scan(),
+            apply: () => wardrobeRepair.apply()
+        }
     };
 
     // =======================================================================================
