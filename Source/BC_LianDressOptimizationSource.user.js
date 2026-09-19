@@ -1447,9 +1447,13 @@
                                             DialogInventoryOffset = Math.floor((DialogInventory.length - 1) / itemsPerPage) * itemsPerPage;
                                         }
                                         
-                                        // 调用AppearancePreviewBuild来更新预览
+                                        // 调用AppearancePreviewBuild来更新预览。
+                                        // 目标部位要显式传：R132 起这个函数
+                                        // 不再自己去读 C.FocusGroup（见本体
+                                        // AppearanceMenuClick 里的翻页分支）
                                         if (typeof AppearancePreviewBuild === 'function') {
-                                            AppearancePreviewBuild(C, true);
+                                            AppearancePreviewBuild(
+                                                C, w.CharacterAppearanceSelectedGroup, true);
                                         }
                                         
                                         return true;
@@ -5369,6 +5373,9 @@
                     w.ItemColorCancelAndExit();
                 }
                 w.CharacterAppearanceMode = '';
+                // 两个都要清：SelectedGroup 是 Cloth 模式的目标部位，
+                // FocusGroup 是本体退出时一并清掉的（见 AppearanceExit）
+                w.CharacterAppearanceSelectedGroup = null;
                 const C = w.CharacterAppearanceSelection;
                 if (C) C.FocusGroup = null;
             } catch (e) {
@@ -10656,9 +10663,12 @@
             this.clearHover();
 
             // 已经在编辑这个部位了，重建一遍会把翻页位置也重置掉，
-            // 但仍要算作接管，否则这次点击会漏给本体
-            const C = CharacterAppearanceSelection;
-            if (this.inClothMode() && C?.FocusGroup === hit.group) return true;
+            // 但仍要算作接管，否则这次点击会漏给本体。
+            // 当前部位看 CharacterAppearanceSelectedGroup，不是 C.FocusGroup ——
+            // 后者在 Cloth 模式下并不指向正在编辑的部位
+            if (this.inClothMode() && w.CharacterAppearanceSelectedGroup === hit.group) {
+                return true;
+            }
 
             return openClothScreen(hit.group);
         }
@@ -10756,8 +10766,12 @@
     /**
      * 跳转到某部位的服装编辑界面（Cloth 模式）。
      *
-     * 本体没有现成的入口函数，这五步是照 AppearanceClick 里点击部位名那段
-     * 抄下来的，缺一步都不行：FocusGroup 决定 DialogInventoryBuild 的目标，
+     * 本体没有现成的入口函数，这几步是照 AppearanceClick 里"点击部位名"
+     * 那段抄的（见 Appearance.js 的 Open the clothing group screen）。
+     *
+     * 目标部位现在由 CharacterAppearanceSelectedGroup 指定，并作为参数
+     * 显式传给 DialogInventoryBuild / AppearancePreviewBuild —— R132 之前
+     * 这两个函数是自己去读 C.FocusGroup 的，签名变了。
      * CharacterAppearanceCloth 是取消时的回滚依据。
      *
      * @param {Object} group - AssetGroup
@@ -10769,18 +10783,18 @@
         if (typeof w.DialogInventoryBuild !== "function") return false;
 
         try {
-            C.FocusGroup = group;
-            w.DialogInventoryBuild(C, true, false);
-            w.AppearancePreviewBuild?.(C, true);
+            w.CharacterAppearanceSelectedGroup = group;
+            w.DialogInventoryBuild(C, group, true, false);
+            w.AppearancePreviewBuild?.(C, group, true);
             w.CharacterAppearanceCloth = w.InventoryGet?.(C, group.Name) ?? null;
             w.CharacterAppearanceMode = "Cloth";
             // 从一个部位直接切到另一个部位时要重建菜单：可用按钮随部位而变
-            w.AppearanceMenuBuild?.(C);
+            w.AppearanceMenuBuild?.(C, group);
             return true;
         } catch (e) {
             console.error("[LianDressOptimization] 跳转服装编辑失败", e);
             // 半途失败会让界面卡在不一致的状态，退回默认模式
-            C.FocusGroup = null;
+            w.CharacterAppearanceSelectedGroup = null;
             w.CharacterAppearanceMode = "";
             return false;
         }
