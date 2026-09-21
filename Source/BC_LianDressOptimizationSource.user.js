@@ -9919,10 +9919,141 @@
     // URL 拼接和坐标偏移更可靠，也能跟随本体改动。
     const gizmo = itemColorAdjustmentWindow.gizmo;
 
+    // 当前正在绘制的图层对象（CommonDrawAppearanceBuild 循环里的那个）。
+    //
+    // 渲染末端只有 URL，靠文件名反推图层会认错：末段是
+    // [asset.Name, parentAssetName, layerType, colorSegment, layerSegment]
+    // 拼的，layerSegment 只在有名图层时才有。于是
+    //   - 无名图层的文件名可能以别的有名图层名结尾（colorSegment 或
+    //     parentAssetName 恰好同名），被误判成那一层
+    //   - 同一资产的多个无名图层文件名不同但都"排除法命中"，findIndex
+    //     只会返回第一个，全挤到同一索引
+    //   - 图层名互为后缀时（Base 与 Sub_Base）按出现顺序决定谁中招
+    // 结果就是高亮框和句柄指到错误的层级。
+    //
+    // 这里改从上一层拿：CommonDrawAppearanceBuild 的绘制回调是在
+    // `for (const layer of C.AppearanceLayers)` 循环体内调用的，包装那几个
+    // 回调就能在末端 hook 触发时知道当前是哪个图层对象，不用猜。
+    /** @type {Object|null} */
+    let drawingLayer = null;
+
+    // AppearanceLayers 里的元素是 asset.Layer 的浅拷贝（CharacterAppearanceSortLayers
+    // 里的 `{...layer}`），不是同一个对象，没法直接用引用去 indexOf。
+    // 但它保留了 Asset 引用与 Name，两者合起来足以定位。
+    const DRAW_CALLBACKS = [
+        "drawImage", "drawImageBlink",
+        "drawImageColorize", "drawImageColorizeBlink"
+    ];
+
+    if (typeof w.CommonDrawAppearanceBuild === "function") {
+        mod.hookFunction("CommonDrawAppearanceBuild", 1, (args, next) => {
+            const [C, callbacks] = args;
+            // 只在需要捕获时包装，平时不加这层开销。
+            // appearancePicker 声明在本文件更靠后的位置，插件刚加载完就
+            // 发生绘制时会撞上 TDZ，用 try 兜住
+            let wanted = false;
+            try {
+                wanted = gizmo.isCapturing() || appearancePicker.isCapturing();
+            } catch {
+                wanted = false;
+            }
+            if (!callbacks || typeof callbacks !== "object" || !wanted) {
+                return next(args);
+            }
+
+            const layers = C?.AppearanceLayers;
+            if (!Array.isArray(layers)) return next(args);
+
+            // 每个图层固定调一次非眨眼回调、一次眨眼回调（见 CommonDraw 里
+            // drawImage / drawImageBlink 成对出现，颜色化与否只是二选一），
+            // 所以只数非眨眼那一次来推进游标。
+            //
+            // 不能靠 URL 变化推进：表情没变时 baseURLExpression 与
+            // baseURLBlink 相同，同一图层两次调用的 URL 一模一样。
+            let cursor = -1;
+            const wrapped = Object.assign({}, callbacks);
+
+            for (const name of DRAW_CALLBACKS) {
+                const orig = callbacks[name];
+                if (typeof orig !== "function") continue;
+                const isBlink = name.endsWith("Blink");
+                wrapped[name] = function () {
+                    // 眨眼那次沿用上一次定好的图层，不再前进
+                    if (!isBlink) cursor++;
+                    drawingLayer = layers[cursor] ?? null;
+                    try {
+                        return orig.apply(this, arguments);
+                    } finally {
+                        drawingLayer = null;
+                    }
+                };
+            }
+
+            try {
+                return next([C, wrapped, ...args.slice(2)]);
+            } finally {
+                drawingLayer = null;
+            }
+        });
+    }
+
+    /**
+     * 把 drawingLayer 换算成 asset.Layer 的下标。
+     *
+     * AppearanceLayers 的元素是浅拷贝，不能用引用比对，所以按
+     * Asset 引用 + 图层名定位。同一资产里出现重名图层时（少见但合法），
+     * 用它在该资产内的出现序数消歧。
+     *
+     * @param {Object} asset - 当前编辑的资产
+     * @param {Array} layers - asset.Layer
+     * @returns {number|null} null 表示拿不到精确信息，调用方应退回猜测
+     */
+    function resolveDrawingLayerIndex(asset, layers) {
+        const layer = drawingLayer;
+        if (!layer) return null;
+        // 不是当前编辑的这件衣服，这次绘制与我们无关
+        if (layer.Asset !== asset) return -1;
+
+        const name = layer.Name ?? null;
+        // 先按名字收集候选。多数情况只有一个
+        const candidates = [];
+        for (let i = 0; i < layers.length; i++) {
+            if ((layers[i]?.Name ?? null) === name) candidates.push(i);
+        }
+        if (candidates.length === 0) return -1;
+        if (candidates.length === 1) return candidates[0];
+
+        // 重名：按这一层在本资产已绘制图层中的出现序数挑
+        const ord = countSameNameBefore(asset, name);
+        return candidates[Math.min(ord, candidates.length - 1)];
+    }
+
+    /**
+     * 当前图层在 AppearanceLayers 里是本资产同名图层中的第几个。
+     * 只在重名时才会被调用，所以这轮遍历的成本可以接受。
+     *
+     * @param {Object} asset
+     * @param {string|null} name
+     * @returns {number}
+     */
+    function countSameNameBefore(asset, name) {
+        const all = ItemColorCharacter?.AppearanceLayers;
+        if (!Array.isArray(all)) return 0;
+        let n = 0;
+        for (const l of all) {
+            if (l === drawingLayer) break;
+            if (l?.Asset === asset && (l?.Name ?? null) === name) n++;
+        }
+        return n;
+    }
+
     /**
      * 找出这次绘制对应当前物品的哪个图层，返回图层索引，不匹配则 -1。
-     * 用图层名做后缀匹配：CommonDraw 的 URL 末段固定是 layer.Name。
-     * 物品级需要全部图层来求并集，所以不能只认选中的那一个。
+     *
+     * 首选 drawingLayer：那是 CommonDrawAppearanceBuild 循环里的真实图层对象，
+     * 按 Asset 引用与图层名回查 asset.Layer 的下标，不会认错。
+     * 拿不到时（本体改了结构、或走了没包装的路径）退回旧的文件名匹配。
+     *
      * @param {string} url
      * @returns {number}
      */
@@ -9934,6 +10065,10 @@
         const asset = ItemColorItem?.Asset;
         const layers = asset?.Layer;
         if (!Array.isArray(layers)) return -1;
+
+        // 精确路径：直接问当前正在绘制的图层是谁
+        const exact = resolveDrawingLayerIndex(asset, layers);
+        if (exact !== null) return exact;
 
         // 只认当前物品的贴图。判据放在文件名上而不是目录上：
         // CommonDraw 拼 URL 用的目录是 asset.DynamicGroupName，很多衣服资产
@@ -10912,6 +11047,11 @@
      * @returns {Object|null}
      */
     function matchAppearanceAsset(url) {
+        // 优先用正在绘制的图层对象。它带着 Asset 反向引用，比从文件名
+        // 猜可靠：前缀匹配遇到 Cloth1 / Cloth10 这类同前缀资产要靠
+        // "取最长"来赌，而衣服贴图还可能因 DynamicGroupName 落在别的目录
+        if (drawingLayer?.Asset) return drawingLayer.Asset;
+
         const C = CharacterAppearanceSelection;
         const layers = C?.AppearanceLayers;
         if (!Array.isArray(layers) || typeof url !== "string") return null;
