@@ -509,6 +509,76 @@
     }
 
     /**
+     * 绑定宿主的索引状态。
+     *
+     * 插件里有好几处缓存是「以下标或 ID 为键的一批数据」：图层贴图几何、
+     * 闪烁前的透明度原值、树的展开节点。它们都只在某个宿主对象不变时有意义
+     * —— 换了编辑的装备之后，同一个下标指向的已经是另一个图层，旧数据按原键
+     * 被读到就是错的，表现为高亮框跑到别的衣服上、透明度被写坏。
+     *
+     * 三处的修法完全一样：记下宿主、存取两端比对、不匹配就丢弃。这一步最容易
+     * 漏写（漏了不会报错，只会偶发串数据），所以收成一个地方。
+     *
+     * 刻意不管的事：
+     *   - 不规定容器类型，Map / Set 都行，由调用方传进来
+     *   - 不规定宿主怎么取，用取值函数，免得写死 ItemColorItem 之类的全局
+     *   - 不规定失效之后干什么。有的要等下一帧重新收集，有的意味着放弃回写，
+     *     语义差别太大，交给调用方判断
+     */
+    class OwnedState {
+        /**
+         * @param {Object} store - 实际存数据的容器，需有 clear()，如 Map / Set
+         * @param {Function} getOwner - 返回当前宿主对象，如 () => ItemColorItem
+         */
+        constructor(store, getOwner) {
+            this.store = store;
+            this.getOwner = getOwner;
+            this.owner = null;
+        }
+
+        /** 这批数据是否属于当前宿主。空容器一律算匹配，省去无谓的清理 */
+        isFresh() {
+            return this.size === 0 || this.owner === this.getOwner();
+        }
+
+        /** @returns {number} 容器里的条目数，Map 与 Set 都有 size */
+        get size() {
+            return this.store.size ?? 0;
+        }
+
+        /** 丢弃全部数据并解除归属 */
+        clear() {
+            this.store.clear();
+            this.owner = null;
+        }
+
+        /**
+         * 写入前调用：宿主变了就先清空，并把归属挂到新宿主上。
+         * @returns {Object} 容器本身，方便链式写入
+         */
+        forWrite() {
+            const owner = this.getOwner();
+            if (this.owner !== owner) {
+                this.store.clear();
+                this.owner = owner;
+            }
+            return this.store;
+        }
+
+        /**
+         * 读取前调用：宿主变了就丢弃，返回的容器此时是空的。
+         *
+         * 光靠写入端打标不够 —— 换宿主后若还没重新写入（贴图在加载、
+         * 界面刚切过来），旧数据仍会被新的键读到。
+         * @returns {Object} 容器本身，可能已被清空
+         */
+        forRead() {
+            if (!this.isFresh()) this.clear();
+            return this.store;
+        }
+    }
+
+    /**
      * 查某个 AssetLayer 在角色身上的层叠次序。
      *
      * C.AppearanceLayers 是本体按 Priority 升序排好的绘制序列（见
@@ -3137,6 +3207,19 @@
             this.treeNodes = []; // 树状节点数据
             this.expandedNodes = new Set(); // 展开的节点ID集合
             this.expandedLayeringNodes = new Set(); // 展开层级设置的节点ID集合
+            // 两个集合共用一个归属：节点 ID 只含颜色组名与序号（如 group_Cloth），
+            // 换物品后会被同名颜色组的节点继承，且原本从不清空还会无界增长。
+            // store 是个把两个集合当成一个来看的适配器
+            const self = this;
+            this.treeExpansion = new OwnedState({
+                get size() {
+                    return self.expandedNodes.size + self.expandedLayeringNodes.size;
+                },
+                clear() {
+                    self.expandedNodes.clear();
+                    self.expandedLayeringNodes.clear();
+                }
+            }, () => ItemColorItem ?? null);
             this.selectedNodeId = null; // 当前选中的节点ID
             this.colorPickerPanel = new ColorPickerPanel(); // 颜色选择器面板实例
             this.toolPanel = null;      // 当前打开的工具栏弹出面板
@@ -3153,7 +3236,13 @@
             this.highlightBoxTimer = null;
             this.highlightedNode = null; // 当前闪烁的节点
             this.highlightedLayerIndex = null; // 当前闪烁的图层索引
-            this.originalOpacities = new Map(); // 存储原始透明度值（透明度槽位 -> opacity）
+            // 闪烁前的透明度原值（槽位 -> opacity）。键是纯槽位下标，
+            // 若闪烁尚未恢复就切了编辑目标，回写会把旧物品的原值按同一下标
+            // 写进新物品，所以绑定宿主。这里按 Item 而不是 Asset：透明度存在
+            // Item.Property 上，同款衣服的两个实例各有一份
+            this.opacityBackup = new OwnedState(
+                new Map(), () => ItemColorItem ?? null
+            );
             this.resizeHandler = null; // window resize 监听，destroy 时解绑
             this.docListeners = []; // 挂在 document 上的临时监听，重建内容前统一解绑
             this.isInteracting = false; // 是否正在交互（点击/拖动），交互期间禁止闪烁
@@ -3538,11 +3627,13 @@
         writeLayerOpacity(layerIndex, opacityValue) {
             if (!ItemColorState || !ItemColorItem) return;
             const slot = this.getOpacitySlot(layerIndex);
-            if (Array.isArray(ItemColorState.opacity)) {
+            // 只写已存在的槽位。越界下标会把数组撑长并留下 null 空洞，
+            // 那些位置不对应任何图层，同步出去还会污染存档
+            if (Array.isArray(ItemColorState.opacity) && slot < ItemColorState.opacity.length) {
                 ItemColorState.opacity[slot] = opacityValue;
             }
             const prop = ItemColorItem.Property;
-            if (prop && Array.isArray(prop.Opacity)) {
+            if (prop && Array.isArray(prop.Opacity) && slot < prop.Opacity.length) {
                 prop.Opacity[slot] = opacityValue;
             }
         }
@@ -8364,11 +8455,19 @@
             if (!ItemColorState || !ItemColorItem) {
                 return;
             }
+            // 正常路径下闪烁已在 ItemColorFireExit 的 destroy 里恢复过
+            // （那时旧的 ItemColorItem 还在，写得回去）。这里只清掉可能残留的
+            // 计时与标记，不再尝试回写 —— 归属已经变了
+            this.clearHighlightTimers();
+
             // 换了物品后图层索引不再对应同一张贴图，清掉旧的选中态
             this.gizmo.clear();
             this.selectedLayeringId = null;
             this.pickedLayeringId = null;
             this.switchConfirm = null;
+
+            // 换了装备就把展开态清回默认折叠；同一件重复进入则保留
+            this.treeExpansion.forWrite();
             this.createWindow();
             this.buildTree();
             this.isVisible = true;
@@ -8421,7 +8520,9 @@
             this.pickedLayeringId = null;
             this.hoveredNodeId = null;
             this.hoveredLayeringNodeId = null;
-            this.originalOpacities.clear();
+            // 归属随原值一起作废，否则下次进来会拿旧引用做比对
+            this.opacityBackup.clear();
+            this.treeExpansion.clear();
             this.resetPickCycle();
         }
 
@@ -8445,7 +8546,7 @@
             if (!ItemColorState || !ItemColorItem) return;
 
             this.highlightedNode = node;
-            this.originalOpacities.clear();
+            this.opacityBackup.clear();
 
             const layerIndices = this.collectLayerIndices(node)
                 .filter(i => !this.shouldExcludeLayer(i));
@@ -8462,11 +8563,13 @@
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            // originalOpacities 以槽位为键，保证恢复时写回的位置与读取一致
+            // 以槽位为键，保证恢复时写回的位置与读取一致。
+            // forWrite 顺带把归属挂到当前装备上
+            const backup = this.opacityBackup.forWrite();
             layerIndices.forEach(layerIndex => {
                 const slot = this.getOpacitySlot(layerIndex);
-                if (!this.originalOpacities.has(slot)) {
-                    this.originalOpacities.set(slot, this.getLayerOpacity(layerIndex));
+                if (!backup.has(slot)) {
+                    backup.set(slot, this.getLayerOpacity(layerIndex));
                 }
                 this.writeLayerOpacity(layerIndex, targetOpacity);
             });
@@ -8509,7 +8612,7 @@
             if (this.shouldExcludeLayer(layerIndex)) return;
 
             this.highlightedLayerIndex = layerIndex;
-            this.originalOpacities.clear();
+            this.opacityBackup.clear();
 
             // 获取当前透明度
             const currentOpacity = this.getLayerOpacity(layerIndex);
@@ -8517,7 +8620,8 @@
             // 确定闪烁目标透明度
             const targetOpacity = currentOpacity > 0.5 ? 0.25 : 0.75;
 
-            this.originalOpacities.set(this.getOpacitySlot(layerIndex), currentOpacity);
+            // forWrite 顺带把归属挂到当前装备上
+            this.opacityBackup.forWrite().set(this.getOpacitySlot(layerIndex), currentOpacity);
             this.writeLayerOpacity(layerIndex, targetOpacity);
 
             // 刷新角色显示
@@ -8625,29 +8729,46 @@
         /**
          * 闪烁提示是否正在进行（装备的 Opacity 被临时改写着）。
          *
-         * 判据用 originalOpacities 而不是 highlightTimer：前者是"有原值待
+         * 判据用待恢复的原值而不是 highlightTimer：前者是"有原值待
          * 恢复"的直接证据，后者在恢复回调已执行但定时器字段还没清空的
          * 间隙里会给出错误答案。
          * @returns {boolean}
          */
         isHighlighting() {
-            return this.originalOpacities.size > 0;
+            return this.opacityBackup.size > 0;
         }
 
         /**
-         * 把 originalOpacities 里记录的槽位原值写回
+         * 把备份里记录的槽位原值写回
          */
         restoreOpacitySlots() {
-            if (!ItemColorState) return;
+            // 无论走哪条分支，这批原值都在本次调用后作废，由本方法统一清掉，
+            // 免得调用方各自记得补一句 clear
+            if (!ItemColorState) {
+                this.opacityBackup.clear();
+                return;
+            }
+            // 不是当初被改的那件就别回写：槽位下标在新物品上指向别的图层，
+            // 写过去等于凭空改了它的透明度。旧物品这时已不在编辑中，
+            // 它的残留值由退出时的本体流程处置，这里只负责不再扩大影响
+            if (!this.opacityBackup.isFresh()) {
+                this.opacityBackup.clear();
+                return;
+            }
             const prop = ItemColorItem?.Property;
-            this.originalOpacities.forEach((originalOpacity, slot) => {
-                if (Array.isArray(ItemColorState.opacity)) {
+            // 越界的槽位直接跳过，否则会把数组撑长并留下 null 空洞
+            const stateLen = Array.isArray(ItemColorState.opacity)
+                ? ItemColorState.opacity.length : 0;
+            const propLen = prop && Array.isArray(prop.Opacity) ? prop.Opacity.length : 0;
+            this.opacityBackup.store.forEach((originalOpacity, slot) => {
+                if (slot < stateLen) {
                     ItemColorState.opacity[slot] = originalOpacity;
                 }
-                if (prop && Array.isArray(prop.Opacity)) {
+                if (slot < propLen) {
                     prop.Opacity[slot] = originalOpacity;
                 }
             });
+            this.opacityBackup.clear();
         }
 
         /**
@@ -8655,10 +8776,10 @@
          */
         restoreNodeHighlight() {
             // 框不在这里清：它有自己更长的计时，由 highlightBoxTimer 负责
-            if (!ItemColorState || this.originalOpacities.size === 0) return;
+            if (!ItemColorState || this.opacityBackup.size === 0) return;
 
+            // restoreOpacitySlots 内部已按归属决定写或不写，并清掉这批原值
             this.restoreOpacitySlots();
-            this.originalOpacities.clear();
             this.highlightedNode = null;
 
             // 刷新角色显示
@@ -8671,16 +8792,33 @@
          * 恢复图层闪烁
          */
         restoreLayerHighlight() {
-            if (!ItemColorState || this.originalOpacities.size === 0) return;
+            if (!ItemColorState || this.opacityBackup.size === 0) return;
 
             this.restoreOpacitySlots();
-            this.originalOpacities.clear();
             this.highlightedLayerIndex = null;
 
             // 刷新角色显示
             if (ItemColorCharacter && typeof CharacterLoadCanvas === 'function') {
                 CharacterLoadCanvas(ItemColorCharacter);
             }
+        }
+
+        /**
+         * 只收掉闪烁的计时与状态标记，不回写原值。
+         *
+         * 用在换编辑物品之后：那时 ItemColorItem 已是新的一件，按旧槽位
+         * 回写只会改错东西。旧物品的原值在 ItemColorFireExit 的 destroy
+         * 里已经恢复过了。
+         */
+        clearHighlightTimers() {
+            if (this.highlightTimer !== null) {
+                clearTimeout(this.highlightTimer);
+                this.highlightTimer = null;
+            }
+            this.hideHighlightBox();
+            this.opacityBackup.clear();
+            this.highlightedNode = null;
+            this.highlightedLayerIndex = null;
         }
 
         /**
@@ -8727,7 +8865,14 @@
             this.hoverHandle = null;  // 当前悬浮的句柄 id
             // 渲染时捕获的绘制信息，键为图层索引，值含贴图 URL 与已剔除位移的原点。
             // 物品级需要全部图层来求并集，所以用 Map 而不是单条记录
-            this.captures = new Map();
+            // 键是纯图层索引，不带资产身份，所以必须绑定宿主：换编辑物品后
+            // 旧数据会被新物品的索引直接取用，表现是高亮框跑到上一件衣服的
+            // 某个图层上（层数更少的新物品还会多出几个框）。
+            // 宿主取 Asset 而非 Item：两个槽位穿同款时 Item 不同但图层结构
+            // 一致，几何可以复用，按 Item 比对会白清一轮
+            this.capturesState = new OwnedState(
+                new Map(), () => ItemColorItem?.Asset ?? null
+            );
             this.shiftKey = false;    // 最近一次鼠标事件的 Shift 状态，用于角度吸附
             this.drawAt = null;       // 角色本帧的绘制位置与缩放，来自 DrawCharacter
             this.frameDrawAt = null;  // 本帧收集中的候选，帧末提交到 drawAt
@@ -8813,7 +8958,15 @@
          * 所以在触发角色重建前调用。
          */
         invalidateCaptures() {
-            this.captures.clear();
+            this.capturesState.clear();
+        }
+
+        /**
+         * 取捕获数据。宿主变了就是空的，这一帧不画框，下一帧补上。
+         * @returns {Map} 属于当前物品的捕获数据
+         */
+        validCaptures() {
+            return this.capturesState.forRead();
         }
 
         /**
@@ -8827,8 +8980,9 @@
          * @param {Object} opts - 绘制选项，含 Translation / Scale / Rotation
          */
         capture(layerIndex, url, x, y, opts) {
-            // 反推未位移时的原点，后续换算不受当前位移值干扰
-            this.captures.set(layerIndex, {
+            // 反推未位移时的原点，后续换算不受当前位移值干扰。
+            // forWrite 会在换了编辑物品时先丢掉旧的那批
+            this.capturesState.forWrite().set(layerIndex, {
                 url,
                 x: x - (opts?.TranslationX || 0),
                 y: y - (opts?.TranslationY || 0)
@@ -8854,7 +9008,7 @@
             this.itemLevel = false;
             this.drag = null;
             // 捕获数据属于上一个目标，换选后必须等新目标重新渲染一帧
-            this.captures.clear();
+            this.invalidateCaptures();
         }
 
         /**
@@ -8866,7 +9020,7 @@
             this.itemLevel = true;
             this.layerIndex = null;
             this.drag = null;
-            this.captures.clear();
+            this.invalidateCaptures();
         }
 
         /** 清除选中态。高亮是独立状态，由闪烁流程自己管，这里不动 */
@@ -8875,7 +9029,7 @@
             this.itemLevel = false;
             this.drag = null;
             this.hoverHandle = null;
-            this.captures.clear();
+            this.invalidateCaptures();
             this.drawAt = null;
             this.frameDrawAt = null;
         }
@@ -8973,7 +9127,7 @@
          */
         getLayerLocalQuad() {
             const layer = this.getLayer();
-            const cap = this.captures.get(this.layerIndex);
+            const cap = this.validCaptures().get(this.layerIndex);
             const rect = this.getContentRect(cap?.url);
             if (!layer || !rect || !cap) return null;
 
@@ -9051,12 +9205,13 @@
          */
         getUnionLocalQuad(indices) {
             const layers = ItemColorItem?.Asset?.Layer;
-            if (!Array.isArray(layers) || this.captures.size === 0) return null;
+            const captures = this.validCaptures();
+            if (!Array.isArray(layers) || captures.size === 0) return null;
 
             const wanted = indices ? new Set(indices) : null;
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
-            for (const [idx, cap] of this.captures) {
+            for (const [idx, cap] of captures) {
                 if (wanted && !wanted.has(idx)) continue;
                 const layer = layers[idx];
                 const rect = this.getContentRect(cap.url);
@@ -9279,10 +9434,11 @@
         pickLayersAt(mx, my) {
             const layers = ItemColorItem?.Asset?.Layer;
             const map = this.getCanvasToScreen();
-            if (!Array.isArray(layers) || !map || this.captures.size === 0) return [];
+            const captures = this.validCaptures();
+            if (!Array.isArray(layers) || !map || captures.size === 0) return [];
 
             const hits = [];
-            for (const [idx, cap] of this.captures) {
+            for (const [idx, cap] of captures) {
                 const layer = layers[idx];
                 const rect = this.getContentRect(cap.url);
                 if (!layer || !rect) continue;
@@ -9592,7 +9748,7 @@
             // 先沿图案轮廓描边，标出选中的到底是哪一块。
             // 句柄仍挂在包围盒上，因为缩放旋转本来就是按矩形定义的
             const targets = this.itemLevel
-                ? [...this.captures.keys()]
+                ? [...this.validCaptures().keys()]
                 : (this.layerIndex !== null ? [this.layerIndex] : []);
             this.drawOutline(ctx, targets, this.getAccent());
 
@@ -9731,12 +9887,13 @@
         drawOutline(ctx, indices, color) {
             const layers = ItemColorItem?.Asset?.Layer;
             const map = this.getCanvasToScreen();
-            if (!Array.isArray(layers) || !map || this.captures.size === 0) return false;
+            const captures = this.validCaptures();
+            if (!Array.isArray(layers) || !map || captures.size === 0) return false;
 
             // 只处理有贴图可用的图层，顺带算出需要多大的离屏区域
             const items = [];
             for (const idx of indices) {
-                const cap = this.captures.get(idx);
+                const cap = captures.get(idx);
                 const layer = layers[idx];
                 const rect = cap && this.getContentRect(cap.url);
                 const img = cap && this.getImage(cap.url);
