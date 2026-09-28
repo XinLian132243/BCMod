@@ -2660,6 +2660,66 @@
     }
 
     /**
+     * 身体部件组的兜底名单。
+     *
+     * 正常判据是 AssetGroup.Clothing（Appearance 类里为 false 的就是身体），
+     * 这份名单只在读不到该字段的老版本上顶一下。
+     */
+    const BODY_GROUP_NAMES = new Set([
+        'Height', 'BodyStyle', 'BodyUpper', 'BodyLower',
+        'ArmsLeft', 'ArmsRight', 'HandsLeft', 'HandsRight',
+        'HairFront', 'HairBack', 'FacialHair', 'Eyebrows',
+        'Eyes', 'Eyes2', 'Mouth', 'Nipples', 'Pussy', 'Pronouns',
+        'Head', 'Blush', 'Fluids', 'Emoticon',
+        'BodyMarkings', 'FaceMarkings'
+    ]);
+
+    /** 历史快照覆盖的分类：衣服 + 身体，与 isDressItem 等价 */
+    const DRESS_KINDS = new Set(['cloth', 'body']);
+
+    /**
+     * 按组名判断分类，供只有 bundle（没有 Asset 引用）的场合使用。
+     *
+     * @param {string} family - 如 'Female3DCG'
+     * @param {string} groupName
+     * @returns {'cloth'|'body'|'item'|'script'} 查不到组时按名单猜，猜不中当衣服
+     */
+    function groupKindOf(family, groupName) {
+        const group = w.AssetGroupGet?.(family || 'Female3DCG', groupName);
+        return kindFromGroup(group, groupName);
+    }
+
+    /**
+     * 按穿在身上的实例判断分类。组对象就在手上，不必再查表。
+     * @param {Object} item
+     * @returns {'cloth'|'body'|'item'|'script'|null} 读不到资产时 null
+     */
+    function itemKindOf(item) {
+        const group = item?.Asset?.Group;
+        if (!group) return null;
+        return kindFromGroup(group, group.Name);
+    }
+
+    /**
+     * 分类的共同判据。
+     * @param {Object|undefined} group - AssetGroup，缺失时退回名单
+     * @param {string} groupName
+     * @returns {'cloth'|'body'|'item'|'script'}
+     */
+    function kindFromGroup(group, groupName) {
+        if (!group) return BODY_GROUP_NAMES.has(groupName) ? 'body' : 'cloth';
+        const appearance = typeof group.IsAppearance === 'function'
+            ? group.IsAppearance()
+            : (group.Category == null || group.Category === 'Appearance');
+        // Script 组存的是其他插件的数据，既不该导出也不该被导入覆盖
+        if (group.Category === 'Script') return 'script';
+        if (!appearance) return 'item';
+        // Clothing 为 false 的 Appearance 组就是身体本身（体型、发、五官、妆容）
+        if (typeof group.Clothing === 'boolean') return group.Clothing ? 'cloth' : 'body';
+        return BODY_GROUP_NAMES.has(groupName) ? 'body' : 'cloth';
+    }
+
+    /**
      * 取可保存的道具列表。字段与 BC 衣服代码通用格式一致，
      * 便于和其他工具互相粘贴。
      *
@@ -2752,6 +2812,78 @@
             console.warn('[LianDressOptimization] 生成衣服代码失败', e);
             return null;
         }
+    }
+
+    /**
+     * 把一组 bundle 压成代码串。格式与 buildAppearanceCode 一致，
+     * 别的工具也能吃。
+     * @param {Array<Object>} items
+     * @returns {string|null}
+     */
+    function encodeAppearanceBundle(items) {
+        try {
+            if (!Array.isArray(items) || items.length === 0) return null;
+            const lz = w.LZString;
+            if (!lz?.compressToBase64) return null;
+            return lz.compressToBase64(JSON.stringify(items));
+        } catch (e) {
+            console.warn('[LianDressOptimization] 生成代码失败', e);
+            return null;
+        }
+    }
+
+    /**
+     * 导出道具时要剔掉的属性：锁的归属与计时。
+     *
+     * 留着没有意义 —— 本体的校验流程会把"不是自己上的锁"原样挡回去，
+     * 而带着别人的会员号到处传也不合适。
+     */
+    const EXPORT_STRIP_PROPS = new Set([
+        'LockedBy', 'LockMemberNumber', 'LockMemberName', 'LockMessage',
+        'RemoveTimer', 'ShowTimer', 'RemoveItem', 'EnableRandomInput',
+        'MemberNumberList', 'CombinationNumber', 'Password', 'Hint',
+        'LockSet', 'LockPickSeed'
+    ]);
+
+    /**
+     * 按分类挑出身上的装备，输出 bundle 格式。
+     *
+     * @param {Object} C
+     * @param {Set<string>} kinds - 要收的分类，取值见 itemKindOf
+     * @returns {Array<Object>}
+     */
+    function collectBundle(C, kinds) {
+        if (!C || !Array.isArray(C.Appearance)) return [];
+        const out = [];
+        for (const item of C.Appearance) {
+            if (!item?.Asset) continue;
+            const kind = itemKindOf(item);
+            if (!kind || !kinds.has(kind)) continue;
+            out.push({
+                Group: item.Asset.Group.Name,
+                Name: item.Asset.Name,
+                Color: item.Color,
+                Craft: item.Craft,
+                Difficulty: item.Difficulty,
+                Property: kind === 'item' ? stripLockProps(item.Property) : item.Property
+            });
+        }
+        return out;
+    }
+
+    /**
+     * 去掉锁与计时相关的属性，返回浅拷贝。空对象归一成 undefined。
+     * @param {Object|undefined} prop
+     * @returns {Object|undefined}
+     */
+    function stripLockProps(prop) {
+        if (!prop || typeof prop !== 'object') return prop;
+        const out = {};
+        for (const k of Object.keys(prop)) {
+            if (EXPORT_STRIP_PROPS.has(k)) continue;
+            out[k] = prop[k];
+        }
+        return Object.keys(out).length > 0 ? out : undefined;
     }
 
     /**
@@ -3091,21 +3223,28 @@
         }
 
         /**
-         * 把身上当前的非衣服件（道具、Script 组）并进要恢复的 bundle。
+         * 把这次不该动的分类从身上原样并进 bundle。
          *
-         * 恢复只该改衣服。以快照为准、当前道具补位，两边同组时快照优先
-         * —— 快照里本来就只有衣服，不会和道具撞组。
+         * ServerAppearanceLoadFromBundle 是整体替换：bundle 里缺哪个组，
+         * 那个组就被算成"移除"。所以只想换一部分时，其余分类必须补位。
          *
          * @param {Object} C
-         * @param {Array<Object>} bundle - 快照里的衣服
+         * @param {Array<Object>} bundle - 这次要写入的内容
+         * @param {Set<string>} replaceKinds - 由 bundle 全权接管的分类
+         * @param {Set<string>} [keepUnlisted] - 这些分类只按组覆盖，bundle 里
+         *   没提到的组保持原样，而不是当成"脱掉"
          * @returns {Array<Object>} 可直接交给 ServerAppearanceLoadFromBundle
          */
-        mergeKeptItems(C, bundle) {
+        mergeKeptItems(C, bundle, replaceKinds = DRESS_KINDS, keepUnlisted = null) {
             if (!Array.isArray(C?.Appearance)) return bundle;
             const covered = new Set(bundle.map(b => b?.Group).filter(Boolean));
             const kept = [];
             for (const item of C.Appearance) {
-                if (!item?.Asset || isDressItem(item)) continue;
+                if (!item?.Asset) continue;
+                const kind = itemKindOf(item);
+                // 被接管的分类里缺项即"脱掉"，不能补位，否则永远脱不下来。
+                // keepUnlisted 里的分类例外，见参数说明
+                if (replaceKinds.has(kind) && !keepUnlisted?.has(kind)) continue;
                 const g = item.Asset.Group.Name;
                 if (covered.has(g)) continue;
                 kept.push({
@@ -3143,9 +3282,11 @@
          * @param {Object} C
          * @param {Array<Object>} bundle - ItemBundle 数组，会被原地迁移旧键
          * @param {string} note - 写回前那条存档的备注
+         * @param {Set<string>} [replaceKinds] - 由 bundle 接管的分类，其余原样保留
+         * @param {Set<string>} [overlayKinds] - 其中的分类只按组覆盖，见 mergeKeptItems
          * @returns {boolean} 是否成功
          */
-        applyBundle(C, bundle, note) {
+        applyBundle(C, bundle, note, replaceKinds = DRESS_KINDS, overlayKinds = null) {
             if (!C || !Array.isArray(bundle) || bundle.length === 0) return false;
             try {
                 // 旧代码里的无名图层变换键还是资产名，R132 之后本体读不到，
@@ -3172,7 +3313,8 @@
                 // 束具连锁一起脱掉
                 w.ServerAppearanceLoadFromBundle(
                     C, C.AssetFamily || 'Female3DCG',
-                    this.mergeKeptItems(C, bundle), w.Player?.MemberNumber);
+                    this.mergeKeptItems(C, bundle, replaceKinds, overlayKinds),
+                    w.Player?.MemberNumber);
 
                 w.CharacterRefresh?.(C, true, false);
                 if (C.IsPlayer?.()) {
@@ -4302,7 +4444,8 @@
                 { icon: '🎨', title: '改色：统一调整色相/饱和度/亮度，或整体染色', open: (btn) => this.showRecolorPanel(btn) },
                 { icon: '📋', title: '拷贝：把这件衣服的配置复制到其他槽位的同名衣服', open: (btn) => this.showCopyPanel(btn) },
                 { icon: '🕘', title: '历史记录：自动备份的换装快照，可回退到某个时间点', open: (btn) => this.showHistoryPanel(btn) },
-                { icon: '📥', title: '导入代码：粘贴衣服代码直接穿上，顺带修好旧版失效的变换', open: (btn) => this.showImportPanel(btn) }
+                { icon: '📥', title: '导入代码：粘贴衣服代码直接穿上，顺带修好旧版失效的变换', open: (btn) => this.showImportPanel(btn) },
+                { icon: '📤', title: '导出代码：把身上的衣服、身体部件、道具生成代码', open: (btn) => this.showExportPanel(btn) }
             ];
             for (const tool of tools) {
                 const btn = document.createElement('button');
@@ -5356,7 +5499,7 @@
 
             body.appendChild(this.hintText(
                 '粘贴衣服代码，确认后直接穿上。旧版本存的部件变换会自动修好。\n'
-                + '只换衣服，身上的束具道具保持不动。'));
+                + '只写入勾选的部分，没勾的原样保留。'));
 
             const input = document.createElement('textarea');
             input.placeholder = '在这里粘贴衣服代码';
@@ -5372,6 +5515,17 @@
             input.onkeyup = (e) => e.stopPropagation();
             body.appendChild(input);
 
+            // 衣服始终导入（这个面板的主业），另两项默认关：
+            // 身体部件会换掉体型发型，道具会顶掉现有束具（含别人上的锁），
+            // 都属于要用户明确点头的副作用
+            const opts = document.createElement('div');
+            opts.style.cssText = 'display: flex; flex-direction: column; gap: 5px;';
+            const cbBody = this.checkRow('同时导入身体部件', false, '体型、发型、五官、妆容');
+            const cbItem = this.checkRow('同时导入拘束道具', false, '会顶掉现有束具与锁');
+            opts.appendChild(cbBody);
+            opts.appendChild(cbItem);
+            body.appendChild(opts);
+
             const status = this.hintText('');
             body.appendChild(status);
 
@@ -5384,7 +5538,10 @@
             `;
             wear.onclick = (e) => {
                 e.stopPropagation();
-                this.runImport(C, input.value, status);
+                const kinds = new Set(['cloth']);
+                if (cbBody.input.checked) kinds.add('body');
+                if (cbItem.input.checked) kinds.add('item');
+                this.runImport(C, input.value, status, kinds);
             };
             body.appendChild(wear);
 
@@ -5396,8 +5553,9 @@
          * @param {Object} C
          * @param {string} code
          * @param {HTMLElement} status - 用于回显解析结果
+         * @param {Set<string>} kinds - 要写入的分类，见 groupKindOf
          */
-        runImport(C, code, status) {
+        runImport(C, code, status, kinds) {
             const raw = decodeAppearanceCode(code);
             if (!raw) {
                 status.textContent = '解析不出来，确认复制的是完整的衣服代码。';
@@ -5405,22 +5563,21 @@
                 return;
             }
 
-            // 外部工具导出的代码可能带着束具组。它们会经 ServerAppearanceLoadFromBundle
-            // 顶掉身上现有的束具（含别人上的锁），与"只换衣服"的承诺不符，
-            // 所以在这里就滤掉，只留衣服组
+            // 代码里可能混着没勾选的分类。它们会经 ServerAppearanceLoadFromBundle
+            // 顶掉身上对应的部位（束具还带着别人上的锁），与"只写勾选项"
+            // 的承诺不符，所以在这里就按分类滤一遍
             const family = C.AssetFamily || 'Female3DCG';
-            const bundle = raw.filter(entry => {
-                const group = w.AssetGroupGet?.(family, entry.Group);
-                // 查不到组的条目留给本体去校验，它会自己忽略非法项
-                if (!group) return true;
-                return typeof group.IsAppearance === 'function'
-                    ? group.IsAppearance()
-                    : (group.Category == null || group.Category === 'Appearance');
-            });
-            const dropped = raw.length - bundle.length;
+            const bundle = [];
+            /** @type {Record<string, number>} 被滤掉的分类计数，用于提示 */
+            const skipped = {};
+            for (const entry of raw) {
+                const kind = groupKindOf(family, entry.Group);
+                if (kinds.has(kind)) bundle.push(entry);
+                else skipped[kind] = (skipped[kind] || 0) + 1;
+            }
 
             if (bundle.length === 0) {
-                status.textContent = '这份代码里没有衣服，只有束具道具。';
+                status.textContent = '这份代码里没有勾选的部分，换个选项再试。';
                 status.style.color = '#C00';
                 return;
             }
@@ -5430,13 +5587,32 @@
             const legacy = migrateLegacyLayerKeysAll(
                 JSON.parse(JSON.stringify(bundle))).keys;
 
-            const msg = `解析到 ${bundle.length} 件衣服，确认穿上？\n`
-                + (legacy > 0 ? `其中 ${legacy} 处旧版失效的变换会一并修好。\n` : '')
-                + (dropped > 0 ? `代码里另有 ${dropped} 件束具道具，会跳过不动。\n` : '')
-                + '当前状态会先存一条历史，可以退回来。';
+            const skipNote = [
+                skipped.cloth ? `${skipped.cloth} 件衣服` : '',
+                skipped.body ? `${skipped.body} 个身体部件` : '',
+                skipped.item ? `${skipped.item} 件拘束道具` : '',
+                skipped.script ? `${skipped.script} 项脚本数据` : ''
+            ].filter(Boolean).join('、');
 
+            // 勾了道具却解出零件：写下去等于把身上的束具全脱掉。
+            // 这多半不是用户想要的，说明白再让他决定
+            const noItemInCode = kinds.has('item')
+                && !bundle.some(b => groupKindOf(family, b.Group) === 'item');
+
+            const msg = `解析到 ${bundle.length} 件，确认穿上？\n`
+                + (legacy > 0 ? `其中 ${legacy} 处旧版失效的变换会一并修好。\n` : '')
+                + (skipNote ? `代码里另有${skipNote}，未勾选，会跳过不动。\n` : '')
+                + '当前状态会先存一条历史，可以退回来。'
+                // 历史快照只记衣服与身体，道具不在其中，退回来也补不回去
+                + (kinds.has('item') ? '\n注意：历史不含道具，被顶掉的束具无法回退。' : '')
+                + (noItemInCode ? '\n这份代码里没有道具，身上现有的束具会被全部脱掉。' : '');
+
+            // 身体走按组覆盖：身体组多数 AllowNone 为 false，缺了本体会补默认值，
+            // 于是一份只带体型的代码会把发型五官全重置。道具则按整体替换，
+            // 这样"代码里的束具就是最终结果"，也才有办法脱掉多余的
             this.confirmDialog(msg, '穿上', () => {
-                const ok = dressHistory.applyBundle(C, bundle, '导入前');
+                const ok = dressHistory.applyBundle(
+                    C, bundle, '导入前', kinds, new Set(['body']));
                 this.closeToolPanel();
                 if (!ok) {
                     this.toast('穿上失败，看控制台的报错');
@@ -5447,6 +5623,144 @@
                 this.toast(legacy > 0 ? `已穿上，并修好 ${legacy} 处变换` : '已穿上');
                 this.exitToDressScreen();
             });
+        }
+
+        /**
+         * 导出面板：把身上的装备按勾选的分类生成代码。
+         *
+         * 三项默认全选 —— 导出只是读，没有副作用，全量最省事；
+         * 要分享单独的衣服搭配时再去掉身体与道具。
+         *
+         * @param {HTMLElement} anchor
+         */
+        showExportPanel(anchor) {
+            const C = ItemColorCharacter;
+            const { body } = this.openToolPanel(anchor, '导出代码', null);
+
+            if (!C) {
+                body.appendChild(this.hintText('读不到角色信息'));
+                return;
+            }
+
+            body.appendChild(this.hintText(
+                '勾选要导出的部分，生成的代码可直接粘贴回导入面板或其他工具。'));
+
+            const opts = document.createElement('div');
+            opts.style.cssText = 'display: flex; flex-direction: column; gap: 5px;';
+            const rows = [
+                { kind: 'cloth', row: this.checkRow('导出衣服', true, '含发饰、鞋袜等穿戴件') },
+                { kind: 'body', row: this.checkRow('导出身体部件', true, '体型、发型、五官、妆容') },
+                { kind: 'item', row: this.checkRow('导出道具', true, '拘束道具，不含锁与计时') }
+            ];
+            for (const r of rows) opts.appendChild(r.row);
+            body.appendChild(opts);
+            this.buildExportOutput(C, body, rows);
+        }
+
+        /**
+         * 导出面板的下半部分：结果框、统计、生成与复制。
+         * @param {Object} C
+         * @param {HTMLElement} body
+         * @param {Array<{kind: string, row: HTMLElement}>} rows
+         */
+        buildExportOutput(C, body, rows) {
+            const out = document.createElement('textarea');
+            out.readOnly = true;
+            out.placeholder = '点下面的按钮生成代码';
+            out.style.cssText = `
+                width: 100%; height: 90px; resize: vertical;
+                border: 1px solid #000; box-sizing: border-box;
+                padding: 4px; font-size: ${UI.fontXs}px;
+                font-family: monospace; word-break: break-all;
+                background: #FAFAFA;
+            `;
+            // 同导入框：按键不能漏给游戏的全局快捷键
+            out.onkeydown = (e) => e.stopPropagation();
+            out.onkeyup = (e) => e.stopPropagation();
+            body.appendChild(out);
+
+            const status = this.hintText('');
+            body.appendChild(status);
+
+            const gen = document.createElement('button');
+            gen.textContent = '生成并复制';
+            gen.style.cssText = `
+                padding: 6px 0; cursor: pointer;
+                border: 1px solid #000; background: #fff;
+                font-size: ${UI.fontSm}px;
+            `;
+            gen.onclick = (e) => {
+                e.stopPropagation();
+                this.runExport(C, rows, out, status);
+            };
+            body.appendChild(gen);
+        }
+
+        /**
+         * 生成代码并尽量放进剪贴板。
+         *
+         * 剪贴板走 navigator.clipboard，失败（无权限或非安全上下文）时
+         * 退回选中文本让用户自己按 Ctrl+C —— 代码已经在框里了，
+         * 复制不成功不算失败。
+         *
+         * @param {Object} C
+         * @param {Array<{kind: string, row: HTMLElement}>} rows
+         * @param {HTMLTextAreaElement} out
+         * @param {HTMLElement} status
+         */
+        runExport(C, rows, out, status) {
+            const kinds = new Set(rows.filter(r => r.row.input.checked).map(r => r.kind));
+            if (kinds.size === 0) {
+                out.value = '';
+                status.textContent = '至少勾一项。';
+                status.style.color = '#C00';
+                return;
+            }
+
+            const bundle = collectBundle(C, kinds);
+            if (bundle.length === 0) {
+                out.value = '';
+                status.textContent = '勾选的部分身上没有东西。';
+                status.style.color = '#C00';
+                return;
+            }
+
+            const code = encodeAppearanceBundle(bundle);
+            if (!code) {
+                out.value = '';
+                status.textContent = '生成失败，看控制台的报错。';
+                status.style.color = '#C00';
+                return;
+            }
+
+            out.value = code;
+            const counts = { cloth: 0, body: 0, item: 0 };
+            const family = C.AssetFamily || 'Female3DCG';
+            for (const b of bundle) {
+                const k = groupKindOf(family, b.Group);
+                if (counts[k] != null) counts[k]++;
+            }
+            const parts = [
+                counts.cloth ? `衣服 ${counts.cloth}` : '',
+                counts.body ? `身体 ${counts.body}` : '',
+                counts.item ? `道具 ${counts.item}` : ''
+            ].filter(Boolean).join('、');
+
+            status.style.color = '#666';
+            status.textContent = `已生成：${parts}，共 ${bundle.length} 件。`;
+
+            const fallback = () => {
+                out.focus();
+                out.select();
+                this.toast('已生成，按 Ctrl+C 复制');
+            };
+            if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(code)
+                    .then(() => this.toast('代码已复制到剪贴板'))
+                    .catch(() => fallback());
+            } else {
+                fallback();
+            }
         }
 
         /**
@@ -6630,6 +6944,39 @@
             this.expandedNodes.add(root.id);
             this.expandedLayeringNodes.add(root.id);
             this.updateWindow();
+        }
+
+        /**
+         * 一行勾选框。返回行元素，input 挂在 row.input 上便于读写。
+         * @param {string} label
+         * @param {boolean} checked
+         * @param {string} note - 副标题，灰色小字，可空
+         * @param {(v: boolean) => void} [onChange]
+         * @returns {HTMLElement}
+         */
+        checkRow(label, checked, note, onChange) {
+            const row = document.createElement('label');
+            row.style.cssText = `display: flex; align-items: flex-start; gap: 6px;
+                cursor: pointer; font-size: ${UI.fontSm}px; line-height: 1.5;`;
+
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = !!checked;
+            box.style.cssText = 'margin: 2px 0 0 0; flex-shrink: 0; cursor: pointer;';
+            box.onchange = () => onChange?.(box.checked);
+            row.appendChild(box);
+
+            const text = document.createElement('span');
+            text.textContent = label;
+            row.appendChild(text);
+            if (note) {
+                const sub = document.createElement('span');
+                sub.textContent = note;
+                sub.style.cssText = `color: #666; font-size: ${UI.fontXs}px;`;
+                row.appendChild(sub);
+            }
+            row.input = box;
+            return row;
         }
 
         /** 灰色小字提示 */
