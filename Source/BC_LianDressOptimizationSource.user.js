@@ -186,6 +186,76 @@
     }
 
     /**
+     * 取可交给 Canvas2D drawImage 的图源。
+     *
+     * R133（faaab7f0）起图像缓按路径分了 payload：
+     * - DrawImageCache.data = ImageBitmap，可以画
+     * - GLDrawImageCache.data = {width,height,texture: WebGLTexture}，不能画
+     *
+     * CachedImage 还加了 width/height 转发，旧代码拿 GL 缓存项测宽高能过，
+     * 再丢给 drawImage 就会抛 "provided value is not of type ..."。
+     * 这里只认 2D 路径：官方入口 DrawGetImage，或兜底读 DrawImageCache。
+     *
+     * @param {string} url
+     * @returns {CanvasImageSource|null}
+     */
+    function resolveDrawable(url) {
+        if (!url) return null;
+
+        const ready = (src) => {
+            if (!src) return null;
+            const w = src.naturalWidth || src.width;
+            const h = src.naturalHeight || src.height;
+            // 宽高为 1 是还没解码完的占位
+            return (w > 1 && h > 1) ? src : null;
+        };
+
+        const getImage = bcGlobal("DrawGetImage");
+        if (typeof getImage === "function") {
+            try {
+                const img = ready(getImage(url));
+                if (img) return img;
+            } catch (e) {
+                console.warn("[LianDressOptimization] DrawGetImage 失败", url, e);
+            }
+        }
+
+        // 新版包装：CachedImage.data 才是 ImageBitmap
+        const entry = bcGlobal("DrawImageCache")?.get?.(url);
+        if (entry?.isLoaded?.() && entry.data && !entry.data.texture) {
+            return ready(entry.data);
+        }
+
+        // 旧版 Map：直接存 HTMLImageElement / ImageBitmap
+        const legacy = bcGlobal("DrawCacheImage")?.get?.(url);
+        if (legacy && !legacy.data?.texture) {
+            // 中间过渡版曾用 .bitmap
+            return ready(legacy.bitmap || legacy.data || legacy);
+        }
+        return null;
+    }
+
+    /**
+     * 取贴图像素尺寸。尺寸查询不需要可画图源，GL / 2D 缓存都行。
+     * @param {string} url
+     * @returns {{width: number, height: number}|null}
+     */
+    function resolveTextureSize(url) {
+        if (!url) return null;
+        const sizeOf = (obj) => {
+            if (!obj) return null;
+            // CachedImage 的 width/height 已转发到 data；GL payload 与 ImageBitmap 也有
+            const w = obj.naturalWidth || obj.width || obj.data?.width || 0;
+            const h = obj.naturalHeight || obj.height || obj.data?.height || 0;
+            return (w > 1 && h > 1) ? { width: w, height: h } : null;
+        };
+        return sizeOf(bcGlobal("GLDrawImageCache")?.get?.(url))
+            ?? sizeOf(bcGlobal("DrawImageCache")?.get?.(url))
+            ?? sizeOf(bcGlobal("DrawCacheImage")?.get?.(url))
+            ?? sizeOf(resolveDrawable(url));
+    }
+
+    /**
      * 求贴图中非透明像素的边界框，返回贴图局部坐标下的矩形。
      *
      * 为什么需要：同组贴图共用画布尺寸，实际图案往往只占其中一小块，
@@ -196,7 +266,7 @@
      * 所以按 URL 缓存，且对超大图直接放弃。
      *
      * @param {string} url - 贴图 URL
-     * @param {HTMLImageElement} img - 已加载的图片
+     * @param {CanvasImageSource} img - 已加载的可绘制图源
      * @returns {{x: number, y: number, w: number, h: number}|null}
      */
     function getAlphaData(url, img) {
@@ -2833,12 +2903,12 @@
     }
 
     /**
-     * 导出道具时要剔掉的属性：锁的归属与计时。
+     * 锁相关的属性。不带锁导出 / 导入时整组剔掉。
      *
-     * 留着没有意义 —— 本体的校验流程会把"不是自己上的锁"原样挡回去，
-     * 而带着别人的会员号到处传也不合适。
+     * 带锁时原样保留，最终能不能锁上由本体的校验流程决定
+     * （主人锁、恋人锁等会按当前关系再筛一遍）。
      */
-    const EXPORT_STRIP_PROPS = new Set([
+    const LOCK_PROPS = new Set([
         'LockedBy', 'LockMemberNumber', 'LockMemberName', 'LockMessage',
         'RemoveTimer', 'ShowTimer', 'RemoveItem', 'EnableRandomInput',
         'MemberNumberList', 'CombinationNumber', 'Password', 'Hint',
@@ -2850,9 +2920,10 @@
      *
      * @param {Object} C
      * @param {Set<string>} kinds - 要收的分类，取值见 itemKindOf
+     * @param {boolean} [withLocks=true] - 是否带上道具的锁
      * @returns {Array<Object>}
      */
-    function collectBundle(C, kinds) {
+    function collectBundle(C, kinds, withLocks = true) {
         if (!C || !Array.isArray(C.Appearance)) return [];
         const out = [];
         for (const item of C.Appearance) {
@@ -2865,14 +2936,18 @@
                 Color: item.Color,
                 Craft: item.Craft,
                 Difficulty: item.Difficulty,
-                Property: kind === 'item' ? stripLockProps(item.Property) : item.Property
+                Property: withLocks ? item.Property : stripLockProps(item.Property)
             });
         }
         return out;
     }
 
     /**
-     * 去掉锁与计时相关的属性，返回浅拷贝。空对象归一成 undefined。
+     * 去掉锁相关的属性，返回浅拷贝。空对象归一成 undefined。
+     *
+     * Effect 里的 "Lock" 一并拿掉：只删 LockedBy 时本体也会清锁，
+     * 但留着这个标记会让校验把它当成一次锁变更去走权限判断。
+     *
      * @param {Object|undefined} prop
      * @returns {Object|undefined}
      */
@@ -2880,8 +2955,11 @@
         if (!prop || typeof prop !== 'object') return prop;
         const out = {};
         for (const k of Object.keys(prop)) {
-            if (EXPORT_STRIP_PROPS.has(k)) continue;
+            if (LOCK_PROPS.has(k)) continue;
             out[k] = prop[k];
+        }
+        if (Array.isArray(out.Effect) && out.Effect.includes('Lock')) {
+            out.Effect = out.Effect.filter(e => e !== 'Lock');
         }
         return Object.keys(out).length > 0 ? out : undefined;
     }
@@ -5521,9 +5599,15 @@
             const opts = document.createElement('div');
             opts.style.cssText = 'display: flex; flex-direction: column; gap: 5px;';
             const cbBody = this.checkRow('同时导入身体部件', false, '体型、发型、五官、妆容');
-            const cbItem = this.checkRow('同时导入拘束道具', false, '会顶掉现有束具与锁');
+            const cbItem = this.checkRow('同时导入拘束道具', false, '会顶掉现有束具与锁',
+                (v) => this.setRowEnabled(cbLock, v));
+            // 锁挂在道具上，不导道具时这项无从谈起，跟着禁用
+            const cbLock = this.checkRow('同时导入锁', true, '按代码里的锁原样锁上');
+            cbLock.style.marginLeft = '18px';
+            this.setRowEnabled(cbLock, false);
             opts.appendChild(cbBody);
             opts.appendChild(cbItem);
+            opts.appendChild(cbLock);
             body.appendChild(opts);
 
             const status = this.hintText('');
@@ -5541,7 +5625,8 @@
                 const kinds = new Set(['cloth']);
                 if (cbBody.input.checked) kinds.add('body');
                 if (cbItem.input.checked) kinds.add('item');
-                this.runImport(C, input.value, status, kinds);
+                const withLocks = cbItem.input.checked && cbLock.input.checked;
+                this.runImport(C, input.value, status, kinds, withLocks);
             };
             body.appendChild(wear);
 
@@ -5554,8 +5639,9 @@
          * @param {string} code
          * @param {HTMLElement} status - 用于回显解析结果
          * @param {Set<string>} kinds - 要写入的分类，见 groupKindOf
+         * @param {boolean} [withLocks=false] - 是否保留代码里的锁
          */
-        runImport(C, code, status, kinds) {
+        runImport(C, code, status, kinds, withLocks = false) {
             const raw = decodeAppearanceCode(code);
             if (!raw) {
                 status.textContent = '解析不出来，确认复制的是完整的衣服代码。';
@@ -5572,8 +5658,14 @@
             const skipped = {};
             for (const entry of raw) {
                 const kind = groupKindOf(family, entry.Group);
-                if (kinds.has(kind)) bundle.push(entry);
-                else skipped[kind] = (skipped[kind] || 0) + 1;
+                if (!kinds.has(kind)) {
+                    skipped[kind] = (skipped[kind] || 0) + 1;
+                } else if (withLocks) {
+                    bundle.push(entry);
+                } else {
+                    // 不导锁：剔掉锁属性。拷一份，免得改到解析结果之外的引用
+                    bundle.push({ ...entry, Property: stripLockProps(entry.Property) });
+                }
             }
 
             if (bundle.length === 0) {
@@ -5650,11 +5742,16 @@
             const rows = [
                 { kind: 'cloth', row: this.checkRow('导出衣服', true, '含发饰、鞋袜等穿戴件') },
                 { kind: 'body', row: this.checkRow('导出身体部件', true, '体型、发型、五官、妆容') },
-                { kind: 'item', row: this.checkRow('导出道具', true, '拘束道具，不含锁与计时') }
+                { kind: 'item', row: this.checkRow('导出道具', true, '拘束道具',
+                    (v) => this.setRowEnabled(lockRow, v)) }
             ];
+            // 锁挂在道具上，跟着道具那项启用 / 禁用
+            const lockRow = this.checkRow('导出锁', true, '锁的种类、上锁人与计时');
+            lockRow.style.marginLeft = '18px';
             for (const r of rows) opts.appendChild(r.row);
+            opts.appendChild(lockRow);
             body.appendChild(opts);
-            this.buildExportOutput(C, body, rows);
+            this.buildExportOutput(C, body, rows, lockRow);
         }
 
         /**
@@ -5662,8 +5759,9 @@
          * @param {Object} C
          * @param {HTMLElement} body
          * @param {Array<{kind: string, row: HTMLElement}>} rows
+         * @param {HTMLElement} lockRow - 「导出锁」那一行
          */
-        buildExportOutput(C, body, rows) {
+        buildExportOutput(C, body, rows, lockRow) {
             const out = document.createElement('textarea');
             out.readOnly = true;
             out.placeholder = '点下面的按钮生成代码';
@@ -5691,7 +5789,7 @@
             `;
             gen.onclick = (e) => {
                 e.stopPropagation();
-                this.runExport(C, rows, out, status);
+                this.runExport(C, rows, out, status, lockRow.input.checked);
             };
             body.appendChild(gen);
         }
@@ -5707,8 +5805,9 @@
          * @param {Array<{kind: string, row: HTMLElement}>} rows
          * @param {HTMLTextAreaElement} out
          * @param {HTMLElement} status
+         * @param {boolean} withLocks - 是否带上道具的锁
          */
-        runExport(C, rows, out, status) {
+        runExport(C, rows, out, status, withLocks) {
             const kinds = new Set(rows.filter(r => r.row.input.checked).map(r => r.kind));
             if (kinds.size === 0) {
                 out.value = '';
@@ -5717,7 +5816,7 @@
                 return;
             }
 
-            const bundle = collectBundle(C, kinds);
+            const bundle = collectBundle(C, kinds, withLocks);
             if (bundle.length === 0) {
                 out.value = '';
                 status.textContent = '勾选的部分身上没有东西。';
@@ -6244,6 +6343,16 @@
                 onDone(img);
             };
             const valid = (img) => img && (img.naturalWidth || img.width || 0) > 1;
+            // R133 起 DrawGetImage 返回 ImageBitmap：有尺寸即就绪，没有 complete / load
+            const ready = (img) => {
+                if (!valid(img)) return false;
+                if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) return true;
+                if (typeof HTMLCanvasElement !== "undefined" && img instanceof HTMLCanvasElement) return true;
+                return !!img.complete;
+            };
+            const canListen = (img) =>
+                img && typeof img.addEventListener === "function"
+                && typeof img.removeEventListener === "function";
 
             const attempt = () => {
                 if (settled) return;
@@ -6251,20 +6360,18 @@
 
                 // 已在本体缓存里且加载完成，直接用
                 const cached = this.gizmo.getImage(url);
-                if (valid(cached) && cached.complete) return finish(cached);
+                if (ready(cached)) return finish(cached);
 
                 const img = tries === 1
                     ? this.getGameImage(url)
                     : this.reloadImage(url);
                 if (!img) return finish(null);
 
-                if (img.complete) {
-                    // complete 为真但尺寸无效 = 加载失败过
-                    if (valid(img)) return finish(img);
-                    return retry();
-                }
+                if (ready(img)) return finish(img);
+                // ImageBitmap / 已失败的 Image：没有可听的事件，直接重试或放弃
+                if (!canListen(img)) return retry();
 
-                const onLoad = () => { cleanup(); valid(img) ? finish(img) : retry(); };
+                const onLoad = () => { cleanup(); ready(img) ? finish(img) : retry(); };
                 const onErr = () => { cleanup(); retry(); };
                 const cleanup = () => {
                     img.removeEventListener('load', onLoad);
@@ -6274,7 +6381,7 @@
                 img.addEventListener('load', onLoad);
                 img.addEventListener('error', onErr);
                 // 注册监听的间隙里可能已经加载完，事件就不会再来了
-                if (img.complete) { cleanup(); return valid(img) ? finish(img) : retry(); }
+                if (img.complete) { cleanup(); return ready(img) ? finish(img) : retry(); }
                 timer = setTimeout(() => { cleanup(); retry(); }, 10000);
             };
 
@@ -6320,29 +6427,20 @@
         }
 
         /**
-         * 取一张贴图，走本体的 DrawGetImage。
+         * 取一张贴图，走本体的 DrawGetImage / DrawImageCache。
          *
          * 必须走这个函数而不是自己 new Image()：自定义服装插件（Echo 等）
          * 用 @sugarch/bc-image-mapping 在 DrawGetImage / GLDrawImage 上挂了
          * 钩子，把 `Assets/...` 这类内部路径重写到它们自己的 CDN。自己发
          * 请求会绕过映射，那些衣服的贴图在官方服务器上并不存在，必然 404。
          *
-         * 顺带还蹭到两个好处：命中本体的 DrawCacheImage 少发请求，
-         * 以及它会设好 crossOrigin，我们后面 getImageData 才不会被污染。
-         *
          * @param {string} url - 内部路径
-         * @returns {HTMLImageElement|null}
+         * @returns {CanvasImageSource|HTMLImageElement|null}
          */
         getGameImage(url) {
-            if (typeof w.DrawGetImage === 'function') {
-                try {
-                    const img = w.DrawGetImage(url);
-                    if (img) return img;
-                } catch (e) {
-                    console.warn('[LianDressOptimization] DrawGetImage 失败', url, e);
-                }
-            }
-            // 兜底：本体没这个函数就自己来，顺手查一下映射表
+            const cached = resolveDrawable(url);
+            if (cached) return cached;
+            // 兜底：本体没 DrawGetImage 就自己来，顺手查一下映射表
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.src = this.resolveImageUrl(url);
@@ -6977,6 +7075,18 @@
             }
             row.input = box;
             return row;
+        }
+
+        /**
+         * 启用 / 禁用一行勾选框。禁用时保留勾选状态，重新启用后照旧生效。
+         * @param {HTMLElement} row - checkRow 的返回值
+         * @param {boolean} enabled
+         */
+        setRowEnabled(row, enabled) {
+            if (!row?.input) return;
+            row.input.disabled = !enabled;
+            row.style.opacity = enabled ? '1' : '0.45';
+            row.style.cursor = enabled ? 'pointer' : 'not-allowed';
         }
 
         /** 灰色小字提示 */
@@ -9401,24 +9511,11 @@
          * 取图层贴图的原始像素尺寸。缩放与旋转的支点都是贴图中心，
          * 所以必须拿到真实宽高，不能用组的名义尺寸。
          * URL 由 capture 在渲染时记录，这里只负责查缓存。
-         * 两条渲染路径的缓存不同：WebGL 走 GLDrawImageCache，2D 回退走 DrawCacheImage。
          * @param {string} url
          * @returns {{width: number, height: number}|null}
          */
         getTextureSize(url) {
-            if (!url) return null;
-
-            const fromCache = (img) => {
-                if (!img) return null;
-                const wpx = img.naturalWidth || img.width;
-                const hpx = img.naturalHeight || img.height;
-                // 宽高为 1 说明纹理还是 GLDrawLoadImage 塞的 1x1 占位像素
-                return (wpx > 1 && hpx > 1) ? { width: wpx, height: hpx } : null;
-            };
-
-            return fromCache(bcGlobal("GLDrawImageCache")?.get(url))
-                ?? fromCache(bcGlobal("DrawCacheImage")?.get(url))
-                ?? null;
+            return resolveTextureSize(url);
         }
 
         /**
@@ -9442,10 +9539,9 @@
                 : { tw, th, x: 0, y: 0, w: tw, h: th, alpha: null };
         }
 
-        /** 取贴图的 alpha 信息（边界 + 降采样遮罩），两条渲染路径的缓存都查 */
+        /** 取贴图的 alpha 信息（边界 + 降采样遮罩）。必须用可绘制图源 */
         getAlpha(url) {
-            const img = bcGlobal("GLDrawImageCache")?.get(url) ?? bcGlobal("DrawCacheImage")?.get(url);
-            return getAlphaData(url, img);
+            return getAlphaData(url, resolveDrawable(url));
         }
         /**
          * 位移倍率。WebGL 路径下 dstX 已含一份 TranslationX，
@@ -10290,27 +10386,29 @@
             return true;
         }
 
-        /** 取贴图 Image 对象，两条渲染路径的缓存都查 */
+        /** 取可贴到 Canvas2D 的图源。GL 纹理不能画，只走 Draw 路径 */
         getImage(url) {
-            const img = bcGlobal("GLDrawImageCache")?.get(url)
-                ?? bcGlobal("DrawCacheImage")?.get(url);
-            // 宽高为 1 是还没加载完的占位纹理
-            return (img && (img.naturalWidth || img.width) > 1) ? img : null;
+            return resolveDrawable(url);
         }
 
         /**
-         * 取缓存里的 Image 对象本身，不管加载成功与否。
+         * 取缓存条目上的真实地址，供重试与诊断。
          *
-         * 用途是读它的 src —— 那是被自定义资产插件的钩子改写过的真实地址。
+         * 旧版是 HTMLImageElement.src；R133 起是 CachedImage.url。
          * 重试时沿用它，才不会又打回官方服务器上并不存在的路径。
          *
          * @param {string} url
-         * @returns {HTMLImageElement|null}
+         * @returns {{src: string}|null}
          */
         getImageRaw(url) {
-            return bcGlobal("GLDrawImageCache")?.get(url)
-                ?? bcGlobal("DrawCacheImage")?.get(url)
+            const entry = bcGlobal("DrawImageCache")?.get?.(url)
+                ?? bcGlobal("GLDrawImageCache")?.get?.(url)
+                ?? bcGlobal("DrawCacheImage")?.get?.(url)
                 ?? null;
+            if (!entry) return null;
+            if (typeof entry.src === "string" && entry.src) return entry;
+            if (typeof entry.url === "string" && entry.url) return { src: entry.url };
+            return null;
         }
 
         /**
@@ -11374,18 +11472,14 @@
         return [dx / t.sx + size.tw / 2, dy / t.sy + size.th / 2];
     }
 
-    /** 取贴图 Image，两条渲染路径的缓存都查。未加载完的占位纹理返回 null */
+    /** 取可贴到 Canvas2D 的图源。未加载完时返回 null */
     function pickImage(url) {
-        const img = bcGlobal("GLDrawImageCache")?.get(url)
-            ?? bcGlobal("DrawCacheImage")?.get(url);
-        return (img && (img.naturalWidth || img.width) > 1) ? img : null;
+        return resolveDrawable(url);
     }
 
     /** 贴图的原始像素尺寸 */
     function textureSize(url) {
-        const img = pickImage(url);
-        if (!img) return null;
-        return { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+        return resolveTextureSize(url);
     }
 
     /**
@@ -11590,7 +11684,12 @@
             if (opts && appearancePicker.isCapturing()
                 && isDrawingFor(CharacterAppearanceSelection)) {
                 const asset = matchAppearanceAsset(src);
-                if (asset) appearancePicker.capture(asset, src, x, y, opts);
+                if (asset) {
+                    appearancePicker.capture(asset, src, x, y, opts);
+                    // WebGL 路径只把纹理塞进 GL 缓存。描边要走 Canvas2D，
+                    // 提前触发 DrawGetImage，让 DrawImageCache 也备好 ImageBitmap
+                    if (typeof src === "string") resolveDrawable(src);
+                }
             }
             return next(args);
         });
