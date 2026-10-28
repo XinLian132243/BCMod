@@ -234,25 +234,33 @@
             this.isEnabled = false;
             this.intervalId = null;
             this.intervalTime = 60 * 60 * 1000; // 1小时
+            this.retryInterval = 5 * 60 * 1000; // 失败图片检查间隔
+            this.maxRetryCount = 5;
+            this.retryTimerId = null;
+            this.retryRunning = false;
+            this.clearing = false;
+            this.retryEnabled = false;
+            this.retryStartTimerId = null;
+            /** @type {Map<string, number>} */
+            this.retryCounts = new Map();
+            /** @type {Map<string, number>} */
+            this.nextRetryAt = new Map();
+            /** @type {Set<string>} */
+            this.retryGaveUp = new Set();
         }
 
         /**
-         * 清理WebGL纹理缓存
+         * 清理 WebGL 图片纹理缓存。
+         * 纹理已经不再挂在 gl.textureCache 上，而是放在 GLDrawImageCache 里。
          */
-        GLDrawClearTextureCache(gl) {
-            if (!gl || !gl.textureCache) return;
-            
+        GLDrawClearTextureCache() {
+            if (typeof GLDrawImageCache === "undefined" || !GLDrawImageCache) return;
+
             let count = 0;
-            // 1. 遍历并删除所有纹理
-            for (const [url, textureInfo] of gl.textureCache) {
-                if (textureInfo && textureInfo.texture) {
-                    gl.deleteTexture(textureInfo.texture);
-                    count++;
-                }
-            }
-            
-            // 2. 清空缓存 Map
-            gl.textureCache.clear();
+            GLDrawImageCache.forEach(() => {
+                count++;
+            });
+            GLDrawImageCache.clear();
             console.log(`CacheClearManager: 清理了 ${count} 个纹理缓存`);
         }
 
@@ -277,18 +285,244 @@
         }
 
         /**
+         * 收集两份内存图片缓存里加载失败的地址。
+         * 失败项会停在 FAILED，原版之后不会再请求。
+         * @returns {string[]}
+         */
+        collectFailedImageUrls() {
+            const urls = new Set();
+            const visit = (cache) => {
+                cache?.forEach?.((image, url) => {
+                    if (image?.isFailing?.()) urls.add(url);
+                });
+            };
+            if (typeof DrawImageCache !== "undefined") visit(DrawImageCache);
+            if (typeof GLDrawImageCache !== "undefined") visit(GLDrawImageCache);
+            return [...urls];
+        }
+
+        /**
+         * 丢掉内存里的失败记录，下次绘制会重新建立加载。
+         * @param {ImageCache | undefined} cache
+         * @returns {number}
+         */
+        dropFailedImageEntries(cache) {
+            if (!cache?.forEach || typeof cache.delete !== "function") return 0;
+            const urls = [];
+            cache.forEach((image, url) => {
+                if (image?.isFailing?.()) urls.push(url);
+            });
+            for (const url of urls) cache.delete(url);
+            return urls.length;
+        }
+
+        /**
+         * 删除浏览器 Cache 里这些地址的已存响应。
+         * 解码失败时原版仍会留下 HTTP 200，不清掉的话重试还会用同一份数据。
+         * @param {string[]} urls
+         * @returns {Promise<number>}
+         */
+        async dropBrowserImageEntries(urls) {
+            const store = (typeof BrowserStorageCache !== "undefined") ? BrowserStorageCache : null;
+            if (!urls.length || !store?.cache || typeof store.key !== "function") return 0;
+
+            let count = 0;
+            for (const url of urls) {
+                try {
+                    const key = store.key(url);
+                    store._revalidated?.delete(key);
+                    if (await store.cache.delete(key)) count++;
+                } catch (error) {
+                    console.warn("CacheClearManager: 删除浏览器图片缓存失败", url, error);
+                }
+            }
+            return count;
+        }
+
+        /**
+         * 取出某一份缓存里的失败地址。
+         * @param {ImageCache | undefined} cache
+         * @returns {string[]}
+         */
+        collectFailedUrlsFrom(cache) {
+            const urls = [];
+            cache?.forEach?.((image, url) => {
+                if (image?.isFailing?.()) urls.push(url);
+            });
+            return urls;
+        }
+
+        /**
+         * 失败图片重新加载完成后，让用过这张图的角色重画。
+         * @param {string} url
+         */
+        markCharactersForImage(url) {
+            if (typeof Character === "undefined") return;
+            for (const character of Character) {
+                if (character?.DrawnAssets?.has?.(url)) character.MustDraw = true;
+            }
+        }
+
+        /**
+         * 等这批重新请求的图片结束，成功的话再重画角色。
+         * @param {{ url: string, images: any[] }[]} pending
+         */
+        watchRetriedImages(pending) {
+            if (!pending.length) return;
+            const started = Date.now();
+            const timer = setInterval(() => {
+                let settled = true;
+                for (const item of pending) {
+                    if (item.done) continue;
+                    if (item.images.some((image) => image?.isLoaded?.())) {
+                        item.done = true;
+                        this.markCharactersForImage(item.url);
+                        continue;
+                    }
+                    if (item.images.some((image) => image?.isLoading?.())) settled = false;
+                    else item.done = true;
+                }
+                if (settled || Date.now() - started > 60 * 1000) clearInterval(timer);
+            }, 1000);
+        }
+
+        /**
+         * 检查失败图片并重新下载。不碰已经成功的纹理。
+         */
+        async retryFailedImages() {
+            if (this.retryRunning || this.clearing) return;
+            this.retryRunning = true;
+            try {
+                const drawCache = (typeof DrawImageCache !== "undefined") ? DrawImageCache : null;
+                const glCache = (typeof GLDrawImageCache !== "undefined") ? GLDrawImageCache : null;
+                const drawFailed = new Set(this.collectFailedUrlsFrom(drawCache));
+                const glFailed = new Set(this.collectFailedUrlsFrom(glCache));
+                const urls = [];
+                const now = Date.now();
+                for (const url of new Set([...drawFailed, ...glFailed])) {
+                    const count = this.retryCounts.get(url) || 0;
+                    if (count >= this.maxRetryCount) {
+                        if (!this.retryGaveUp.has(url)) {
+                            this.retryGaveUp.add(url);
+                            console.warn(`CacheClearManager: 图片多次重试仍失败，暂停重试 ${url}`);
+                        }
+                        continue;
+                    }
+                    if ((this.nextRetryAt.get(url) || 0) > now) continue;
+                    // 先占住冷却时间，避免同一次加载过程里被再次发起
+                    this.retryCounts.set(url, count + 1);
+                    this.nextRetryAt.set(url, now + this.retryInterval);
+                    urls.push(url);
+                }
+                if (!urls.length) return;
+
+                await this.dropBrowserImageEntries(urls);
+                const pending = [];
+                for (const url of urls) {
+                    /** @type {any[]} */
+                    const images = [];
+                    if (drawFailed.has(url) && drawCache) {
+                        drawCache.delete(url);
+                        images.push(drawCache.get(url));
+                    }
+                    if (glFailed.has(url) && glCache) {
+                        glCache.delete(url);
+                        images.push(glCache.get(url));
+                    }
+                    pending.push({ url, images, done: false });
+                }
+                this.watchRetriedImages(pending);
+                console.log(`CacheClearManager: 重试 ${urls.length} 个失败图片`);
+            } catch (error) {
+                console.error("CacheClearManager: 重试失败图片时出错", error);
+            } finally {
+                this.retryRunning = false;
+            }
+        }
+
+        /**
+         * 定时检查加载失败的图片。
+         */
+        startRetryWatch() {
+            if (!this.retryEnabled) return;
+            const previous = window.__lianOptimizationRetryManager;
+            if (previous && previous !== this) previous.stopRetryWatch();
+            if (window.__lianOptimizationRetryTimer && window.__lianOptimizationRetryTimer !== this.retryTimerId) {
+                clearInterval(window.__lianOptimizationRetryTimer);
+                window.__lianOptimizationRetryTimer = null;
+            }
+            window.__lianOptimizationRetryManager = this;
+            if (this.retryTimerId) return;
+            this.retryTimerId = setInterval(() => {
+                if (!this.retryEnabled) return;
+                this.retryFailedImages();
+            }, this.retryInterval);
+            window.__lianOptimizationRetryTimer = this.retryTimerId;
+        }
+
+        /**
+         * 停止失败图片检查。
+         */
+        stopRetryWatch() {
+            if (this.retryTimerId) {
+                clearInterval(this.retryTimerId);
+                if (window.__lianOptimizationRetryTimer === this.retryTimerId) {
+                    window.__lianOptimizationRetryTimer = null;
+                }
+                this.retryTimerId = null;
+            }
+            if (this.retryStartTimerId) {
+                clearTimeout(this.retryStartTimerId);
+                this.retryStartTimerId = null;
+            }
+        }
+
+        /**
+         * 按设置开启或关闭失败图片重试。
+         * @param {boolean} enabled
+         */
+        setRetryEnabled(enabled) {
+            this.retryEnabled = !!enabled;
+            if (this.retryEnabled) {
+                this.startRetryWatch();
+                console.log("CacheClearManager: 已开启失败图片重试");
+            } else {
+                this.stopRetryWatch();
+                console.log("CacheClearManager: 已关闭失败图片重试");
+            }
+        }
+
+        /**
          * 执行清理缓存
          */
-        doClearCaches() {
+        async doClearCaches() {
+            if (this.clearing) return;
+            this.clearing = true;
             console.log('CacheClearManager: 开始清理缓存');
             
             try {
-                // 清理GL纹理缓存
+                this.retryCounts.clear();
+                this.nextRetryAt.clear();
+                this.retryGaveUp.clear();
+                const failedUrls = this.collectFailedImageUrls();
+                // 先去掉磁盘上的失败响应，再丢掉内存记录，避免重画时又读到同一份数据
+                const browserCount = await this.dropBrowserImageEntries(failedUrls);
+                const drawFailedCount = (typeof DrawImageCache !== "undefined")
+                    ? this.dropFailedImageEntries(DrawImageCache)
+                    : 0;
+                const glFailedCount = (typeof GLDrawImageCache !== "undefined")
+                    ? this.dropFailedImageEntries(GLDrawImageCache)
+                    : 0;
+                if (failedUrls.length > 0) {
+                    console.log(`CacheClearManager: 重置 ${failedUrls.length} 个失败图片（2D ${drawFailedCount}，WebGL ${glFailedCount}，浏览器缓存 ${browserCount}）`);
+                }
+
+                // 清理GL纹理缓存。没有 WebGL 时上面的失败图片也已经可以重试
                 if (typeof GLDrawCanvas !== 'undefined' && GLDrawCanvas && GLDrawCanvas.GL) {
                     const gl = GLDrawCanvas.GL;
                     
                     // 清理纹理缓存
-                    this.GLDrawClearTextureCache(gl);
+                    this.GLDrawClearTextureCache();
                     
                     // 清理遮罩缓存
                     this.GLDrawClearMaskCache(gl);
@@ -316,7 +550,7 @@
                         });
                     }
                     
-                    // 刷新在线角色
+                    // 刷新在线角色，重新请求刚才清掉的图片
                     const onlineCharacters = Character.filter(c => c.IsOnline?.());
                     if (onlineCharacters.length > 0) {
                         onlineCharacters.forEach(c => {
@@ -327,10 +561,24 @@
                         console.log(`CacheClearManager: 已刷新 ${onlineCharacters.length} 个在线角色`);
                     }
                 }
+
+                // 房间外的角色也要重画，否则 2D 缓存里清掉的图要等下次打开才会请求
+                if (typeof Character !== "undefined" && typeof CharacterLoadCanvas === "function") {
+                    for (const c of Character) {
+                        if (c?.IsOnline?.()) continue;
+                        try {
+                            CharacterLoadCanvas(c);
+                        } catch (error) {
+                            console.warn("CacheClearManager: 重画角色失败", c?.MemberNumber, error);
+                        }
+                    }
+                }
                 
                 console.log('CacheClearManager: 缓存清理完成');
             } catch (error) {
                 console.error('CacheClearManager: 清理缓存时出错', error);
+            } finally {
+                this.clearing = false;
             }
         }
 
@@ -411,37 +659,61 @@
             return this.quality;
         }
         /**
-         * 自定义的纹理绑定函数
+         * 把图片字节解码成缩小后的 GL 纹理。
+         * 返回的宽高仍是原图像素尺寸，绘制和遮罩坐标不用改。
+         * @param {Blob} blob
+         * @returns {Promise<{ width: number, height: number, texture: WebGLTexture }>}
          */
-        customBindImageToTexture(gl, Img, textureInfo) {
+        async decodeReduced(blob) {
+            const gl = (typeof GLDrawCanvas !== "undefined") ? GLDrawCanvas?.GL : null;
+            if (!gl) throw new Error("WebGL context unavailable");
+            if (typeof GLDrawCreateTexture !== "function") {
+                throw new Error("GLDrawCreateTexture unavailable");
+            }
+
             const scale = this.getTextureScale();
-            const targetWidth = Math.floor(Img.width * scale);
-            const targetHeight = Math.floor(Img.height * scale);
-            
-            textureInfo.width = Img.width;
-            textureInfo.height = Img.height;
-            
-            gl.bindTexture(gl.TEXTURE_2D, textureInfo.texture);
-            
+            const bitmap = await createImageBitmap(blob, { premultiplyAlpha: "none" });
+            const width = bitmap.width;
+            const height = bitmap.height;
+            let scaled = null;
             try {
-                if (scale < 1.0 && targetWidth > 0 && targetHeight > 0) {
-                    const tempCanvas = document.createElement('canvas');
-                    tempCanvas.width = targetWidth;
-                    tempCanvas.height = targetHeight;
-                    const ctx = tempCanvas.getContext('2d');
-                    ctx.imageSmoothingEnabled = true;
-                    ctx.imageSmoothingQuality = scale >= 0.5 ? 'high' : 'medium';
-                    ctx.drawImage(Img, 0, 0, targetWidth, targetHeight);
-                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tempCanvas);
-                } else {
-                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Img);
+                let source = bitmap;
+                const targetWidth = Math.max(1, Math.floor(width * scale));
+                const targetHeight = Math.max(1, Math.floor(height * scale));
+                if (scale < 1 && (targetWidth < width || targetHeight < height)) {
+                    const quality = scale >= 0.5 ? "high" : "medium";
+                    try {
+                        scaled = await createImageBitmap(bitmap, {
+                            resizeWidth: targetWidth,
+                            resizeHeight: targetHeight,
+                            resizeQuality: quality,
+                            premultiplyAlpha: "none",
+                        });
+                        source = scaled;
+                    } catch (resizeError) {
+                        const tempCanvas = document.createElement("canvas");
+                        tempCanvas.width = targetWidth;
+                        tempCanvas.height = targetHeight;
+                        const ctx = tempCanvas.getContext("2d");
+                        if (!ctx) throw resizeError;
+                        ctx.imageSmoothingEnabled = true;
+                        ctx.imageSmoothingQuality = quality;
+                        ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+                        source = tempCanvas;
+                    }
                 }
-            } catch (error) {
-                if (error instanceof Error && error.name === "SecurityError") {
-                    console.error(`Failed to draw image "${Img.src}":`, error);
-                } else {
+
+                const texture = GLDrawCreateTexture(gl);
+                try {
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+                    return { width, height, texture };
+                } catch (error) {
+                    gl.deleteTexture(texture);
                     throw error;
                 }
+            } finally {
+                scaled?.close?.();
+                bitmap.close();
             }
         }
 
@@ -559,18 +831,33 @@
     // 创建帧率限制管理器实例
     const frameRateLimitManager = new FrameRateLimitManager();
 
-    // Hook GLDrawBingImageToTextureInfo 函数
-    mod.hookFunction("GLDrawBingImageToTextureInfo", 1, (args, next) => {
-        const [gl, Img, textureInfo] = args;
-        
-        // 如果启用了纹理降级，使用自定义函数
-        if (Player.OnlineSettings?.LianOpt?.ReduceTextureQuality) {
-            textureQualityManager.customBindImageToTexture(gl, Img, textureInfo);
-            return;
+    // 服装图现在由 GLDrawDecodeImage 解码进 GLDrawImageCache。
+    // GLDrawLoad 会把当时的解码函数存进缓存，之后改全局函数名不会再生效，
+    // 所以直接包住缓存上的 _decode，并在画布重建后再包一次。
+    const textureDecodeWrapped = Symbol("lianOptDecodeWrapped");
+
+    function wrapTextureDecode(cache) {
+        if (!cache || cache[textureDecodeWrapped] || typeof cache._decode !== "function") return;
+        const originalDecode = cache._decode;
+        cache._decode = function (blob) {
+            if (Player?.OnlineSettings?.LianOpt?.ReduceTextureQuality) {
+                return textureQualityManager.decodeReduced(blob);
+            }
+            return originalDecode.call(this, blob);
+        };
+        cache[textureDecodeWrapped] = true;
+    }
+
+    if (typeof GLDrawImageCache !== "undefined") {
+        wrapTextureDecode(GLDrawImageCache);
+    }
+
+    mod.hookFunction("GLDrawLoad", 1, (args, next) => {
+        const result = next(args);
+        if (typeof GLDrawImageCache !== "undefined") {
+            wrapTextureDecode(GLDrawImageCache);
         }
-        
-        // 否则使用原函数
-        return next(args);
+        return result;
     });
 
     // Hook ChatRoomAppendChat 函数
@@ -635,6 +922,22 @@
         return result;
     });
 
+    function applyRetryFailedSetting() {
+        const enabled = (typeof Player !== "undefined")
+            && Player?.OnlineSettings?.LianOpt?.RetryFailedImages !== false;
+        cacheClearManager.setRetryEnabled(!!enabled);
+    }
+
+    mod.hookFunction("LoginResponse", 0, (args, next) => {
+        const result = next(args);
+        applyRetryFailedSetting();
+        return result;
+    });
+
+    if (typeof Player !== "undefined" && Player?.MemberNumber) {
+        applyRetryFailedSetting();
+    }
+
     // 暴露调试接口
     window.SimpleMessageHider = {
         getStatus: () => messageHider.getStatus(),
@@ -655,6 +958,7 @@
                 ScrollOptimization: false, // 默认关闭
                 MaxVisibleMessages: 30,
                 AutoClearCache: false, // 定时清理缓存
+                RetryFailedImages: true, // 定时重试失败图片
                 ReduceTextureQuality: false, // 降低角色分辨率
                 TextureQuality: 0.8, // 纹理质量比例: 0.2-0.9，默认 0.8
                 LowFrameRate: false, // 低帧率选项
@@ -742,12 +1046,12 @@
             
             // 检测鼠标悬停 - 缓存清理
             if (MouseIn(500, 300, 450, 64)) {
-                this.setHoverText("定时清理纹理缓存和旧角色数据，减少内存占用\n建议长时间游玩时开启此功能");
+                this.setHoverText("定时清理纹理缓存和旧角色数据，减少内存占用\n清理时也会重新下载当时已经失败的图片");
             }
             
             // 检测鼠标悬停 - 立即清理按钮
             if (this.settings.AutoClearCache && MouseIn(1000, 300, 200, 64)) {
-                this.setHoverText("立即执行一次缓存清理操作");
+                this.setHoverText("立即清理纹理缓存，并重新下载加载失败的图片");
             }
             
             // 降低角色分辨率
@@ -815,6 +1119,17 @@
             // 检测鼠标悬停 - 低帧率
             if (MouseIn(500, 500, 450, 64)) {
                 this.setHoverText("启用低帧率模式以大幅降低 CPU/GPU 使用率\n适合配置极低的设备或后台运行，数值越小性能越好但流畅度越差");
+            }
+
+            // 失败图片重试
+            MainCanvas.textAlign = "left";
+            DrawCheckbox(500, 600, 64, 64,
+                "重试失败图片",
+                this.settings.RetryFailedImages
+            );
+
+            if (MouseIn(500, 600, 450, 64)) {
+                this.setHoverText("每 5 分钟检查加载失败的图片并重新下载，同一张图最多 5 次\n关闭后缺图会保持到手动清理或刷新页面");
             }
             
             // 退出按钮
@@ -914,6 +1229,12 @@
                 }
             }
 
+            // 失败图片重试开关
+            if (MouseXIn(500, 64) && MouseYIn(600, 64)) {
+                this.settings.RetryFailedImages = !this.settings.RetryFailedImages;
+                cacheClearManager.setRetryEnabled(this.settings.RetryFailedImages);
+            }
+
             // 退出按钮
             if (MouseIn(1815, 75, 90, 90)) {
                 this.Exit();
@@ -933,6 +1254,7 @@
                 ScrollOptimization: this.settings.ScrollOptimization,
                 MaxVisibleMessages: this.settings.MaxVisibleMessages,
                 AutoClearCache: this.settings.AutoClearCache,
+                RetryFailedImages: this.settings.RetryFailedImages,
                 ReduceTextureQuality: this.settings.ReduceTextureQuality,
                 TextureQuality: this.settings.TextureQuality,
                 LowFrameRate: this.settings.LowFrameRate,
@@ -986,6 +1308,7 @@
                     ScrollOptimization: Player.OnlineSettings.LianOpt.ScrollOptimization ?? false,
                     MaxVisibleMessages: Player.OnlineSettings.LianOpt.MaxVisibleMessages ?? 25,
                     AutoClearCache: Player.OnlineSettings.LianOpt.AutoClearCache ?? false,
+                    RetryFailedImages: Player.OnlineSettings.LianOpt.RetryFailedImages !== false,
                     ReduceTextureQuality: Player.OnlineSettings.LianOpt.ReduceTextureQuality ?? false,
                     TextureQuality: textureQuality,
                     LowFrameRate: Player.OnlineSettings.LianOpt.LowFrameRate ?? false,
@@ -997,6 +1320,7 @@
                     ScrollOptimization: screen.settings.ScrollOptimization,
                     MaxVisibleMessages: screen.settings.MaxVisibleMessages,
                     AutoClearCache: screen.settings.AutoClearCache,
+                    RetryFailedImages: screen.settings.RetryFailedImages,
                     ReduceTextureQuality: screen.settings.ReduceTextureQuality,
                     TextureQuality: screen.settings.TextureQuality,
                     LowFrameRate: screen.settings.LowFrameRate,
@@ -1007,6 +1331,7 @@
                 messageHider.setEnabled(screen.settings.ScrollOptimization);
                 messageHider.setMaxVisible(screen.settings.MaxVisibleMessages);
                 cacheClearManager.setEnabled(screen.settings.AutoClearCache);
+                cacheClearManager.setRetryEnabled(screen.settings.RetryFailedImages);
                 textureQualityManager.setEnabled(screen.settings.ReduceTextureQuality);
                 textureQualityManager.setQuality(screen.settings.TextureQuality);
                 frameRateLimitManager.applyFrameRateLimit(
@@ -1037,7 +1362,9 @@
         cacheClear: {
             manualClear: () => cacheClearManager.manualClear(),
             start: () => cacheClearManager.start(),
-            stop: () => cacheClearManager.stop()
+            stop: () => cacheClearManager.stop(),
+            retryFailed: () => cacheClearManager.retryFailedImages(),
+            setRetryEnabled: (enabled) => cacheClearManager.setRetryEnabled(enabled)
         },
         textureQuality: {
             setQuality: (quality) => textureQualityManager.setQuality(quality),
