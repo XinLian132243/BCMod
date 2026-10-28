@@ -9550,9 +9550,7 @@
          * @returns {number}
          */
         getTranslationFactor() {
-            const gl = bcGlobal("GLDrawCanvas");
-            const usingGL = bcGlobal("GLVersion") !== "No WebGL" && gl && gl.GL && !gl.GL.isContextLost();
-            return usingGL ? 2 : 1;
+            return translationDrawFactor();
         }
 
         /**
@@ -10541,7 +10539,8 @@
 
     // AppearanceLayers 里的元素是 asset.Layer 的浅拷贝（CharacterAppearanceSortLayers
     // 里的 `{...layer}`），不是同一个对象，没法直接用引用去 indexOf。
-    // 但它保留了 Asset 引用与 Name，两者合起来足以定位。
+    // 同名图层只靠 Name 会撞车，所以在拷贝时盖上它在 asset.Layer 里的次序。
+    // 定位键是：部位名 + 物体名 + 次序 + 层级名。
     const DRAW_CALLBACKS = [
         "drawImage", "drawImageBlink",
         "drawImageColorize", "drawImageColorizeBlink"
@@ -10566,12 +10565,14 @@
             const layers = C?.AppearanceLayers;
             if (!Array.isArray(layers)) return next(args);
 
-            // 每个图层固定调一次非眨眼回调、一次眨眼回调（见 CommonDraw 里
-            // drawImage / drawImageBlink 成对出现，颜色化与否只是二选一），
+            // 每个会画出来的图层固定调一次非眨眼回调、一次眨眼回调
+            // （drawImage / drawImageBlink 成对，颜色化与否只是二选一），
             // 所以只数非眨眼那一次来推进游标。
             //
-            // 不能靠 URL 变化推进：表情没变时 baseURLExpression 与
-            // baseURLBlink 相同，同一图层两次调用的 URL 一模一样。
+            // 不能按 AppearanceLayers 的下标推进：HasImage 为假、或锁层
+            // 在没上锁时根本不调用回调。中间跳过的层会让游标指到别的层，
+            // 同名图层就对到错误的那张。
+            const drawable = layers.filter(layer => layerWillDraw(C, layer));
             let cursor = -1;
             const wrapped = Object.assign({}, callbacks);
 
@@ -10582,7 +10583,7 @@
                 wrapped[name] = function () {
                     // 眨眼那次沿用上一次定好的图层，不再前进
                     if (!isBlink) cursor++;
-                    drawingLayer = layers[cursor] ?? null;
+                    drawingLayer = drawable[cursor] ?? null;
                     try {
                         return orig.apply(this, arguments);
                     } finally {
@@ -10599,12 +10600,52 @@
         });
     }
 
+    // 给每张绘制用的浅拷贝盖上它在 asset.Layer 里的次序。
+    // 拷贝发生在 CharacterAppearanceSortLayers 内部，返回后引用已经丢了，
+    // 只能在 `{ ...layer }` 那一行补上。补不上时 resolve 会退回名字匹配。
+    if (typeof mod.patchFunction === "function") {
+        mod.patchFunction("CharacterAppearanceSortLayers", {
+            "const drawLayer = { ...layer };":
+                "const drawLayer = { ...layer };\n\t\t\t\t\tdrawLayer.LianOrder = asset.Layer.indexOf(layer);"
+        });
+    }
+
+    /**
+     * 这一层会不会真的调用绘制回调。
+     * 与 CommonDrawAppearanceBuild 里 `HasImage && (!LockLayer || 已上锁)` 一致。
+     * @param {Object} C
+     * @param {Object} layer
+     * @returns {boolean}
+     */
+    function layerWillDraw(C, layer) {
+        if (!layer?.HasImage) return false;
+        if (!layer.LockLayer) return true;
+        const item = C?.Appearance?.find(i => i?.Asset === layer.Asset);
+        return !!(item?.Property && item.Property.LockedBy);
+    }
+
+    /**
+     * 图层身份：部位名 + 物体名 + 在 asset.Layer 里的次序 + 层级名。
+     * 同名层靠次序分开，不同部位 / 不同衣服的同名层靠前两段分开。
+     * @param {Object} layer
+     * @param {number} order
+     * @returns {string}
+     */
+    function layerIdentity(layer, order) {
+        const asset = layer?.Asset;
+        return [
+            asset?.Group?.Name ?? "",
+            asset?.Name ?? "",
+            order,
+            layer?.Name ?? ""
+        ].join("\0");
+    }
+
     /**
      * 把 drawingLayer 换算成 asset.Layer 的下标。
      *
-     * AppearanceLayers 的元素是浅拷贝，不能用引用比对，所以按
-     * Asset 引用 + 图层名定位。同一资产里出现重名图层时（少见但合法），
-     * 用它在该资产内的出现序数消歧。
+     * 优先用拷贝上盖的次序，再用身份串核对，避免只凭层级名命中另一张同名层。
+     * 盖不上次序时，退回「同部位、同物体、同层级名」里的出现序数。
      *
      * @param {Object} asset - 当前编辑的资产
      * @param {Array} layers - asset.Layer
@@ -10613,26 +10654,34 @@
     function resolveDrawingLayerIndex(asset, layers) {
         const layer = drawingLayer;
         if (!layer) return null;
-        // 不是当前编辑的这件衣服，这次绘制与我们无关
         if (layer.Asset !== asset) return -1;
 
+        const order = layer.LianOrder;
+        if (typeof order === "number" && layers[order]
+            && layerIdentity(layers[order], order) === layerIdentity(layer, order)) {
+            return order;
+        }
+
         const name = layer.Name ?? null;
-        // 先按名字收集候选。多数情况只有一个
         const candidates = [];
         for (let i = 0; i < layers.length; i++) {
-            if ((layers[i]?.Name ?? null) === name) candidates.push(i);
+            const other = layers[i];
+            if (!other) continue;
+            if ((other.Name ?? null) !== name) continue;
+            if (other.Asset?.Group?.Name !== asset.Group?.Name) continue;
+            if (other.Asset?.Name !== asset.Name) continue;
+            candidates.push(i);
         }
         if (candidates.length === 0) return -1;
         if (candidates.length === 1) return candidates[0];
 
-        // 重名：按这一层在本资产已绘制图层中的出现序数挑
         const ord = countSameNameBefore(asset, name);
         return candidates[Math.min(ord, candidates.length - 1)];
     }
 
     /**
-     * 当前图层在 AppearanceLayers 里是本资产同名图层中的第几个。
-     * 只在重名时才会被调用，所以这轮遍历的成本可以接受。
+     * 当前图层在已绘制列表里是本资产同名图层中的第几个。
+     * 只在没盖上次序、又有重名时才会被调用。
      *
      * @param {Object} asset
      * @param {string|null} name
@@ -10640,10 +10689,11 @@
      */
     function countSameNameBefore(asset, name) {
         const all = ItemColorCharacter?.AppearanceLayers;
-        if (!Array.isArray(all)) return 0;
+        if (!Array.isArray(all) || !drawingLayer) return 0;
         let n = 0;
         for (const l of all) {
             if (l === drawingLayer) break;
+            if (!layerWillDraw(ItemColorCharacter, l)) continue;
             if (l?.Asset === asset && (l?.Name ?? null) === name) n++;
         }
         return n;
@@ -10653,7 +10703,7 @@
      * 找出这次绘制对应当前物品的哪个图层，返回图层索引，不匹配则 -1。
      *
      * 首选 drawingLayer：那是 CommonDrawAppearanceBuild 循环里的真实图层对象，
-     * 按 Asset 引用与图层名回查 asset.Layer 的下标，不会认错。
+     * 按部位名、物体名、次序和层级名回查 asset.Layer 的下标。
      * 拿不到时（本体改了结构、或走了没包装的路径）退回旧的文件名匹配。
      *
      * @param {string} url
@@ -11426,28 +11476,68 @@
         const sx = num(opts?.ScaleX, 1);
         const sy = num(opts?.ScaleY, 1);
         const rot = num(opts?.Rotation, 0);
+        const tx = num(opts?.TranslationX, 0);
+        const ty = num(opts?.TranslationY, 0);
+        const f = translationDrawFactor();
+        const mirror = !!opts?.Mirror;
         // 绝大多数图层没有变换，标记出来好走快路径
-        return { sx, sy, rot, plain: sx === 1 && sy === 1 && rot === 0 };
+        return {
+            sx, sy, rot, tx, ty, f, mirror,
+            plain: sx === 1 && sy === 1 && rot === 0 && tx === 0 && ty === 0 && !mirror
+        };
+    }
+
+    /**
+     * 位移被加了几次。
+     *
+     * CommonDraw 传入的 drawX 已经含一份 Translation。WebGL 的 GLDrawImage
+     * 在矩阵里又加一份，画面上是两倍；2D 回退的 DrawImageEx 不再加，是一倍。
+     * 捕获时减掉了那一份，描边和拾取必须按这个倍率加回去，否则移动过的层会对不上。
+     * @returns {number}
+     */
+    function translationDrawFactor() {
+        const gl = bcGlobal("GLDrawCanvas");
+        const usingGL = bcGlobal("GLVersion") !== "No WebGL" && gl && gl.GL && !gl.GL.isContextLost();
+        return usingGL ? 2 : 1;
+    }
+
+    /**
+     * 贴图中心在角色画布上的位置。
+     *
+     * 镜像时 GLDrawImage 先把 drawX 折到 `500 - drawX`，再叠加位移。
+     * 2D 路径只绕原位置翻转，中心不动。
+     * @param {{x: number, y: number}} cap
+     * @param {{tw: number, th: number}} size
+     * @param {{tx: number, ty: number, f: number, mirror: boolean}} t
+     * @returns {number[]}
+     */
+    function layerCenter(cap, size, t) {
+        const hx = size.tw / 2;
+        const hy = size.th / 2;
+        const py = cap.y + hy + t.ty * t.f;
+        if (t.mirror && t.f === 2) {
+            return [500 - cap.x + hx + t.tx * t.f, py];
+        }
+        return [cap.x + hx + t.tx * t.f, py];
     }
 
     /**
      * 把贴图上的一点按自带变换映射到角色画布坐标。
      *
-     * 与 GLDrawImage 的矩阵链一致：支点是整幅贴图中心，先缩放再旋转。
-     * cap.x/y 已经是剔除过位移的原点（见 AppearancePicker.capture），
-     * 所以这里不再处理平移。
+     * 与 GLDrawImage 的矩阵链一致：支点是整幅贴图中心，先缩放再旋转，
+     * 镜像则把横向缩放反过来。位移按 translationDrawFactor 加回。
      *
      * @param {number} ux - 贴图局部 X
      * @param {number} uy - 贴图局部 Y
      * @param {{x: number, y: number}} cap
      * @param {{tw: number, th: number}} size - 整幅贴图尺寸
-     * @param {{sx: number, sy: number, rot: number}} t
+     * @param {{sx: number, sy: number, rot: number, tx: number, ty: number, f: number, mirror: boolean}} t
      * @returns {number[]}
      */
     function capToCanvas(ux, uy, cap, size, t) {
-        const px = cap.x + size.tw / 2;
-        const py = cap.y + size.th / 2;
-        const dx = (ux - size.tw / 2) * t.sx;
+        const [px, py] = layerCenter(cap, size, t);
+        const xSign = t.mirror ? -1 : 1;
+        const dx = (ux - size.tw / 2) * t.sx * xSign;
         const dy = (uy - size.th / 2) * t.sy;
         if (!t.rot) return [px + dx, py + dy];
         const a = t.rot * Math.PI / 180;
@@ -11461,15 +11551,15 @@
      */
     function canvasToCap([x, y], cap, size, t) {
         if (!t.sx || !t.sy) return null;
-        const px = cap.x + size.tw / 2;
-        const py = cap.y + size.th / 2;
+        const [px, py] = layerCenter(cap, size, t);
         let dx = x - px, dy = y - py;
         if (t.rot) {
             const a = -t.rot * Math.PI / 180;
             const cos = Math.cos(a), sin = Math.sin(a);
             [dx, dy] = [dx * cos - dy * sin, dx * sin + dy * cos];
         }
-        return [dx / t.sx + size.tw / 2, dy / t.sy + size.th / 2];
+        const xSign = t.mirror ? -1 : 1;
+        return [dx / (t.sx * xSign) + size.tw / 2, dy / t.sy + size.th / 2];
     }
 
     /** 取可贴到 Canvas2D 的图源。未加载完时返回 null */
@@ -11591,12 +11681,14 @@
             for (const it of items) {
                 const { cap, t, tw, th } = it;
                 const [cx, cy] = canvasToScreenPoint(
-                    [cap.x + tw / 2, cap.y + th / 2], map);
+                    layerCenter(cap, { tw, th }, t), map);
                 octx.save();
                 octx.translate(cx - bx + dx, cy - by + dy);
                 octx.scale(map.sx, map.sy);
                 if (t.rot) octx.rotate(t.rot * Math.PI / 180);
-                if (t.sx !== 1 || t.sy !== 1) octx.scale(t.sx, t.sy);
+                // 镜像是绕中心的负向缩放，和图层缩放叠在一起
+                const sx = t.sx * (t.mirror ? -1 : 1);
+                if (sx !== 1 || t.sy !== 1) octx.scale(sx, t.sy);
                 octx.drawImage(it.img, -tw / 2, -th / 2);
                 octx.restore();
             }
