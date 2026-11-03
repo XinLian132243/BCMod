@@ -186,6 +186,49 @@
     }
 
     /**
+     * 是否是 Canvas2D drawImage 认的图源。
+     *
+     * CachedImage 有 width/height 转发，不能靠尺寸判断。
+     * GL 的 payload 是 {width,height,texture}，同样不能画。
+     * @param {any} src
+     * @returns {boolean}
+     */
+    function isCanvasImageSource(src) {
+        if (!src || typeof src !== "object") return false;
+        if (typeof ImageBitmap !== "undefined" && src instanceof ImageBitmap) return true;
+        if (typeof HTMLImageElement !== "undefined" && src instanceof HTMLImageElement) return true;
+        if (typeof HTMLCanvasElement !== "undefined" && src instanceof HTMLCanvasElement) return true;
+        if (typeof OffscreenCanvas !== "undefined" && src instanceof OffscreenCanvas) return true;
+        if (typeof HTMLVideoElement !== "undefined" && src instanceof HTMLVideoElement) return true;
+        if (typeof ImageData !== "undefined" && src instanceof ImageData) return false;
+        return false;
+    }
+
+    /**
+     * 把缓存条目 / 钩子返回值收成真正可画的图源。
+     * 自定义资产插件有时把 DrawGetImage 钩成返回 CachedImage，这里剥开。
+     * @param {any} src
+     * @returns {CanvasImageSource|null}
+     */
+    function coerceDrawable(src) {
+        if (!src) return null;
+        // ImageCache 的 CachedImage：有 state / isLoaded / data
+        if (typeof src.isLoaded === "function" || (src.state != null && "data" in src)) {
+            if (typeof src.isLoaded === "function" && !src.isLoaded()) return null;
+            src = src.bitmap || src.data;
+        }
+        if (!src) return null;
+        // GL 缓存 payload，不能交给 Canvas2D
+        if (src.texture) return null;
+        if (!isCanvasImageSource(src)) return null;
+        const w = src.naturalWidth || src.width || 0;
+        const h = src.naturalHeight || src.height || 0;
+        // 宽高为 1 是还没解码完的占位
+        if (!(w > 1 && h > 1)) return null;
+        return src;
+    }
+
+    /**
      * 取可交给 Canvas2D drawImage 的图源。
      *
      * R133（faaab7f0）起图像缓按路径分了 payload：
@@ -202,18 +245,10 @@
     function resolveDrawable(url) {
         if (!url) return null;
 
-        const ready = (src) => {
-            if (!src) return null;
-            const w = src.naturalWidth || src.width;
-            const h = src.naturalHeight || src.height;
-            // 宽高为 1 是还没解码完的占位
-            return (w > 1 && h > 1) ? src : null;
-        };
-
         const getImage = bcGlobal("DrawGetImage");
         if (typeof getImage === "function") {
             try {
-                const img = ready(getImage(url));
+                const img = coerceDrawable(getImage(url));
                 if (img) return img;
             } catch (e) {
                 console.warn("[LianDressOptimization] DrawGetImage 失败", url, e);
@@ -222,17 +257,12 @@
 
         // 新版包装：CachedImage.data 才是 ImageBitmap
         const entry = bcGlobal("DrawImageCache")?.get?.(url);
-        if (entry?.isLoaded?.() && entry.data && !entry.data.texture) {
-            return ready(entry.data);
-        }
+        const fromDraw = coerceDrawable(entry);
+        if (fromDraw) return fromDraw;
 
-        // 旧版 Map：直接存 HTMLImageElement / ImageBitmap
+        // 旧版 Map：直接存 HTMLImageElement / ImageBitmap，或中间过渡的 .bitmap
         const legacy = bcGlobal("DrawCacheImage")?.get?.(url);
-        if (legacy && !legacy.data?.texture) {
-            // 中间过渡版曾用 .bitmap
-            return ready(legacy.bitmap || legacy.data || legacy);
-        }
-        return null;
+        return coerceDrawable(legacy);
     }
 
     /**
@@ -272,6 +302,8 @@
     function getAlphaData(url, img) {
         if (!ALPHA_BBOX.enabled || !url || !img) return null;
         if (alphaDataCache.has(url)) return touchAlphaCache(url);
+        img = coerceDrawable(img);
+        if (!img) return null;
 
         const W = img.naturalWidth || img.width;
         const H = img.naturalHeight || img.height;
@@ -10337,7 +10369,7 @@
                 const cap = captures.get(idx);
                 const layer = layers[idx];
                 const rect = cap && this.getContentRect(cap.url);
-                const img = cap && this.getImage(cap.url);
+                const img = cap && coerceDrawable(this.getImage(cap.url));
                 if (!layer || !rect || !img) continue;
                 items.push({ cap, rect, img, t: this.readTransforms(layer) });
             }
@@ -10445,6 +10477,9 @@
          */
         blitLayer(octx, it, map, bbox, dx, dy) {
             const { cap, rect, img, t } = it;
+            // R133 后偶发拿到 CachedImage / 已关闭的 ImageBitmap，
+            // 直接 drawImage 会把异常抛到 GameRun 的 catch 里
+            if (!isCanvasImageSource(img)) return;
             const f = this.getTranslationFactor();
             // 支点在角色画布坐标下的位置
             const px = cap.x + rect.tw / 2 + t.TranslationX * f;
@@ -10460,8 +10495,13 @@
             octx.scale(map.sx, map.sy);
             octx.rotate(t.Rotation * Math.PI / 180);
             octx.scale(t.ScaleX, t.ScaleY);
-            // 以支点为原点绘制，所以左上角在 -tw/2, -th/2
-            octx.drawImage(img, -rect.tw / 2, -rect.th / 2);
+            try {
+                // 以支点为原点绘制，所以左上角在 -tw/2, -th/2
+                octx.drawImage(img, -rect.tw / 2, -rect.th / 2);
+            } catch (e) {
+                // 已关闭的 ImageBitmap 等：这一帧跳过，下帧缓存刷新后再画
+                console.warn("[LianDressOptimization] blitLayer 跳过无效贴图", cap?.url, e);
+            }
             octx.restore();
         }
 
@@ -10756,7 +10796,11 @@
             const [src, , x, y, opts] = args;
             if (opts) {
                 const idx = matchDrawLayerIndex(src);
-                if (idx >= 0) gizmo.capture(idx, src, x, y, opts);
+                if (idx >= 0) {
+                    gizmo.capture(idx, src, x, y, opts);
+                    // WebGL 路径只进 GL 缓存。描边要 Canvas2D，预热 Draw 缓存
+                    if (typeof src === "string") resolveDrawable(src);
+                }
             }
             return next(args);
         });
@@ -11679,7 +11723,8 @@
         // 矩阵顺序与 gizmo 的 blitLayer 一致：预览缩放 -> 旋转 -> 图层缩放
         const blit = (dx, dy) => {
             for (const it of items) {
-                const { cap, t, tw, th } = it;
+                const { cap, t, tw, th, img } = it;
+                if (!isCanvasImageSource(img)) continue;
                 const [cx, cy] = canvasToScreenPoint(
                     layerCenter(cap, { tw, th }, t), map);
                 octx.save();
@@ -11689,7 +11734,11 @@
                 // 镜像是绕中心的负向缩放，和图层缩放叠在一起
                 const sx = t.sx * (t.mirror ? -1 : 1);
                 if (sx !== 1 || t.sy !== 1) octx.scale(sx, t.sy);
-                octx.drawImage(it.img, -tw / 2, -th / 2);
+                try {
+                    octx.drawImage(img, -tw / 2, -th / 2);
+                } catch (e) {
+                    console.warn("[LianDressOptimization] 悬浮描边跳过无效贴图", cap?.url, e);
+                }
                 octx.restore();
             }
         };
