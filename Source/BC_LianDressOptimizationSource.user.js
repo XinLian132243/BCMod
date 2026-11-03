@@ -229,6 +229,44 @@
     }
 
     /**
+     * 只读查看缓存条目，不触发加载。
+     * ImageCache.get() 会开始下载，检查失败状态时不能走它。
+     * @param {string} cacheName
+     * @param {string} url
+     * @returns {any}
+     */
+    function peekCacheEntry(cacheName, url) {
+        const cache = bcGlobal(cacheName);
+        if (!cache) return null;
+        // R133 ImageCache：内部 Map 在 .cache
+        if (cache.cache instanceof Map) return cache.cache.get(url) ?? null;
+        // 旧版 DrawCacheImage 本身就是 Map
+        if (cache instanceof Map) return cache.get(url) ?? null;
+        return null;
+    }
+
+    /**
+     * 这份 URL 是否已经加载失败（404、缺文件等）。
+     * 失败项没有可画像素，描边和拾取都应直接跳过，不能假设一定有图。
+     * @param {string} url
+     * @returns {boolean}
+     */
+    function isImageLoadFailed(url) {
+        if (!url) return true;
+        const failed = (entry) => {
+            if (!entry) return false;
+            // R133 ImageCache：state === 'failed'
+            if (entry.state === "failed") return true;
+            // 旧版 HTMLImageElement：complete 但没有像素
+            if (entry.complete && !(entry.naturalWidth || entry.width)) return true;
+            return false;
+        };
+        return failed(peekCacheEntry("DrawImageCache", url))
+            || failed(peekCacheEntry("GLDrawImageCache", url))
+            || failed(peekCacheEntry("DrawCacheImage", url));
+    }
+
+    /**
      * 取可交给 Canvas2D drawImage 的图源。
      *
      * R133（faaab7f0）起图像缓按路径分了 payload：
@@ -239,11 +277,15 @@
      * 再丢给 drawImage 就会抛 "provided value is not of type ..."。
      * 这里只认 2D 路径：官方入口 DrawGetImage，或兜底读 DrawImageCache。
      *
+     * 加载失败（缺文件、404）时返回 null，调用方必须跳过，不能画。
+     *
      * @param {string} url
      * @returns {CanvasImageSource|null}
      */
     function resolveDrawable(url) {
         if (!url) return null;
+        // 已知失败就别再触发加载，也别把空值交给 drawImage
+        if (isImageLoadFailed(url)) return null;
 
         const getImage = bcGlobal("DrawGetImage");
         if (typeof getImage === "function") {
@@ -257,6 +299,7 @@
 
         // 新版包装：CachedImage.data 才是 ImageBitmap
         const entry = bcGlobal("DrawImageCache")?.get?.(url);
+        if (entry?.state === "failed") return null;
         const fromDraw = coerceDrawable(entry);
         if (fromDraw) return fromDraw;
 
@@ -10208,6 +10251,14 @@
          * 所以会盖在角色之上但不会污染角色的离屏 canvas。
          */
         draw() {
+            try {
+                this.drawUnsafe();
+            } catch (e) {
+                console.warn("[LianDressOptimization] gizmo 绘制失败，已跳过", e);
+            }
+        }
+
+        drawUnsafe() {
             // 不能用 window.MainCanvas：那会拿到同名的 canvas DOM 元素
             const ctx = bcGlobal("MainCanvas");
             if (!ctx || typeof ctx.save !== "function" || !this.isActive()) return;
@@ -10227,13 +10278,16 @@
 
             const hover = this.drag ? this.drag.mode : this.hoverHandle;
             ctx.save();
-            this.drawFrame(ctx, quad);
-            this.drawPivot(ctx, quad);
-            this.drawRotateHandle(ctx, quad, hover === "rotate");
-            for (const h of this.getHandlePoints(quad)) {
-                this.drawHandle(ctx, h.x, h.y, hover === h.id);
+            try {
+                this.drawFrame(ctx, quad);
+                this.drawPivot(ctx, quad);
+                this.drawRotateHandle(ctx, quad, hover === "rotate");
+                for (const h of this.getHandlePoints(quad)) {
+                    this.drawHandle(ctx, h.x, h.y, hover === h.id);
+                }
+            } finally {
+                ctx.restore();
             }
-            ctx.restore();
         }
         /**
          * 当前模式的主色。物品级是各图层的并集外框，用另一种颜色区别于
@@ -10358,6 +10412,15 @@
          * @returns {boolean} 是否成功画出
          */
         drawOutline(ctx, indices, color) {
+            try {
+                return this.drawOutlineUnsafe(ctx, indices, color);
+            } catch (e) {
+                console.warn("[LianDressOptimization] 图层描边失败，已跳过", e);
+                return false;
+            }
+        }
+
+        drawOutlineUnsafe(ctx, indices, color) {
             const layers = ItemColorItem?.Asset?.Layer;
             const map = this.getCanvasToScreen();
             const captures = this.validCaptures();
@@ -10368,8 +10431,10 @@
             for (const idx of indices) {
                 const cap = captures.get(idx);
                 const layer = layers[idx];
-                const rect = cap && this.getContentRect(cap.url);
-                const img = cap && coerceDrawable(this.getImage(cap.url));
+                // 缺文件 / 404：不能假设贴图一定存在
+                if (!cap?.url || isImageLoadFailed(cap.url)) continue;
+                const rect = this.getContentRect(cap.url);
+                const img = coerceDrawable(this.getImage(cap.url));
                 if (!layer || !rect || !img) continue;
                 items.push({ cap, rect, img, t: this.readTransforms(layer) });
             }
@@ -10380,7 +10445,7 @@
             if (!bbox) return false;
 
             const off = getOutlineCanvas(bbox.w, bbox.h);
-            if (!off) return false;
+            if (!off?.cv || !off.ctx) return false;
             const octx = off.ctx;
 
             // 第一步：环向偏移叠加，得到膨胀形状。
@@ -10408,11 +10473,14 @@
             octx.globalCompositeOperation = "source-over";
 
             ctx.save();
-            // 贴图边缘的抗锯齿会让描边外沿拖出一层很淡的雾，
-            // 压一下整体不透明度反而更干脆
-            ctx.globalAlpha = 1;
-            ctx.drawImage(off.cv, 0, 0, bbox.w, bbox.h, bbox.x, bbox.y, bbox.w, bbox.h);
-            ctx.restore();
+            try {
+                // 贴图边缘的抗锯齿会让描边外沿拖出一层很淡的雾，
+                // 压一下整体不透明度反而更干脆
+                ctx.globalAlpha = 1;
+                ctx.drawImage(off.cv, 0, 0, bbox.w, bbox.h, bbox.x, bbox.y, bbox.w, bbox.h);
+            } finally {
+                ctx.restore();
+            }
             return true;
         }
 
@@ -10476,10 +10544,13 @@
          * @param {number} dy
          */
         blitLayer(octx, it, map, bbox, dx, dy) {
-            const { cap, rect, img, t } = it;
+            const { cap, rect, t } = it;
+            if (isImageLoadFailed(cap?.url)) return;
+            // 画时再取一次：收集后缓存可能变 failed / ImageBitmap 被关
+            const img = coerceDrawable(it.img) || this.getImage(cap?.url);
             // R133 后偶发拿到 CachedImage / 已关闭的 ImageBitmap，
             // 直接 drawImage 会把异常抛到 GameRun 的 catch 里
-            if (!isCanvasImageSource(img)) return;
+            if (!img || !isCanvasImageSource(img)) return;
             const f = this.getTranslationFactor();
             // 支点在角色画布坐标下的位置
             const px = cap.x + rect.tw / 2 + t.TranslationX * f;
@@ -10487,22 +10558,23 @@
             const [sx, sy] = this.toScreenPoint([px, py], map);
 
             octx.save();
-            // 平移到支点（减去 bbox 原点转成离屏坐标），再加膨胀偏移
-            octx.translate(sx - bbox.x + dx, sy - bbox.y + dy);
-            // 顺序必须是 预览缩放 -> 旋转 -> 图层缩放，与正向链一致：
-            // 图层的缩放旋转发生在贴图空间，预览缩放作用在其结果之上。
-            // 把 map.sx/sy 并进旋转内侧的话，非等比预览下会整体错位
-            octx.scale(map.sx, map.sy);
-            octx.rotate(t.Rotation * Math.PI / 180);
-            octx.scale(t.ScaleX, t.ScaleY);
             try {
+                // 平移到支点（减去 bbox 原点转成离屏坐标），再加膨胀偏移
+                octx.translate(sx - bbox.x + dx, sy - bbox.y + dy);
+                // 顺序必须是 预览缩放 -> 旋转 -> 图层缩放，与正向链一致：
+                // 图层的缩放旋转发生在贴图空间，预览缩放作用在其结果之上。
+                // 把 map.sx/sy 并进旋转内侧的话，非等比预览下会整体错位
+                octx.scale(map.sx, map.sy);
+                octx.rotate(t.Rotation * Math.PI / 180);
+                octx.scale(t.ScaleX, t.ScaleY);
                 // 以支点为原点绘制，所以左上角在 -tw/2, -th/2
                 octx.drawImage(img, -rect.tw / 2, -rect.th / 2);
             } catch (e) {
-                // 已关闭的 ImageBitmap 等：这一帧跳过，下帧缓存刷新后再画
+                // 已关闭的 ImageBitmap / 404 空值等：这一帧跳过
                 console.warn("[LianDressOptimization] blitLayer 跳过无效贴图", cap?.url, e);
+            } finally {
+                octx.restore();
             }
-            octx.restore();
         }
 
         /** 高亮框上方的文字标注，贴着框顶外侧，超出上边界时改画在框内 */
@@ -10868,11 +10940,16 @@
         if (typeof w[runFn] !== "function") continue;
         mod.hookFunction(runFn, 0, (args, next) => {
             const result = next(args);
-            if (inColorScreen()) {
-                gizmo.commitDraw();
-                // 高亮先画，选中框盖在上面，避免半透明填充糊住句柄
-                gizmo.drawHighlight();
-                if (gizmo.isActive()) gizmo.draw();
+            try {
+                if (inColorScreen()) {
+                    gizmo.commitDraw();
+                    // 高亮先画，选中框盖在上面，避免半透明填充糊住句柄
+                    gizmo.drawHighlight();
+                    if (gizmo.isActive()) gizmo.draw();
+                }
+            } catch (e) {
+                // 缺贴图等异常绝不能打断 Run 钩子链，否则整帧 UI 看起来像崩了
+                console.warn("[LianDressOptimization] 调色叠画失败，已跳过", runFn, e);
             }
             return result;
         });
@@ -11344,6 +11421,7 @@
                 let area = 0;
                 let opaque = false;
                 for (const cap of list) {
+                    if (isImageLoadFailed(cap.url)) continue;
                     const tex = textureSize(cap.url);
                     if (!tex) continue;
                     const alpha = getAlphaData(cap.url, pickImage(cap.url));
@@ -11672,8 +11750,19 @@
     /**
      * 沿悬浮装备的 alpha 边缘画轮廓描边，做法与调色界面的 drawOutline 相同：
      * 环向偏移叠加得到膨胀形状、扣掉原图留下外圈、再染色。全走 GPU 合成。
+     *
+     * 缺贴图（如自定义衣服的 _Normal.png 404）时跳过该层，绝不能把
+     * undefined 丢给 drawImage —— 那会抛到 GameRun，整帧绘制钩子链断掉。
      */
     function drawAppearanceHover() {
+        try {
+            drawAppearanceHoverUnsafe();
+        } catch (e) {
+            console.warn("[LianDressOptimization] 悬浮描边失败，已跳过", e);
+        }
+    }
+
+    function drawAppearanceHoverUnsafe() {
         const picker = appearancePicker;
         const hover = picker.activeHover();
         if (!hover || !picker.isEnabled()) return;
@@ -11690,10 +11779,13 @@
         const items = [];
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const cap of list) {
+            // 404 / 缺文件：缓存里是 failed，没有可画像素
+            if (isImageLoadFailed(cap.url)) continue;
             const img = pickImage(cap.url);
-            if (!img) continue;
+            if (!img || !isCanvasImageSource(img)) continue;
             const tw = img.naturalWidth || img.width;
             const th = img.naturalHeight || img.height;
+            if (!(tw > 1 && th > 1)) continue;
             const t = capTransform(cap.opts);
             items.push({ cap, img, tw, th, t });
             // 变换后的四角都要算进去：旋转过的图层轴对齐范围会比原始的大
@@ -11715,7 +11807,7 @@
         if (bw <= 0 || bh <= 0) return;
 
         const off = getOutlineCanvas(bw, bh);
-        if (!off) return;
+        if (!off?.cv || !off.ctx) return;
         const octx = off.ctx;
 
         // 以支点（整幅贴图中心）为原点贴图，才能套上图层自带的缩放与旋转。
@@ -11723,23 +11815,26 @@
         // 矩阵顺序与 gizmo 的 blitLayer 一致：预览缩放 -> 旋转 -> 图层缩放
         const blit = (dx, dy) => {
             for (const it of items) {
-                const { cap, t, tw, th, img } = it;
-                if (!isCanvasImageSource(img)) continue;
+                const { cap, t, tw, th } = it;
+                // 画的时候再取一次：缓存可能在收集后被清掉或标成 failed
+                const img = coerceDrawable(it.img) || pickImage(cap.url);
+                if (!img) continue;
                 const [cx, cy] = canvasToScreenPoint(
                     layerCenter(cap, { tw, th }, t), map);
                 octx.save();
-                octx.translate(cx - bx + dx, cy - by + dy);
-                octx.scale(map.sx, map.sy);
-                if (t.rot) octx.rotate(t.rot * Math.PI / 180);
-                // 镜像是绕中心的负向缩放，和图层缩放叠在一起
-                const sx = t.sx * (t.mirror ? -1 : 1);
-                if (sx !== 1 || t.sy !== 1) octx.scale(sx, t.sy);
                 try {
+                    octx.translate(cx - bx + dx, cy - by + dy);
+                    octx.scale(map.sx, map.sy);
+                    if (t.rot) octx.rotate(t.rot * Math.PI / 180);
+                    // 镜像是绕中心的负向缩放，和图层缩放叠在一起
+                    const sx = t.sx * (t.mirror ? -1 : 1);
+                    if (sx !== 1 || t.sy !== 1) octx.scale(sx, t.sy);
                     octx.drawImage(img, -tw / 2, -th / 2);
                 } catch (e) {
                     console.warn("[LianDressOptimization] 悬浮描边跳过无效贴图", cap?.url, e);
+                } finally {
+                    octx.restore();
                 }
-                octx.restore();
             }
         };
 
@@ -11756,23 +11851,26 @@
         octx.globalCompositeOperation = "source-over";
 
         ctx.save();
-        ctx.drawImage(off.cv, 0, 0, bw, bh, bx, by, bw, bh);
+        try {
+            ctx.drawImage(off.cv, 0, 0, bw, bh, bx, by, bw, bh);
 
-        // 名称标注放在轮廓上方
-        if (hover.label) {
-            ctx.font = `${GIZMO_STYLE.hlFont}px Arial`;
-            ctx.textBaseline = "middle";
-            ctx.textAlign = "center";
-            const h = GIZMO_STYLE.hlFont + 8;
-            const tw = ctx.measureText(hover.label).width + 16;
-            const cx = Math.max(tw / 2, Math.min(2000 - tw / 2, (minX + maxX) / 2));
-            const cy = minY - h / 2 - 4 < h ? minY + h / 2 + 4 : minY - h / 2 - 4;
-            ctx.fillStyle = GIZMO_STYLE.hoverLabelBg;
-            ctx.fillRect(cx - tw / 2, cy - h / 2, tw, h);
-            ctx.fillStyle = GIZMO_STYLE.hoverStroke;
-            ctx.fillText(hover.label, cx, cy);
+            // 名称标注放在轮廓上方
+            if (hover.label) {
+                ctx.font = `${GIZMO_STYLE.hlFont}px Arial`;
+                ctx.textBaseline = "middle";
+                ctx.textAlign = "center";
+                const h = GIZMO_STYLE.hlFont + 8;
+                const tw = ctx.measureText(hover.label).width + 16;
+                const cx = Math.max(tw / 2, Math.min(2000 - tw / 2, (minX + maxX) / 2));
+                const cy = minY - h / 2 - 4 < h ? minY + h / 2 + 4 : minY - h / 2 - 4;
+                ctx.fillStyle = GIZMO_STYLE.hoverLabelBg;
+                ctx.fillRect(cx - tw / 2, cy - h / 2, tw, h);
+                ctx.fillStyle = GIZMO_STYLE.hoverStroke;
+                ctx.fillText(hover.label, cx, cy);
+            }
+        } finally {
+            ctx.restore();
         }
-        ctx.restore();
     }
 
     /**
@@ -11839,17 +11937,23 @@
     // 在换装界面绘制完成后叠画轮廓
     mod.hookFunction("AppearanceRun", 0, (args, next) => {
         const result = next(args);
-        // 提交与门控分开：Color 模式下也要把捕获落地，
-        // 否则那批数据卡在 frame 里，退回来时 captures 还是空的
-        if (appearancePicker.isCapturing()) appearancePicker.commit();
-        if (appearancePicker.isEnabled()) {
-            // 每帧按当前指针位置重算悬浮，而不是只在 CommonMouseMove 时更新。
-            // 点击跳转后捕获全被重建、悬浮也清了，若只等鼠标移动，
-            // 停在原处就一直没有高亮，得先动一下才回来
-            appearancePicker.refreshHover();
-            // 右侧列表的悬浮提示原本只有闪烁，这里补上同一套描边
-            appearancePicker.hoverByGroup(dressOptimizationManager.hoveredGroupName);
-            drawAppearanceHover();
+        try {
+            // 提交与门控分开：Color 模式下也要把捕获落地，
+            // 否则那批数据卡在 frame 里，退回来时 captures 还是空的
+            if (appearancePicker.isCapturing()) appearancePicker.commit();
+            if (appearancePicker.isEnabled()) {
+                // 每帧按当前指针位置重算悬浮，而不是只在 CommonMouseMove 时更新。
+                // 点击跳转后捕获全被重建、悬浮也清了，若只等鼠标移动，
+                // 停在原处就一直没有高亮，得先动一下才回来
+                appearancePicker.refreshHover();
+                // 右侧列表的悬浮提示原本只有闪烁，这里补上同一套描边
+                appearancePicker.hoverByGroup(dressOptimizationManager.hoveredGroupName);
+                drawAppearanceHover();
+            }
+        } catch (e) {
+            // 铅笔裙2 这类缺 _Normal.png 的 404：描边若未吞掉异常，
+            // 会把整个 AppearanceRun / DrawCharacter 钩子链打断
+            console.warn("[LianDressOptimization] AppearanceRun 叠画失败，已跳过", e);
         }
         return result;
     });
