@@ -940,6 +940,103 @@
     }
 
     /**
+     * 图层默认绘制坐标。资产建好后 DrawingLeft/Top 一定是按姿势分的表，默认姿势键是空串。
+     * @param {Object} layer
+     * @param {"DrawingLeft"|"DrawingTop"} field
+     * @returns {number|null}
+     */
+    function layerDrawOrigin(layer, field) {
+        const data = layer?.[field];
+        if (typeof data === "number" && Number.isFinite(data)) return data;
+        if (data && typeof data === "object" && typeof data[""] === "number" && Number.isFinite(data[""])) {
+            return data[""];
+        }
+        return null;
+    }
+
+    /**
+     * 把 LSCG 的绝对绘制坐标折进 BC 自己的图层位移。
+     *
+     * LayerOverrides 不在 PropertyData 里。ItemPropertiesValidate 组装结果时
+     * 会直接跳过它，穿上、同步、再加载之后这组坐标就没了。LSCG 的绘制钩子
+     * 用它覆盖图层的 X/Y，再叠上已有的 LayerTranslation。只把小数收成整数
+     * 留不住这块位置。
+     *
+     * 折算和 LSCG 的 migrateLegacyTranslation 同一套：
+     * 偏移 = 绝对坐标 − 该图层默认姿势的 DrawingLeft/Top，加进同名图层已有的位移。
+     * 折完删掉 LayerOverrides，避免绘制钩子和这里各加一次。
+     * 资产还没建好、读不到默认坐标时不动它，交给下面的校验钩子原样保留。
+     *
+     * @param {Object} entry - Item 或 ItemBundle
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function foldLayerOverrides(entry, write) {
+        const props = entry?.Property;
+        const overrides = props?.LayerOverrides;
+        if (!Array.isArray(overrides) || overrides.length === 0) return 0;
+
+        const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
+        const groupName = entry.Asset?.Group?.Name ?? entry.Group;
+        const asset = entry.Asset ?? (
+            typeof assetName === "string" && assetName !== ""
+                ? w.AssetGet?.(w.Player?.AssetFamily ?? "Female3DCG", groupName, assetName)
+                : null
+        );
+        const layers = asset?.Layer;
+        if (!Array.isArray(layers) || layers.length === 0) return 0;
+
+        // 位移若已是本体的压缩字符串，这里拆不开，留着让绘制钩子继续用绝对坐标
+        for (const key of ["LayerTranslationX", "LayerTranslationY"]) {
+            const cur = props[key];
+            if (cur != null && (typeof cur !== "object" || Array.isArray(cur))) return 0;
+        }
+
+        let n = 0;
+        const pairs = [
+            ["DrawingLeft", "LayerTranslationX"],
+            ["DrawingTop", "LayerTranslationY"]
+        ];
+        for (let i = 0; i < overrides.length; i++) {
+            const override = overrides[i];
+            const layer = layers[i];
+            if (!override || typeof override !== "object" || !layer) continue;
+            const name = layer.Name ?? "";
+            for (const [src, dst] of pairs) {
+                const absolute = override[src]?.[""];
+                if (typeof absolute !== "number" || !Number.isFinite(absolute)) continue;
+                const origin = layerDrawOrigin(layer, src);
+                if (origin == null) continue;
+                const offset = absolute - origin;
+                if (!offset) continue;
+                n++;
+                if (!write) continue;
+                const record = props[dst] ?? (props[dst] = {});
+                const prev = typeof record[name] === "number" && Number.isFinite(record[name])
+                    ? record[name] : 0;
+                record[name] = prev + offset;
+            }
+        }
+        if (write) delete props.LayerOverrides;
+        return n;
+    }
+
+    // 没折成位移的 LayerOverrides 仍要穿过校验，否则 LSCG 的绘制钩子读不到绝对坐标
+    if (typeof w.ItemPropertiesValidate === "function") {
+        mod.hookFunction("ItemPropertiesValidate", 1, (args, next) => {
+            const incoming = args[0];
+            const kept = incoming && typeof incoming === "object" && !Array.isArray(incoming)
+                ? incoming.LayerOverrides : undefined;
+            const ret = next(args);
+            if (Array.isArray(kept) && ret?.value && typeof ret.value === "object"
+                && ret.value.LayerOverrides === undefined) {
+                ret.value.LayerOverrides = kept;
+            }
+            return ret;
+        });
+    }
+
+    /**
      * 迁移旧版的无名图层键。
      *
      * R132 的 3e4c4b7fd 把图层键从 `layer.Name ?? asset.Name` 改成
@@ -951,10 +1048,11 @@
      * 两种入参形态都吃：身上穿的 Item（Asset.Name / Asset.Group.Name）与
      * 序列化的 ItemBundle（Name / Group 字符串），后者是历史快照和导入代码的格式。
      *
-     * 同一趟还会把位移、旋转、层级上的小数收成整数。R134 把这些字段当整数校验，
-     * 小数键会在穿上时被删掉。缩放允许小数，不在此列。
+     * 同一趟还会把 LSCG 的绝对绘制坐标折进图层位移，再把位移、旋转、层级上的
+     * 小数收成整数。R134 把这些字段当整数校验，小数键会在穿上时被删掉。
+     * 缩放允许小数，不在此列。
      *
-     * 幂等：旧键搬走、小数收整之后，重复调用不再改动。
+     * 幂等：旧键搬走、绝对坐标折完、小数收整之后，重复调用不再改动。
      *
      * @param {Object} entry - Item 或 ItemBundle
      * @returns {number} 改动点数，0 表示无需处理
@@ -963,8 +1061,9 @@
         const props = entry?.Property;
         if (!props || typeof props !== "object") return 0;
 
-        // 小数位移不依赖图层键是否过时，任何衣服都要收成整数，否则导入后直接被删
-        let moved = countOrSnapFractionalTransforms(props, true);
+        // 先折绝对坐标，再收整数：折出来的和原有小数一起收一次
+        let moved = foldLayerOverrides(entry, true);
+        moved += countOrSnapFractionalTransforms(props, true);
 
         const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
         // 资产名为空串时与目标键撞车，无从区分新旧。小数已经收过，照实返回
@@ -1017,7 +1116,8 @@
         const props = entry?.Property;
         if (!props || typeof props !== "object") return 0;
 
-        let n = countOrSnapFractionalTransforms(props, false);
+        let n = foldLayerOverrides(entry, false);
+        n += countOrSnapFractionalTransforms(props, false);
 
         const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
         if (typeof assetName !== "string" || assetName === "") return n;
