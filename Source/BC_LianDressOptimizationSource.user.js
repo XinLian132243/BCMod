@@ -829,6 +829,79 @@
         "OverridePriority"
     ];
 
+    // R134 的 Property.js 里，LayerTranslationX/Y 从 LayerScale 拷元数据时整份换掉，
+    // 没带上 isInteger: false；LayerRotation 和物品级 Translation/Rotation 同样默认按整数校验。
+    // validateNumber 遇到小数直接判 criticalError，partial 合并时把这个键删掉，偏移就没了。
+    // 图层界面的步进本来就是 1，收成最接近的整数后校验才会留下。
+    const INTEGER_LAYER_MAP_KEYS = [
+        "LayerTranslationX", "LayerTranslationY", "LayerRotation"
+    ];
+    const INTEGER_SCALAR_KEYS = ["TranslationX", "TranslationY", "Rotation"];
+
+    /**
+     * 四舍五入到整数，0.5 远离 0。非法值返回 null。
+     * Math.round 对负数的半数会偏向 +∞（-1.5 → -1），这里不用它。
+     * @param {unknown} value
+     * @returns {number|null}
+     */
+    function roundHalfAway(value) {
+        const num = typeof value === "number" ? value
+            : (typeof value === "string" && value.trim() !== "" ? Number(value) : NaN);
+        if (!Number.isFinite(num)) return null;
+        return Math.sign(num) * Math.round(Math.abs(num));
+    }
+
+    /**
+     * 把一张图层表里的小数收成整数。
+     * @param {Object} map
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function countOrSnapIntegerMap(map, write) {
+        if (!map || typeof map !== "object" || Array.isArray(map)) return 0;
+        let n = 0;
+        for (const key of Object.keys(map)) {
+            const rounded = roundHalfAway(map[key]);
+            if (rounded == null || rounded === map[key]) continue;
+            if (write) map[key] = rounded;
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 位移、旋转、层级上的小数会被 R134 校验删掉。缩放允许小数，不动。
+     * @param {Object} props
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function countOrSnapFractionalTransforms(props, write) {
+        if (!props || typeof props !== "object") return 0;
+        let n = 0;
+        for (const key of INTEGER_LAYER_MAP_KEYS) {
+            n += countOrSnapIntegerMap(props[key], write);
+        }
+
+        const priority = props.OverridePriority;
+        if (priority && typeof priority === "object" && !Array.isArray(priority)) {
+            n += countOrSnapIntegerMap(priority, write);
+        } else {
+            const rounded = roundHalfAway(priority);
+            if (rounded != null && rounded !== priority) {
+                if (write) props.OverridePriority = rounded;
+                n++;
+            }
+        }
+
+        for (const key of INTEGER_SCALAR_KEYS) {
+            const rounded = roundHalfAway(props[key]);
+            if (rounded == null || rounded === props[key]) continue;
+            if (write) props[key] = rounded;
+            n++;
+        }
+        return n;
+    }
+
     /**
      * 这件资产是否还会用资产名充当无名图层的键。
      *
@@ -878,26 +951,31 @@
      * 两种入参形态都吃：身上穿的 Item（Asset.Name / Asset.Group.Name）与
      * 序列化的 ItemBundle（Name / Group 字符串），后者是历史快照和导入代码的格式。
      *
-     * 幂等：迁移完旧键就没了，重复调用不会有二次改动。
+     * 同一趟还会把位移、旋转、层级上的小数收成整数。R134 把这些字段当整数校验，
+     * 小数键会在穿上时被删掉。缩放允许小数，不在此列。
+     *
+     * 幂等：旧键搬走、小数收整之后，重复调用不再改动。
      *
      * @param {Object} entry - Item 或 ItemBundle
-     * @returns {number} 迁移的键数，0 表示无需处理
+     * @returns {number} 改动点数，0 表示无需处理
      */
     function migrateLegacyLayerKeys(entry) {
         const props = entry?.Property;
         if (!props || typeof props !== "object") return 0;
 
+        // 小数位移不依赖图层键是否过时，任何衣服都要收成整数，否则导入后直接被删
+        let moved = countOrSnapFractionalTransforms(props, true);
+
         const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
-        // 资产名为空串时与目标键撞车，无从区分新旧
-        if (typeof assetName !== "string" || assetName === "") return 0;
+        // 资产名为空串时与目标键撞车，无从区分新旧。小数已经收过，照实返回
+        if (typeof assetName !== "string" || assetName === "") return moved;
 
         // 只有存在无名图层、且没有同名图层的资产才会用资产名做键
         const asset = entry.Asset ?? w.AssetGet?.(
             w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
         );
-        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return 0;
+        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return moved;
 
-        let moved = 0;
         for (const key of LAYER_INDEXED_KEYS) {
             if (!migrateLegacyLayerMap(props[key], assetName)) continue;
             if (props[key] && Object.keys(props[key]).length === 0) delete props[key];
@@ -939,15 +1017,16 @@
         const props = entry?.Property;
         if (!props || typeof props !== "object") return 0;
 
+        let n = countOrSnapFractionalTransforms(props, false);
+
         const assetName = entry.Asset ? entry.Asset.Name : entry.Name;
-        if (typeof assetName !== "string" || assetName === "") return 0;
+        if (typeof assetName !== "string" || assetName === "") return n;
 
         const asset = entry.Asset ?? w.AssetGet?.(
             w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
         );
-        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return 0;
+        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return n;
 
-        let n = 0;
         for (const key of LAYER_INDEXED_KEYS) {
             const map = props[key];
             if (!map || typeof map !== "object" || Array.isArray(map)) continue;
@@ -3470,12 +3549,12 @@
         applyBundle(C, bundle, note, replaceKinds = DRESS_KINDS, overlayKinds = null) {
             if (!C || !Array.isArray(bundle) || bundle.length === 0) return false;
             try {
-                // 旧代码里的无名图层变换键还是资产名，R132 之后本体读不到，
-                // 直接穿上就是一件没有变换的衣服。这里就地修好再穿
+                // 旧代码有两类失效：无名图层键还是资产名；位移/旋转带小数，
+                // R134 按整数校验时会把这些键删掉。穿上前就地修好
                 const fixed = migrateLegacyLayerKeysAll(bundle);
                 if (fixed.keys > 0) {
                     console.log(`[LianDressOptimization] 已修复 ${fixed.items} 件衣服的 `
-                        + `${fixed.keys} 个旧版图层键：${fixed.names.join('、')}`);
+                        + `${fixed.keys} 处失效变换：${fixed.names.join('、')}`);
                 }
 
                 // 写回前先把当前状态记一条，否则换错了就找不回来了。
