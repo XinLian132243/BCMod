@@ -3706,6 +3706,35 @@
         }
 
         /**
+         * 这个图层是不是真的在用这份颜色。
+         *
+         * 手臂遮罩、剪裁遮罩这类层不能着色，本体只把 ColorIndex 留在初始值 0，
+         * 并不代表它们跟第一种颜色是同一份。按 ColorIndex 收进来的话，
+         * 第一种颜色的透明度和层级会连这些遮罩一起改，款式选项就对不上颜色。
+         * @param {Object} layer
+         * @param {number} colorIndex
+         * @returns {boolean}
+         */
+        layerBelongsToColor(layer, colorIndex) {
+            return !!layer && layer.AllowColorize === true && layer.ColorIndex === colorIndex;
+        }
+
+        /**
+         * 找出真正使用这份颜色的图层，含 CopyLayerColor 共用颜色的层。
+         * @param {number} colorIndex
+         * @returns {number[]}
+         */
+        indicesForColor(colorIndex) {
+            const layers = ItemColorItem?.Asset?.Layer;
+            if (!Array.isArray(layers)) return [];
+            const out = [];
+            layers.forEach((layer, idx) => {
+                if (this.layerBelongsToColor(layer, colorIndex)) out.push(idx);
+            });
+            return out;
+        }
+
+        /**
          * 构建树状结构
          */
         buildTree() {
@@ -3735,6 +3764,8 @@
                     const allColorIndices = [];
                     const allLayerIndices = [];
                     asset.Layer.forEach((layer, layerIndex) => {
+                        // 遮罩的 ColorIndex 停在 0，不能算进物品整体的颜色
+                        if (layer.AllowColorize !== true) return;
                         if (layer.ColorIndex !== undefined && layer.ColorIndex !== null) {
                             allColorIndices.push(layer.ColorIndex);
                             allLayerIndices.push(layerIndex);
@@ -3755,13 +3786,8 @@
                         // 如果只有一个子节点，直接使用子节点，不创建分组节点
                         if (colorGroup.layers.length === 1) {
                             const layer = colorGroup.layers[0];
-                            // 查找所有具有相同ColorIndex的图层（可能有多个图层共享同一个ColorIndex）
-                            const allLayerIndices = [];
-                            asset.Layer.forEach((l, idx) => {
-                                if (l.ColorIndex === layer.ColorIndex) {
-                                    allLayerIndices.push(idx);
-                                }
-                            });
+                            // 只收真正使用这份颜色的层。遮罩的 ColorIndex 也是 0，不能算进来
+                            const allLayerIndices = this.indicesForColor(layer.ColorIndex);
                             
                             let layerName = layer.Name || groupName || 'Layer 1';
                             if (typeof ItemColorLayerNames !== 'undefined' && ItemColorLayerNames) {
@@ -3793,14 +3819,7 @@
                             colorGroup.layers.forEach((layer) => {
                                 if (!colorIndexMap.has(layer.ColorIndex)) {
                                     uniqueColorIndices.push(layer.ColorIndex);
-                                    // 查找所有具有相同ColorIndex的图层
-                                    const matchingLayerIndices = [];
-                                    asset.Layer.forEach((l, idx) => {
-                                        if (l.ColorIndex === layer.ColorIndex) {
-                                            matchingLayerIndices.push(idx);
-                                        }
-                                    });
-                                    colorIndexMap.set(layer.ColorIndex, matchingLayerIndices);
+                                    colorIndexMap.set(layer.ColorIndex, this.indicesForColor(layer.ColorIndex));
                                 }
                             });
                             
