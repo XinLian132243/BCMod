@@ -821,19 +821,59 @@
         return asset.AllowExpression === fromGroup;
     }
 
-    // 按图层名索引的变换键。物品级的 TranslationX 等不带索引，与图层名无关
-    const LAYER_TRANSFORM_KEYS = [
+    // 按图层名索引的键。物品级的 TranslationX 等不带索引，与图层名无关。
+    // OverridePriority 和变换用的是同一次改键（3e4c4b7fd），R134 校验会一起丢掉
+    const LAYER_INDEXED_KEYS = [
         "LayerTranslationX", "LayerTranslationY",
-        "LayerScaleX", "LayerScaleY", "LayerRotation"
+        "LayerScaleX", "LayerScaleY", "LayerRotation",
+        "OverridePriority"
     ];
 
     /**
-     * 迁移旧版的无名图层变换键。
+     * 这件资产是否还会用资产名充当无名图层的键。
      *
-     * R132 的 3e4c4b7fd 把 CommonDraw.getTransform 里的键从
-     * `layer.Name ?? asset.Name` 统一成了 `layer.Name ?? ""`。在那之前本插件
-     * 跟着旧约定写，存下的值键名是资产名，改版后本体再也读不到 ——
-     * 表现就是部件变换整体失效，旧值还一直残留在 Property 里。
+     * 有图层真的就叫资产名时，那个键是合法的，不能当成旧数据搬走。
+     *
+     * @param {Object} asset
+     * @param {string} assetName
+     * @returns {boolean}
+     */
+    function assetUsesLegacyUnnamedKey(asset, assetName) {
+        if (!asset || !Array.isArray(asset.Layer)) return false;
+        const unnamed = asset.Layer.some(l => !l || l.Name == null);
+        const namedLikeAsset = asset.Layer.some(l => l && l.Name === assetName);
+        return unnamed && !namedLikeAsset;
+    }
+
+    /**
+     * 把一份按图层索引的表里的旧键改成现在的空字符串键。
+     *
+     * @param {Object} map
+     * @param {string} assetName
+     * @returns {boolean} 是否改动了这张表
+     */
+    function migrateLegacyLayerMap(map, assetName) {
+        if (!map || typeof map !== "object" || Array.isArray(map)) return false;
+        if (!Object.prototype.hasOwnProperty.call(map, assetName)) return false;
+
+        const legacy = map[assetName];
+        // 新键已有值时只清旧键 —— 那是改版后调好的，不能覆盖
+        if (typeof legacy === "number" && !Number.isNaN(legacy)
+            && typeof map[""] !== "number") {
+            map[""] = legacy;
+        }
+        delete map[assetName];
+        return true;
+    }
+
+    /**
+     * 迁移旧版的无名图层键。
+     *
+     * R132 的 3e4c4b7fd 把图层键从 `layer.Name ?? asset.Name` 改成
+     * `layer.Name ?? ""`。变换（CommonDraw.getTransform）和层级
+     * （Layering 的 OverridePriority）都改了。R134 起 ItemPropertiesValidate
+     * 会在穿上、解压衣柜时把对不上当前图层名的键直接删掉（1f1d3d976），
+     * 旧值不再只是读不到，而是一加载就没了。
      *
      * 两种入参形态都吃：身上穿的 Item（Asset.Name / Asset.Group.Name）与
      * 序列化的 ItemBundle（Name / Group 字符串），后者是历史快照和导入代码的格式。
@@ -851,27 +891,16 @@
         // 资产名为空串时与目标键撞车，无从区分新旧
         if (typeof assetName !== "string" || assetName === "") return 0;
 
-        // 只有存在无名图层的资产才会用资产名做键。Bundle 形态下要先查资产
+        // 只有存在无名图层、且没有同名图层的资产才会用资产名做键
         const asset = entry.Asset ?? w.AssetGet?.(
             w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
         );
-        if (!asset || !Array.isArray(asset.Layer)) return 0;
-        if (!asset.Layer.some(l => !l || l.Name == null)) return 0;
+        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return 0;
 
         let moved = 0;
-        for (const key of LAYER_TRANSFORM_KEYS) {
-            const map = props[key];
-            if (!map || typeof map !== "object" || Array.isArray(map)) continue;
-            if (!Object.prototype.hasOwnProperty.call(map, assetName)) continue;
-
-            const legacy = map[assetName];
-            // 新键已有值时只清旧键 —— 那是改版后调好的，不能覆盖
-            if (typeof legacy === "number" && !Number.isNaN(legacy)
-                && typeof map[""] !== "number") {
-                map[""] = legacy;
-            }
-            delete map[assetName];
-            if (Object.keys(map).length === 0) delete props[key];
+        for (const key of LAYER_INDEXED_KEYS) {
+            if (!migrateLegacyLayerMap(props[key], assetName)) continue;
+            if (props[key] && Object.keys(props[key]).length === 0) delete props[key];
             moved++;
         }
 
@@ -916,11 +945,10 @@
         const asset = entry.Asset ?? w.AssetGet?.(
             w.Player?.AssetFamily ?? "Female3DCG", entry.Group, assetName
         );
-        if (!asset || !Array.isArray(asset.Layer)) return 0;
-        if (!asset.Layer.some(l => !l || l.Name == null)) return 0;
+        if (!assetUsesLegacyUnnamedKey(asset, assetName)) return 0;
 
         let n = 0;
-        for (const key of LAYER_TRANSFORM_KEYS) {
+        for (const key of LAYER_INDEXED_KEYS) {
             const map = props[key];
             if (!map || typeof map !== "object" || Array.isArray(map)) continue;
             if (Object.prototype.hasOwnProperty.call(map, assetName)) n++;
@@ -951,7 +979,7 @@
         {
             id: "legacyLayerKeys",
             label: "部件变换失效",
-            // R132 的 3e4c4b7fd 改了图层键约定，之前的版本不需要修
+            // R132 的 3e4c4b7fd 改了图层键。R134 的属性校验会在读取时删掉旧键
             applies: () => gameVersionAtLeast(132),
             count: countLegacyLayerKeys,
             fix: migrateLegacyLayerKeys
@@ -3447,7 +3475,7 @@
                 const fixed = migrateLegacyLayerKeysAll(bundle);
                 if (fixed.keys > 0) {
                     console.log(`[LianDressOptimization] 已修复 ${fixed.items} 件衣服的 `
-                        + `${fixed.keys} 个旧版图层变换键：${fixed.names.join('、')}`);
+                        + `${fixed.keys} 个旧版图层键：${fixed.names.join('、')}`);
                 }
 
                 // 写回前先把当前状态记一条，否则换错了就找不回来了。
