@@ -939,28 +939,140 @@
         return true;
     }
 
-    // 两件事都发生在游戏自己的校验里，不另开定时器。
-    //
-    // 小数位移和旋转过不了 R134 的整数校验，键会被删掉，这次外观被记成无效。
-    // 玩家自己的无效更新会立刻再广播一次。存档里小数还在的话，下一包又非法，
-    // 房间里其他人就跟着一次次重画。校验前收成整数，这一包就是合法的，循环停住。
-    //
-    // LayerOverrides 是绝对绘制坐标，不在 PropertyData 里，校验结果会丢掉。
-    // 不能折进 LayerTranslation：绘制坐标已经含位移，WebGL 还会再加一次。
-    // 只把原数组放回校验结果。
-    if (typeof w.ItemPropertiesValidate === "function") {
-        mod.hookFunction("ItemPropertiesValidate", 1, (args, next) => {
-            const incoming = args[0];
-            const isProps = incoming && typeof incoming === "object" && !Array.isArray(incoming);
-            if (isProps) countOrSnapFractionalTransforms(incoming, true);
-            const kept = isProps ? incoming.LayerOverrides : undefined;
-            const ret = next(args);
-            if (Array.isArray(kept) && ret?.value && typeof ret.value === "object"
-                && ret.value.LayerOverrides === undefined) {
-                ret.value.LayerOverrides = kept;
+    // 位移在 PropertyData 里的范围。超出后校验会改数值并记成 error，玩家就会再广播一次。
+    const TRANSLATION_MIN = -500;
+    const TRANSLATION_MAX = 500;
+
+    function clampTranslation(value) {
+        return Math.max(TRANSLATION_MIN, Math.min(TRANSLATION_MAX, value));
+    }
+
+    /**
+     * 图层定义上的默认绘制坐标。没有时按 0，绝对坐标仍能折成位移。
+     * @param {Object} layer
+     * @param {"DrawingLeft"|"DrawingTop"} field
+     * @returns {number}
+     */
+    function layerDefaultOrigin(layer, field) {
+        const data = layer?.[field];
+        const value = data && typeof data === "object" ? data[""] : data;
+        return typeof value === "number" && Number.isFinite(value) ? value : 0;
+    }
+
+    /**
+     * 把一处绝对坐标的偏差写入图层位移。
+     *
+     * WebGL 在已经含位移的 drawX 上会再加一次 Translation（GLDraw.js）。
+     * LSCG 的绝对坐标只替换 X/Y 一次，不会被加第二次。偏差若全额写入位移，
+     * 画出来会比原来远一倍。这里只写入一半，整数化之后两边看到的位置一致。
+     *
+     * @param {Object} props
+     * @param {"LayerTranslationX"|"LayerTranslationY"} key
+     * @param {string} layerName
+     * @param {number} absolute
+     * @param {number} baseline
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function addFoldedTranslation(props, key, layerName, absolute, baseline, write) {
+        if (typeof absolute !== "number" || !Number.isFinite(absolute)) return 0;
+        const delta = roundHalfAway((absolute - baseline) / 2);
+        if (delta == null || delta === 0) return 0;
+
+        const map = props[key];
+        const hasMap = map && typeof map === "object" && !Array.isArray(map);
+        const current = hasMap && typeof map[layerName] === "number" && Number.isFinite(map[layerName])
+            ? map[layerName] : 0;
+        const next = clampTranslation(roundHalfAway(current + delta) ?? current);
+        if (next === current) return 0;
+        if (!write) return 1;
+
+        const record = hasMap ? map : (props[key] = {});
+        if (next === 0) delete record[layerName];
+        else record[layerName] = next;
+        if (Object.keys(record).length === 0) delete props[key];
+        return 1;
+    }
+
+    /**
+     * 把过不了审查的绘制坐标折进 LayerTranslation，并删掉原字段。
+     *
+     * LayerOverrides 是 LSCG 按图层索引记的绝对坐标。DrawingLeft / DrawingTop
+     * 在 PropertyData 里是空条目，对方校验同样会丢掉。原版绘制只认整数位移。
+     *
+     * @param {Object} props
+     * @param {Object} asset
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function foldUnreviewedDrawProperties(props, asset, write) {
+        if (!props || typeof props !== "object" || Array.isArray(props)) return 0;
+        if (!asset || !Array.isArray(asset.Layer)) return 0;
+        let n = 0;
+
+        const overrides = props.LayerOverrides;
+        if (Array.isArray(overrides)) {
+            asset.Layer.forEach((layer, index) => {
+                const slot = overrides[index];
+                if (!slot || typeof slot !== "object") return;
+                const name = layer?.Name ?? "";
+                n += addFoldedTranslation(
+                    props, "LayerTranslationX", name, slot.DrawingLeft?.[""],
+                    layerDefaultOrigin(layer, "DrawingLeft"), write
+                );
+                n += addFoldedTranslation(
+                    props, "LayerTranslationY", name, slot.DrawingTop?.[""],
+                    layerDefaultOrigin(layer, "DrawingTop"), write
+                );
+            });
+            if (write) delete props.LayerOverrides;
+        }
+
+        for (const [field, key] of [["DrawingLeft", "LayerTranslationX"], ["DrawingTop", "LayerTranslationY"]]) {
+            const table = props[field];
+            if (!table || typeof table !== "object" || Array.isArray(table)) continue;
+            const assetWide = table.ASSET_OVERRIDE?.[""];
+            for (const layer of asset.Layer) {
+                const name = layer?.Name ?? "";
+                const baseline = layerDefaultOrigin(layer, field);
+                const absolute = table[name]?.[""];
+                if (typeof absolute === "number") {
+                    n += addFoldedTranslation(props, key, name, absolute, baseline, write);
+                } else if (typeof assetWide === "number") {
+                    n += addFoldedTranslation(props, key, name, baseline + assetWide, baseline, write);
+                }
             }
-            return ret;
-        });
+            if (write) delete props[field];
+        }
+        return n;
+    }
+
+    function entryAsset(entry) {
+        if (entry?.Asset?.Layer) return entry.Asset;
+        const name = entry?.Name;
+        const group = entry?.Group;
+        if (typeof name !== "string" || typeof group !== "string") return null;
+        return w.AssetGet?.(w.Player?.AssetFamily ?? "Female3DCG", group, name) ?? null;
+    }
+
+    /**
+     * 把一份装备列表里过不了审查的绘制坐标折进整数位移。
+     * 只给导入和修衣柜用。不挂校验钩子，避免只有本机先改、别人仍是原数据。
+     * @param {Array<Object>} items
+     * @returns {{items: number, keys: number, names: string[]}}
+     */
+    function foldDrawPropertiesAll(items) {
+        const stat = { items: 0, keys: 0, names: [] };
+        if (!Array.isArray(items)) return stat;
+        for (const entry of items) {
+            const n = foldEntryDrawProperties(entry, true);
+            if (n === 0) continue;
+            stat.items++;
+            stat.keys += n;
+            const name = entry.Asset ? entry.Asset.Name : entry.Name;
+            if (typeof name === "string" && !stat.names.includes(name)) stat.names.push(name);
+        }
+        return stat;
     }
 
     /**
@@ -977,7 +1089,7 @@
      *
      * 同一趟还会把位移、旋转、层级上的小数收成整数。R134 把这些字段当整数校验，
      * 小数键会在穿上时被删掉。缩放允许小数，不在此列。
-     * LSCG 的绝对绘制坐标不在这里折算，见 ItemPropertiesValidate 钩子。
+     * 绝对坐标不在这里折算，只在导入和修衣柜时处理。
      *
      * 幂等：旧键搬走、小数收整之后，重复调用不再改动。
      *
@@ -1074,29 +1186,21 @@
      * @property {string} id - 唯一标识，用于跳过已处理过的项
      * @property {string} label - 提示里显示的问题名称
      * @property {() => boolean} applies - 当前游戏版本是否需要这项修复
-     * @property {boolean} [preserveOnly] - 只检查、不改写。穿上时由校验钩子原样保留
+     * @property {boolean} [preserveOnly] - 只检查、不改写
      * @property {(entry: Object) => number} count - 数一件衣服上的问题点数，不改数据
      * @property {(entry: Object) => number} fix - 原地修一件衣服，返回改动点数
      */
 
     /**
-     * 数一件衣服上有几处 LSCG 绝对绘制坐标。
-     * 不改数据。这些值要留在 LayerOverrides 里，不能折进位移。
+     * 把一件衣服上过不了审查的绘制坐标折进整数位移。
      * @param {Object} entry
+     * @param {boolean} write
      * @returns {number}
      */
-    function countLayerOverrides(entry) {
-        const overrides = entry?.Property?.LayerOverrides;
-        if (!Array.isArray(overrides)) return 0;
-        let n = 0;
-        for (const slot of overrides) {
-            if (!slot || typeof slot !== "object") continue;
-            for (const field of ["DrawingLeft", "DrawingTop"]) {
-                const value = slot[field]?.[""];
-                if (typeof value === "number" && Number.isFinite(value)) n++;
-            }
-        }
-        return n;
+    function foldEntryDrawProperties(entry, write) {
+        const props = entry?.Property;
+        if (!props || typeof props !== "object") return 0;
+        return foldUnreviewedDrawProperties(props, entryAsset(entry), write);
     }
 
     /** @type {WardrobeFix[]} */
@@ -1112,12 +1216,10 @@
         {
             id: "layerOverrides",
             label: "绝对绘制坐标",
-            // R134 校验不认识 LayerOverrides，穿上时会丢掉。
-            // 钩子负责放回原值。这里只做检查，修复不改写，避免再叠进位移。
+            // R134 不认识 LayerOverrides 和旧的 DrawingLeft/Top。折进整数位移后对方才会画到同一处。
             applies: () => gameVersionAtLeast(134),
-            preserveOnly: true,
-            count: countLayerOverrides,
-            fix: () => 0
+            count: entry => foldEntryDrawProperties(entry, false),
+            fix: entry => foldEntryDrawProperties(entry, true)
         }
     ];
 
@@ -1315,19 +1417,16 @@
             if (found.outfits > 0) where.push(`衣柜 ${found.outfits} 套`);
             if (found.worn > 0) where.push(`身上 ${found.worn} 件`);
 
-            // 绝对坐标已经在衣柜里，穿上时由校验钩子放回。
-            // 不能在这里折进位移，否则和导入时一样会飞远
             if (rewrite.length === 0) {
                 notify?.(
-                    `检查到 ${where.join("、")} 有绝对绘制坐标，共 ${found.total} 处。\n`
-                    + `资产：${names}\n`
-                    + `这些坐标会在穿上时原样保留，不会改写衣柜。`
+                    `检查到 ${where.join("、")} 有只检查、不改写的项目，共 ${found.total} 处。\n`
+                    + `资产：${names}`
                 );
                 return;
             }
 
             const preservedNote = preserved.length > 0
-                ? `\n另有绝对绘制坐标，只在穿上时保留，不会折进位移。`
+                ? `\n另有只检查、不改写的项目。`
                 : "";
 
             confirm(
@@ -2223,7 +2322,7 @@
             MainCanvas.textAlign = "left";
 
             if (MouseIn(1050, 200, 300, 64)) {
-                this.setHoverText("扫描衣柜和身上的衣服。旧版部件变换会改成现在能读的格式；绝对绘制坐标只保留、不折进位移，避免位置飞走");
+                this.setHoverText("扫描衣柜和身上的衣服。旧版部件变换和绝对绘制坐标会改成对方也能保留的整数位移");
             }
 
             // 退出按钮
@@ -5950,8 +6049,9 @@
 
             // 先在副本上跑一遍迁移，数出要修几处，好在确认框里说清楚。
             // 用同一个函数而不是另写判据，免得两边的条件日后走偏
-            const legacy = migrateLegacyLayerKeysAll(
-                JSON.parse(JSON.stringify(bundle))).keys;
+            const preview = JSON.parse(JSON.stringify(bundle));
+            const legacy = migrateLegacyLayerKeysAll(preview).keys;
+            const folded = foldDrawPropertiesAll(preview).keys;
 
             const skipNote = [
                 skipped.cloth ? `${skipped.cloth} 件衣服` : '',
@@ -5967,6 +6067,7 @@
 
             const msg = `解析到 ${bundle.length} 件，确认穿上？\n`
                 + (legacy > 0 ? `其中 ${legacy} 处旧版失效的变换会一并修好。\n` : '')
+                + (folded > 0 ? `其中 ${folded} 处绝对坐标会写成整数位移。\n` : '')
                 + (skipNote ? `代码里另有${skipNote}，未勾选，会跳过不动。\n` : '')
                 + '当前状态会先存一条历史，可以退回来。'
                 // 历史快照只记衣服与身体，道具不在其中，退回来也补不回去
@@ -5977,6 +6078,7 @@
             // 于是一份只带体型的代码会把发型五官全重置。道具则按整体替换，
             // 这样"代码里的束具就是最终结果"，也才有办法脱掉多余的
             this.confirmDialog(msg, '穿上', () => {
+                const foldedNow = foldDrawPropertiesAll(bundle).keys;
                 const ok = dressHistory.applyBundle(
                     C, bundle, '导入前', kinds, new Set(['body']));
                 this.closeToolPanel();
@@ -5986,7 +6088,8 @@
                 }
                 // 与历史恢复同理：整体替换过 Appearance，
                 // ItemColorItem 已成孤儿，必须退出调色界面
-                this.toast(legacy > 0 ? `已穿上，并修好 ${legacy} 处变换` : '已穿上');
+                const fixed = legacy + foldedNow;
+                this.toast(fixed > 0 ? `已穿上，并修好 ${fixed} 处变换` : '已穿上');
                 this.exitToDressScreen();
             });
         }
