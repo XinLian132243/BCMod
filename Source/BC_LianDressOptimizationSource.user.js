@@ -939,19 +939,21 @@
         return true;
     }
 
-    // LayerOverrides 是 LSCG 按图层记的绝对绘制坐标，不在 PropertyData 里。
-    // ItemPropertiesValidate 组装结果时会跳过它，穿上之后绘制钩子就读不到，
-    // 衣服回到默认位置。
+    // 两件事都发生在游戏自己的校验里，不另开定时器。
     //
-    // 不能把它折进 LayerTranslation。本体绘制是 drawX = 坐标 + 位移，
-    // WebGL 还会把 opts.TranslationX 再加一次（GLDraw.js）。绝对坐标本来由
-    // LSCG 在 BeforeDraw 里替换 X/Y，只生效一次；写进位移后会和原有位移、
-    // 这次替换叠在一起，部件会飞到更远的位置。这里只把原值放回校验结果。
+    // 小数位移和旋转过不了 R134 的整数校验，键会被删掉，这次外观被记成无效。
+    // 玩家自己的无效更新会立刻再广播一次。存档里小数还在的话，下一包又非法，
+    // 房间里其他人就跟着一次次重画。校验前收成整数，这一包就是合法的，循环停住。
+    //
+    // LayerOverrides 是绝对绘制坐标，不在 PropertyData 里，校验结果会丢掉。
+    // 不能折进 LayerTranslation：绘制坐标已经含位移，WebGL 还会再加一次。
+    // 只把原数组放回校验结果。
     if (typeof w.ItemPropertiesValidate === "function") {
         mod.hookFunction("ItemPropertiesValidate", 1, (args, next) => {
             const incoming = args[0];
-            const kept = incoming && typeof incoming === "object" && !Array.isArray(incoming)
-                ? incoming.LayerOverrides : undefined;
+            const isProps = incoming && typeof incoming === "object" && !Array.isArray(incoming);
+            if (isProps) countOrSnapFractionalTransforms(incoming, true);
+            const kept = isProps ? incoming.LayerOverrides : undefined;
             const ret = next(args);
             if (Array.isArray(kept) && ret?.value && typeof ret.value === "object"
                 && ret.value.LayerOverrides === undefined) {
