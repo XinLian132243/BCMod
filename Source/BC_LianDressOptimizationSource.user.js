@@ -1461,11 +1461,6 @@
     // 它虽然 AllowNone 为 false，但实际是一张独立贴图，变换能正常生效
     const TRANSFORM_ALLOW_GROUPS = new Set(["Pussy", "Emoticon"]);
 
-    // 走表情通道同步的组。这类组的改动经 ChatRoomCharacterExpressionUpdate
-    // 广播，那个消息只通知房间、不写服务器存档（见 ChatRoom.js 的注释），
-    // 所以变换改完必须自己补一次真正的同步
-    const EXPRESSION_SYNC_GROUPS = new Set(["Emoticon"]);
-
     // 图层变换配置。范围与步长对齐本体 Layering.js 的 _GetTabContents
     // 存储位置为 Property.Layer{Prop}[layerName]，绘制侧在 CommonDraw.getTransform 读取：
     // 平移/旋转与物品级值相加，缩放与物品级值相乘
@@ -4397,8 +4392,7 @@
          *
          * 例外：Emoticon 额外放开。本体把它归进黑名单是因为整组 AllowNone
          * 为 false，但它其实是一张独立贴图（Priority 100、自带 Left/Top），
-         * 位移缩放都能正常生效。代价是它走表情同步通道，退出时要补一次
-         * 真正的同步，见 syncExpressionGroupTransform。
+         * 位移缩放都能正常生效。表情本身仍由本体的表情通道同步。
          *
          * @returns {{allowed: boolean, reason: string}}
          */
@@ -11439,57 +11433,17 @@
         // 退出前先取现场：next 里的 ItemColorReset 会把这两个全局清空。
         // 用 bcGlobal 而不是 w.xxx —— 这两个是 let 声明的，不挂在 window 上
         const save = args[0] !== false;
-        const C = bcGlobal("ItemColorCharacter");
         const item = bcGlobal("ItemColorItem");
-        const group = item?.Asset?.Group?.Name;
 
         itemColorAdjustmentWindow.destroy();
         const result = next(args);
 
-        // 表情类组（Emoticon）改完变换不会自动存到服务器：它们走
-        // ChatRoomCharacterExpressionUpdate，那条消息只通知房间不写存档。
-        // 取消退出时不用补 —— 本体已把 Property 还原成备份
-        if (save && group && EXPRESSION_SYNC_GROUPS.has(group)) {
-            // 必须在同步之前补：ItemPropertiesCompress 靠资产级的
-            // AllowExpression 决定要不要带上 Expression，晚了气泡就没了
-            patchAssetAllowExpression(item?.Asset);
-            syncExpressionGroupTransform(C);
-        }
+        // 只补资产上的 AllowExpression，让本体稍后自己的那次存档还能带上表情。
+        // 这里不再发 ServerPlayerAppearanceSync / ChatRoomCharacterUpdate。
+        // 外观里若还有过不了审查的字段，多发的这一包会被游戏判为无效并立刻再广播。
+        if (save) patchAssetAllowExpression(item?.Asset);
         return result;
     });
-
-    /**
-     * 给表情类组补一次真正的服务器同步。
-     *
-     * 自己的角色用 ServerPlayerAppearanceSync 写账号存档；改别人的只能
-     * 走 ChatRoomCharacterUpdate。两者都经 ServerBundledItemFromAppearanceItem
-     * 打包，R132 起那里会用 ItemPropertiesCompress 按白名单过滤 Property。
-     * 变换键都在白名单里，能正常带过去；Expression 不然，得靠
-     * patchAssetAllowExpression 先补资产级的 AllowExpression。
-     *
-     * @param {Object} C - 被编辑的角色
-     */
-    function syncExpressionGroupTransform(C) {
-        if (!C) return;
-        try {
-            if (C.IsPlayer?.()) {
-                // 存档要求已登录：CharacterID 为空时 ServerPlayerAppearanceSync
-                // 会拿不到账号，直接跳过
-                if (C.CharacterID !== "" && typeof w.ServerPlayerAppearanceSync === 'function') {
-                    w.ServerPlayerAppearanceSync();
-                }
-                // 房间里的其他人靠这条看到变化。ServerPlayerAppearanceSync
-                // 只更新数据库，不广播
-                if (w.ServerPlayerIsInChatRoom?.() && typeof w.ChatRoomCharacterUpdate === 'function') {
-                    w.ChatRoomCharacterUpdate(C);
-                }
-            } else if (typeof w.ChatRoomCharacterUpdate === 'function') {
-                w.ChatRoomCharacterUpdate(C);
-            }
-        } catch (e) {
-            console.warn('[LianDressOptimization] 同步表情组变换失败', e);
-        }
-    }
 
     // 在屏幕切换时也销毁窗口
     mod.hookFunction("CommonSetScreen", 1, (args, next) => {
