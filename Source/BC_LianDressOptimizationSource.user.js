@@ -1203,6 +1203,58 @@
         return foldUnreviewedDrawProperties(props, entryAsset(entry), write);
     }
 
+    /**
+     * 把仍写成 "Default" 或空着的颜色槽换成资产上的默认色。
+     * 已经是明确色值的不动。默认色本身也是 "Default" 时没有可恢复的颜色。
+     * @param {Object} entry
+     * @param {boolean} write
+     * @returns {number}
+     */
+    function restoreAuthoredItemColor(entry, write) {
+        const asset = entryAsset(entry);
+        const defaults = asset?.DefaultColor;
+        if (!Array.isArray(defaults) || defaults.length === 0) return 0;
+        const fill = asset.Group?.ColorSchema?.[0] ?? "Default";
+        if (!defaults.some(c => typeof c === "string" && c !== fill)) return 0;
+
+        const color = entry?.Color;
+        const blank = (value) => value == null || value === fill;
+        if (typeof color === "string" || color == null) {
+            if (!blank(color) && color !== undefined) return 0;
+            if (!write) return 1;
+            entry.Color = defaults.slice();
+            return 1;
+        }
+        if (!Array.isArray(color)) return 0;
+
+        let n = 0;
+        const next = color.slice();
+        for (let i = 0; i < defaults.length; i++) {
+            const want = defaults[i];
+            if (typeof want !== "string" || want === fill || !blank(next[i])) continue;
+            next[i] = want;
+            n++;
+        }
+        if (n > 0 && write) entry.Color = next;
+        return n;
+    }
+
+    /**
+     * @param {Array<Object>} items
+     * @returns {{items: number, keys: number}}
+     */
+    function restoreAuthoredItemColorAll(items) {
+        const stat = { items: 0, keys: 0 };
+        if (!Array.isArray(items)) return stat;
+        for (const entry of items) {
+            const n = restoreAuthoredItemColor(entry, true);
+            if (n === 0) continue;
+            stat.items++;
+            stat.keys += n;
+        }
+        return stat;
+    }
+
     /** @type {WardrobeFix[]} */
     const WARDROBE_FIXES = [
         {
@@ -1220,6 +1272,13 @@
             applies: () => gameVersionAtLeast(134),
             count: entry => foldEntryDrawProperties(entry, false),
             fix: entry => foldEntryDrawProperties(entry, true)
+        },
+        {
+            id: "authoredDefaultColor",
+            label: "默认色变成白色",
+            applies: () => gameVersionAtLeast(134),
+            count: entry => restoreAuthoredItemColor(entry, false),
+            fix: entry => restoreAuthoredItemColor(entry, true)
         }
     ];
 
@@ -2317,7 +2376,7 @@
             MainCanvas.textAlign = "left";
 
             if (MouseIn(1050, 200, 300, 64)) {
-                this.setHoverText("扫描衣柜和身上的衣服。旧版部件变换和绝对绘制坐标会改成对方也能保留的整数位移");
+                this.setHoverText("扫描衣柜和身上的衣服。旧版变换、绝对坐标和变成白色的默认色会写成对方也能保留的数据");
             }
 
             // 退出按钮
@@ -6046,6 +6105,7 @@
             const preview = JSON.parse(JSON.stringify(bundle));
             const legacy = migrateLegacyLayerKeysAll(preview).keys;
             const folded = foldDrawPropertiesAll(preview).keys;
+            const recolored = restoreAuthoredItemColorAll(preview).keys;
 
             const skipNote = [
                 skipped.cloth ? `${skipped.cloth} 件衣服` : '',
@@ -6062,6 +6122,7 @@
             const msg = `解析到 ${bundle.length} 件，确认穿上？\n`
                 + (legacy > 0 ? `其中 ${legacy} 处旧版失效的变换会一并修好。\n` : '')
                 + (folded > 0 ? `其中 ${folded} 处绝对坐标会写成整数位移。\n` : '')
+                + (recolored > 0 ? `其中 ${recolored} 处默认色会从白色写回原来的颜色。\n` : '')
                 + (skipNote ? `代码里另有${skipNote}，未勾选，会跳过不动。\n` : '')
                 + '当前状态会先存一条历史，可以退回来。'
                 // 历史快照只记衣服与身体，道具不在其中，退回来也补不回去
@@ -6073,6 +6134,7 @@
             // 这样"代码里的束具就是最终结果"，也才有办法脱掉多余的
             this.confirmDialog(msg, '穿上', () => {
                 const foldedNow = foldDrawPropertiesAll(bundle).keys;
+                const recoloredNow = restoreAuthoredItemColorAll(bundle).keys;
                 const ok = dressHistory.applyBundle(
                     C, bundle, '导入前', kinds, new Set(['body']));
                 this.closeToolPanel();
@@ -6082,7 +6144,7 @@
                 }
                 // 与历史恢复同理：整体替换过 Appearance，
                 // ItemColorItem 已成孤儿，必须退出调色界面
-                const fixed = legacy + foldedNow;
+                const fixed = legacy + foldedNow + recoloredNow;
                 this.toast(fixed > 0 ? `已穿上，并修好 ${fixed} 处变换` : '已穿上');
                 this.exitToDressScreen();
             });
