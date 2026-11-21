@@ -27,6 +27,24 @@
         version: MOD_VERSION
     });
 
+    // 扩展写在资产定义上的 DefaultColor。R134 建资产时不会收进图层，
+    // 注册结果里只剩 "Default"。这里只记下原文，不改资产本身。
+    // 导入和修衣柜时再写到这件衣服的 Color 上。
+    const authoredDefaultColors = new Map();
+
+    if (typeof AssetAdd === "function") {
+        mod.hookFunction("AssetAdd", 0, (args, next) => {
+            const asset = next(args);
+            const authored = args[1]?.DefaultColor;
+            const group = asset?.Group?.Name;
+            const name = asset?.Name;
+            if (group && name && Array.isArray(authored) && authored.length > 0) {
+                authoredDefaultColors.set(group + "\0" + name, authored.slice());
+            }
+            return asset;
+        });
+    }
+
     // =======================================================================================
     const w = window;
 
@@ -1212,7 +1230,12 @@
      */
     function restoreAuthoredItemColor(entry, write) {
         const asset = entryAsset(entry);
-        const defaults = asset?.DefaultColor;
+        const remembered = asset
+            ? authoredDefaultColors.get((asset.Group?.Name || "") + "\0" + (asset.Name || ""))
+            : undefined;
+        const defaults = Array.isArray(remembered) && remembered.length > 0
+            ? remembered
+            : asset?.DefaultColor;
         if (!Array.isArray(defaults) || defaults.length === 0) return 0;
         const fill = asset.Group?.ColorSchema?.[0] ?? "Default";
         if (!defaults.some(c => typeof c === "string" && c !== fill)) return 0;
